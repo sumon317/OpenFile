@@ -1,0 +1,6 @@
+{
+  "name": "OpenFile",
+  "description": "A fast, privacy-first Material 3 Android file manager with local & SAF storage browsing, archive extraction/creation, storage analysis, APK management, FTP/SFTP/SMB networking, and Cloud OAuth2 integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
