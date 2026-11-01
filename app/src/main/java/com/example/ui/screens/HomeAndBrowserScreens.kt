@@ -3,12 +3,14 @@ package com.example.ui.screens
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,7 +24,9 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.AudioFile
@@ -41,14 +45,13 @@ import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lan
-import androidx.compose.material.icons.filled.NoteAdd
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material.icons.filled.VideoFile
-import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -568,7 +571,7 @@ fun FileBrowserScreen(
                 modifier = Modifier.testTag("browser_toggle_view_mode")
             ) {
                 Icon(
-                    imageVector = if (settings.defaultViewMode == ViewMode.LIST) Icons.Filled.GridView else Icons.Filled.ViewList,
+                    imageVector = if (settings.defaultViewMode == ViewMode.LIST) Icons.Filled.GridView else Icons.AutoMirrored.Filled.ViewList,
                     contentDescription = "Toggle List or Grid view"
                 )
             }
@@ -630,18 +633,44 @@ fun FileBrowserScreen(
                     onClick = { showNewFileDialog = true },
                     modifier = Modifier.testTag("browser_new_file_button")
                 ) {
-                    Icon(Icons.Filled.NoteAdd, contentDescription = "New Text File")
+                    Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = "New Text File")
                 }
             }
         }
 
-        // Breadcrumb Navigation Bar
+        // Breadcrumb Navigation Bar or Virtual Category Context Bar
         if (browserState.breadcrumbs.isNotEmpty()) {
             BreadcrumbBar(
                 breadcrumbs = browserState.breadcrumbs,
                 providerType = browserState.currentDirectory?.providerType,
                 onCrumbClick = onCrumbClick
             )
+        } else if (browserState.activeCategoryFilter != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("category_context_banner")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Category Index: ${browserState.activeCategoryFilter.title}",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "${filteredItems.size} matching item(s)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
 
         // Quick extension filter chips when searching
@@ -850,115 +879,230 @@ fun FileBrowserScreen(
             return@Column
         }
 
-        // Main File List or Grid
-        Box(modifier = Modifier.fillMaxSize()) {
-            when {
-                browserState.isLoading -> {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                }
-                browserState.errorMessage != null -> {
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            Icons.Filled.Warning,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(36.dp)
-                        )
-                        Text(
-                            text = browserState.errorMessage,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                }
-                filteredItems.isEmpty() -> {
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            Icons.Filled.FolderOpen,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.outline,
-                            modifier = Modifier.size(48.dp)
-                        )
-                        Text(
-                            text = if (browserState.searchQuery.isNotEmpty()) {
-                                "No files match '${browserState.searchQuery}'"
-                            } else {
-                                "This folder is empty"
-                            },
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        if (browserState.currentDirectory != null) {
-                            OutlinedButton(onClick = { showNewFolderDialog = true }) {
-                                Icon(Icons.Filled.CreateNewFolder, contentDescription = null)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Create First Folder")
+        // Main File List or Grid + Optional Two-Pane Tablet Inspector
+        BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            val isWideDualPane = maxWidth >= 700.dp
+            val singleSelectedItem = remember(browserState.selectedUris, filteredItems) {
+                if (browserState.selectedUris.size == 1) {
+                    val uri = browserState.selectedUris.first()
+                    filteredItems.firstOrNull { it.uriOrPath == uri }
+                } else null
+            }
+
+            Row(modifier = Modifier.fillMaxSize()) {
+                Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    when {
+                        browserState.isLoading -> {
+                            CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                        }
+                        browserState.errorMessage != null -> {
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.Warning,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(36.dp)
+                                )
+                                Text(
+                                    text = browserState.errorMessage,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                        filteredItems.isEmpty() -> {
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.FolderOpen,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.outline,
+                                    modifier = Modifier.size(48.dp)
+                                )
+                                Text(
+                                    text = if (browserState.searchQuery.isNotEmpty()) {
+                                        "No files match '${browserState.searchQuery}'"
+                                    } else {
+                                        "This folder is empty"
+                                    },
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                if (browserState.currentDirectory != null) {
+                                    OutlinedButton(onClick = { showNewFolderDialog = true }) {
+                                        Icon(Icons.Filled.CreateNewFolder, contentDescription = null)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Create First Folder")
+                                    }
+                                }
+                            }
+                        }
+                        settings.defaultViewMode == ViewMode.GRID -> {
+                            LazyVerticalGrid(
+                                columns = GridCells.Adaptive(minSize = 140.dp),
+                                contentPadding = PaddingValues(12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.fillMaxSize().testTag("browser_grid_view")
+                            ) {
+                                items(
+                                    items = filteredItems,
+                                    key = { it.uriOrPath },
+                                    contentType = { if (it.isDirectory) "dir" else "file" }
+                                ) { item ->
+                                    FileItemGridCard(
+                                        file = item,
+                                        isSelected = item.uriOrPath in browserState.selectedUris,
+                                        showThumbnails = settings.showThumbnails,
+                                        onClick = { onFileClick(item) },
+                                        onLongClick = { onFileLongClick(item) },
+                                        onProperties = { onOpenProperties(item) }
+                                    )
+                                }
+                            }
+                        }
+                        else -> {
+                            LazyColumn(modifier = Modifier.fillMaxSize().testTag("browser_list_view")) {
+                                items(
+                                    items = filteredItems,
+                                    key = { it.uriOrPath },
+                                    contentType = { if (it.isDirectory) "dir" else "file" }
+                                ) { item ->
+                                    val isRemote = browserState.activeRemoteProfile != null || browserState.activeCloudAccount != null
+                                    FileItemRow(
+                                        file = item,
+                                        isSelected = item.uriOrPath in browserState.selectedUris,
+                                        isBookmarked = item.uriOrPath in bookmarkedPaths,
+                                        showThumbnails = settings.showThumbnails,
+                                        showExtensions = settings.showFileExtensions,
+                                        onClick = { onFileClick(item) },
+                                        onLongClick = { onFileLongClick(item) },
+                                        onRename = { renameTarget = item },
+                                        onCopy = { onCopyItems(listOf(item), ClipboardMode.COPY) },
+                                        onCut = { onCopyItems(listOf(item), ClipboardMode.CUT) },
+                                        onDelete = {
+                                            if (settings.confirmBeforeDelete) {
+                                                deleteConfirmTargets = listOf(item)
+                                            } else {
+                                                onDeleteItems(listOf(item), settings.moveToTrashByDefault)
+                                            }
+                                        },
+                                        onToggleBookmark = { onToggleBookmark(item) },
+                                        onShare = { onShareItem(item) },
+                                        onProperties = { onOpenProperties(item) },
+                                        onDownloadRemote = if (isRemote) ({ onDownloadRemoteItem(item) }) else null
+                                    )
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                }
                             }
                         }
                     }
                 }
-                settings.defaultViewMode == ViewMode.GRID -> {
-                    LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 140.dp),
-                        contentPadding = PaddingValues(12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.fillMaxSize()
+
+                // Canonical Tablet Two-Pane Inspector Side Panel when wide and an item is selected
+                if (isWideDualPane && singleSelectedItem != null) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        modifier = Modifier
+                            .width(280.dp)
+                            .fillMaxHeight()
+                            .testTag("tablet_inspector_pane")
                     ) {
-                        items(filteredItems, key = { it.uriOrPath }) { item ->
-                            FileItemGridCard(
-                                file = item,
-                                isSelected = item.uriOrPath in browserState.selectedUris,
-                                showThumbnails = settings.showThumbnails,
-                                onClick = { onFileClick(item) },
-                                onLongClick = { onFileLongClick(item) },
-                                onProperties = { onOpenProperties(item) }
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "Inspector",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary
                             )
+                            Text(
+                                text = singleSelectedItem.displayName,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = singleSelectedItem.mimeType,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            HorizontalDivider()
+                            Text(
+                                text = "Size: ${singleSelectedItem.formattedSize}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                text = "Permissions: ${singleSelectedItem.permissionsString}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                text = "Provider: ${singleSelectedItem.providerType.label}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Spacer(modifier = Modifier.weight(1f))
+                            OutlinedButton(
+                                onClick = { onOpenProperties(singleSelectedItem) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Filled.Info, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Full Hashes & Info")
+                            }
                         }
                     }
                 }
-                else -> {
-                    LazyColumn(modifier = Modifier.fillMaxSize()) {
-                        items(filteredItems, key = { it.uriOrPath }) { item ->
-                            val isRemote = browserState.activeRemoteProfile != null || browserState.activeCloudAccount != null
-                            FileItemRow(
-                                file = item,
-                                isSelected = item.uriOrPath in browserState.selectedUris,
-                                isBookmarked = item.uriOrPath in bookmarkedPaths,
-                                showThumbnails = settings.showThumbnails,
-                                showExtensions = settings.showFileExtensions,
-                                onClick = { onFileClick(item) },
-                                onLongClick = { onFileLongClick(item) },
-                                onRename = { renameTarget = item },
-                                onCopy = { onCopyItems(listOf(item), ClipboardMode.COPY) },
-                                onCut = { onCopyItems(listOf(item), ClipboardMode.CUT) },
-                                onDelete = {
-                                    if (settings.confirmBeforeDelete) {
-                                        deleteConfirmTargets = listOf(item)
-                                    } else {
-                                        onDeleteItems(listOf(item), settings.moveToTrashByDefault)
-                                    }
-                                },
-                                onToggleBookmark = { onToggleBookmark(item) },
-                                onShare = { onShareItem(item) },
-                                onProperties = { onOpenProperties(item) },
-                                onDownloadRemote = if (isRemote) ({ onDownloadRemoteItem(item) }) else null
-                            )
-                            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                        }
-                    }
+            }
+        }
+
+        // KDE Dolphin-Style Directory Summary Footer Bar
+        val dirSummary = remember(filteredItems) {
+            var folders = 0
+            var files = 0
+            var totalBytes = 0L
+            for (item in filteredItems) {
+                if (item.isDirectory) folders++ else {
+                    files++
+                    totalBytes += item.sizeBytes
                 }
+            }
+            Triple(folders, files, totalBytes)
+        }
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("status_footer_bar")
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "${dirSummary.first} folder(s), ${dirSummary.second} file(s) • ${formatByteSize(dirSummary.third)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "${settings.defaultSortField.label} (${if (settings.defaultSortOrder == SortOrder.ASCENDING) "↑" else "↓"})",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
             }
         }
     }

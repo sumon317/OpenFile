@@ -120,41 +120,58 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
         }
     }
 
-    fun toFileReference(file: File): FileReference {
+    fun toFileReference(
+        file: File,
+        includeChildCount: Boolean = false,
+        includeCanonicalPath: Boolean = false
+    ): FileReference {
         val isDir = file.isDirectory
         val name = file.name.ifEmpty { file.absolutePath }
         val ext = if (isDir) "" else name.substringAfterLast('.', "").lowercase()
         val mime = if (isDir) {
             "inode/directory"
         } else {
-            MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: guessMimeType(ext)
+            val guessed = guessMimeType(ext)
+            if (guessed != "application/octet-stream" || ext.isEmpty()) {
+                guessed
+            } else {
+                MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: guessed
+            }
         }
-        val perms = buildString {
+        val canRead = file.canRead()
+        val canWrite = file.canWrite()
+        val perms = buildString(4) {
             append(if (isDir) 'd' else '-')
-            append(if (file.canRead()) 'r' else '-')
-            append(if (file.canWrite()) 'w' else '-')
+            append(if (canRead) 'r' else '-')
+            append(if (canWrite) 'w' else '-')
             append(if (file.canExecute()) 'x' else '-')
         }
-        val childCount = if (isDir && file.canRead()) {
+        val childCount = if (includeChildCount && isDir && canRead) {
             file.list()?.size?.toString()
         } else null
 
         val metadata = buildMap {
             put("permissions", perms)
-            put("canonicalPath", runCatching { file.canonicalPath }.getOrDefault(file.absolutePath))
+            if (includeCanonicalPath) {
+                put("canonicalPath", runCatching { file.canonicalPath }.getOrDefault(file.absolutePath))
+            }
             if (childCount != null) put("childCount", childCount)
             if (isRestrictedAndroidDirectory(file)) {
                 put("scopedRestriction", "Protected by Android 11+ Scoped Storage. Use SAF if supported.")
             }
         }
 
-        val capabilities = FileReference.defaultCapabilitiesFor(ProviderType.LOCAL, isDir).toMutableSet()
-        if (!file.canWrite()) {
-            capabilities.remove(ProviderCapability.STREAM_WRITE)
-            capabilities.remove(ProviderCapability.CREATE_DIR)
-            capabilities.remove(ProviderCapability.CREATE_FILE)
-            capabilities.remove(ProviderCapability.DELETE)
-            capabilities.remove(ProviderCapability.ATOMIC_RENAME)
+        val defaultCaps = FileReference.defaultCapabilitiesFor(ProviderType.LOCAL, isDir)
+        val capabilities = if (canWrite) {
+            defaultCaps
+        } else {
+            defaultCaps.toMutableSet().apply {
+                remove(ProviderCapability.STREAM_WRITE)
+                remove(ProviderCapability.CREATE_DIR)
+                remove(ProviderCapability.CREATE_FILE)
+                remove(ProviderCapability.DELETE)
+                remove(ProviderCapability.ATOMIC_RENAME)
+            }
         }
 
         return FileReference(

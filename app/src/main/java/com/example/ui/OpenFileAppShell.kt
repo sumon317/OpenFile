@@ -23,11 +23,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Contrast
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SwapVert
-import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.DrawerValue
@@ -78,6 +81,7 @@ import com.example.ui.screens.NetworkScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.StorageAnalysisScreen
 import com.example.ui.screens.TrashScreen
+import com.example.ui.theme.ThemeMode
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -182,6 +186,16 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
         transferJobs.count { it.status == "RUNNING" || it.status == "PAUSED" || it.status == "INTERRUPTED" }
     }
 
+    val onCycleThemeMode: () -> Unit = {
+        val nextMode = when (settings.themeMode) {
+            ThemeMode.SYSTEM -> ThemeMode.LIGHT
+            ThemeMode.LIGHT -> ThemeMode.DARK
+            ThemeMode.DARK -> ThemeMode.AMOLED
+            ThemeMode.AMOLED -> ThemeMode.SYSTEM
+        }
+        viewModel.setThemeMode(nextMode)
+    }
+
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isExpandedTablet = maxWidth >= 600.dp
 
@@ -214,6 +228,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                     MainScaffoldContent(
                         isExpandedTablet = true,
                         currentDest = currentDest,
+                        currentThemeMode = settings.themeMode,
                         activeTransferCount = activeTransferCount,
                         undoActionDescription = undoAction?.description,
                         snackbarHostState = snackbarHostState,
@@ -223,6 +238,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                                 viewModel.navigateToDestination(OpenFileDestination.HOME)
                             }
                         },
+                        onCycleThemeMode = onCycleThemeMode,
                         onRequestSaf = { safTreeLauncher.launch(null) },
                         onOpenTransferQueue = { showTransferQueueSheet = true },
                         onRefresh = { viewModel.refreshCurrentDirectory() },
@@ -319,6 +335,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                 MainScaffoldContent(
                     isExpandedTablet = false,
                     currentDest = currentDest,
+                    currentThemeMode = settings.themeMode,
                     activeTransferCount = activeTransferCount,
                     undoActionDescription = undoAction?.description,
                     snackbarHostState = snackbarHostState,
@@ -328,6 +345,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                             viewModel.navigateToDestination(OpenFileDestination.HOME)
                         }
                     },
+                    onCycleThemeMode = onCycleThemeMode,
                     onRequestSaf = { safTreeLauncher.launch(null) },
                     onOpenTransferQueue = { showTransferQueueSheet = true },
                     onRefresh = { viewModel.refreshCurrentDirectory() },
@@ -418,11 +436,13 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
 private fun MainScaffoldContent(
     isExpandedTablet: Boolean,
     currentDest: OpenFileDestination,
+    currentThemeMode: ThemeMode,
     activeTransferCount: Int,
     undoActionDescription: String?,
     snackbarHostState: SnackbarHostState,
     onOpenDrawer: () -> Unit,
     onNavigateUp: () -> Unit,
+    onCycleThemeMode: () -> Unit,
     onRequestSaf: () -> Unit,
     onOpenTransferQueue: () -> Unit,
     onRefresh: () -> Unit,
@@ -466,6 +486,22 @@ private fun MainScaffoldContent(
                     )
                 },
                 actions = {
+                    // Quick Theme Mode Cycle Button (SYSTEM -> LIGHT -> DARK -> AMOLED)
+                    IconButton(
+                        onClick = onCycleThemeMode,
+                        modifier = Modifier.testTag("top_bar_theme_button")
+                    ) {
+                        val themeIcon = when (currentThemeMode) {
+                            ThemeMode.LIGHT -> Icons.Filled.LightMode
+                            ThemeMode.DARK -> Icons.Filled.DarkMode
+                            ThemeMode.AMOLED -> Icons.Filled.Contrast
+                            ThemeMode.SYSTEM -> Icons.Filled.Contrast
+                        }
+                        Icon(
+                            imageVector = themeIcon,
+                            contentDescription = "Cycle Theme (${currentThemeMode.name})"
+                        )
+                    }
                     // Transfer Queue Button with Badge
                     IconButton(
                         onClick = onOpenTransferQueue,
@@ -519,7 +555,7 @@ private fun MainScaffoldContent(
                         )
                         Row {
                             TextButton(onClick = onTriggerUndo) {
-                                Icon(Icons.Filled.Undo, contentDescription = null, tint = MaterialTheme.colorScheme.inversePrimary)
+                                Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = null, tint = MaterialTheme.colorScheme.inversePrimary)
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("UNDO", color = MaterialTheme.colorScheme.inversePrimary, fontWeight = FontWeight.Bold)
                             }
@@ -581,28 +617,8 @@ private fun DestinationRouter(
                 },
                 onRequestSafAccess = onRequestSafAccess,
                 onNavigateDestination = { viewModel.navigateToDestination(it) },
-                onBookmarkClick = { bm ->
-                    val file = File(bm.uriOrPath)
-                    if (file.exists()) {
-                        val ref = viewModel.localProvider.toFileReference(file)
-                        if (ref.isDirectory) {
-                            viewModel.navigateToDestination(OpenFileDestination.INTERNAL_STORAGE)
-                            viewModel.openDirectory(ref)
-                        } else {
-                            viewModel.onFileItemClicked(ref)
-                        }
-                    } else {
-                        viewModel.showStatus("Bookmarked path is no longer accessible.")
-                    }
-                },
-                onRecentFileClick = { recent ->
-                    val file = File(recent.uriOrPath)
-                    if (file.exists()) {
-                        viewModel.onFileItemClicked(viewModel.localProvider.toFileReference(file))
-                    } else {
-                        viewModel.showStatus("Recent file was moved or deleted.")
-                    }
-                }
+                onBookmarkClick = { bm -> viewModel.openBookmark(bm) },
+                onRecentFileClick = { recent -> viewModel.openRecentFile(recent) }
             )
         }
 
@@ -696,22 +712,7 @@ private fun DestinationRouter(
         OpenFileDestination.BOOKMARKS -> {
             BookmarksScreen(
                 bookmarks = bookmarks,
-                onOpenBookmark = { bm ->
-                    if (bm.providerType == ProviderType.LOCAL.name) {
-                        val file = File(bm.uriOrPath)
-                        if (file.exists()) {
-                            val ref = viewModel.localProvider.toFileReference(file)
-                            if (ref.isDirectory) {
-                                viewModel.navigateToDestination(OpenFileDestination.INTERNAL_STORAGE)
-                                viewModel.openDirectory(ref)
-                            } else {
-                                viewModel.onFileItemClicked(ref)
-                            }
-                        } else {
-                            viewModel.showStatus("Bookmarked path no longer exists.")
-                        }
-                    }
-                },
+                onOpenBookmark = { bm -> viewModel.openBookmark(bm) },
                 onRenameBookmark = { bm, title -> viewModel.renameBookmark(bm, title) },
                 onDeleteBookmark = { bm -> viewModel.deleteBookmark(bm) }
             )

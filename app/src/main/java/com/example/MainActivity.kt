@@ -13,18 +13,18 @@ import com.example.ui.theme.OpenFileTheme
 
 class MainActivity : ComponentActivity() {
 
-    private val openFileViewModel: OpenFileViewModel by viewModels()
+    internal val viewModel: OpenFileViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            val settings by openFileViewModel.settings.collectAsStateWithLifecycle()
+            val settings by viewModel.settings.collectAsStateWithLifecycle()
             OpenFileTheme(
                 themeMode = settings.themeMode,
                 dynamicColor = settings.useDynamicColor
             ) {
-                OpenFileAppShell(viewModel = openFileViewModel)
+                OpenFileAppShell(viewModel = viewModel)
             }
         }
     }

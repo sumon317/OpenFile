@@ -135,4 +135,28 @@ class ExampleUnitTest {
         val illegalResult = runCatching { LocalFileSystemProvider.sanitizeFileName("../hack") }
         assertTrue(illegalResult.isFailure)
     }
+
+    @Test
+    fun `sorting and filtering 2000 items completes within fast latency budget`() {
+        val rawItems = (1..2000).map { i ->
+            val isDir = i % 10 == 0
+            FileReference(
+                providerType = ProviderType.LOCAL,
+                uriOrPath = "/storage/emulated/0/item_$i.txt",
+                displayName = if (isDir) "Folder_$i" else "Document_$i.txt",
+                parentUriOrPath = "/storage/emulated/0",
+                isDirectory = isDir,
+                sizeBytes = if (isDir) 0L else (i * 1024L),
+                lastModifiedEpochMs = 1_700_000_000_000L + i
+            )
+        }
+        val startNs = System.nanoTime()
+        val sorted = FileSortAndFilterEngine.sortFiles(rawItems, SortField.SIZE, SortOrder.DESCENDING)
+        val filtered = FileSortAndFilterEngine.filterFiles(sorted, query = "Document_1", showHidden = false)
+        val elapsedMs = (System.nanoTime() - startNs) / 1_000_000
+
+        assertEquals(200, sorted.take(200).count { it.isDirectory })
+        assertTrue("Expected fast sort+filter (< 500ms), took ${elapsedMs}ms", elapsedMs < 500)
+        assertTrue(filtered.isNotEmpty())
+    }
 }

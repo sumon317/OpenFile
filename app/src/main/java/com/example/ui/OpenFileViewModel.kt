@@ -117,11 +117,8 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
     // Reactive streams from Room & DataStore
-    val settings: StateFlow<AppSettingsState> = settingsStore.settingsFlow.stateIn(
-        viewModelScope,
-        SharingStarted.WhileSubscribed(5000),
-        AppSettingsState()
-    )
+    private val _settings = MutableStateFlow(AppSettingsState())
+    val settings: StateFlow<AppSettingsState> = _settings.asStateFlow()
 
     val bookmarks: StateFlow<List<BookmarkEntity>> = dao.observeBookmarks().stateIn(
         viewModelScope,
@@ -242,6 +239,11 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     init {
         viewModelScope.launch {
+            settingsStore.settingsFlow.collect { persisted ->
+                _settings.value = persisted
+            }
+        }
+        viewModelScope.launch {
             // Crash recovery: mark any stale RUNNING transfer jobs from a previous process death as INTERRUPTED
             dao.markRunningJobsAsInterrupted()
             openPrimaryStorageRoot()
@@ -289,19 +291,20 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun openDirectory(directory: FileReference) {
+        _browserState.value = _browserState.value.copy(
+            currentDirectory = directory,
+            breadcrumbs = buildBreadcrumbs(directory),
+            selectedUris = emptySet(),
+            isLoading = true,
+            errorMessage = null,
+            activeCategoryFilter = null,
+            inspectArchiveFile = null,
+            archiveEntries = emptyList(),
+            activeRemoteProfile = null,
+            activeCloudAccount = null
+        )
         viewModelScope.launch {
-            _browserState.value = _browserState.value.copy(
-                currentDirectory = directory,
-                selectedUris = emptySet(),
-                isLoading = true,
-                errorMessage = null,
-                activeCategoryFilter = null,
-                inspectArchiveFile = null,
-                archiveEntries = emptyList(),
-                activeRemoteProfile = null,
-                activeCloudAccount = null
-            )
-            val currentSettings = settings.first()
+            val currentSettings = settings.value
             val result = when (directory.providerType) {
                 ProviderType.SAF -> safProvider.listChildren(directory, currentSettings.showHiddenFiles)
                 else -> localProvider.listChildren(directory, currentSettings.showHiddenFiles)
@@ -412,28 +415,39 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun openCategoryOrSpecialFolder(category: FileCategory) {
+        if (category == FileCategory.DOWNLOADS) {
+            val root = localProvider.getPrimaryRootDirectory()
+            val dl = File(root, "Download").apply { if (!exists()) mkdirs() }
+            _currentDestination.value = OpenFileDestination.DOWNLOADS
+            openDirectory(localProvider.toFileReference(dl))
+            return
+        }
+        _browserState.value = _browserState.value.copy(
+            currentDirectory = null,
+            breadcrumbs = emptyList(),
+            isLoading = true,
+            selectedUris = emptySet(),
+            activeCategoryFilter = category,
+            inspectArchiveFile = null,
+            activeRemoteProfile = null,
+            activeCloudAccount = null,
+            errorMessage = null
+        )
         viewModelScope.launch {
-            _browserState.value = _browserState.value.copy(
-                isLoading = true,
-                selectedUris = emptySet(),
-                activeCategoryFilter = category,
-                inspectArchiveFile = null,
-                activeRemoteProfile = null,
-                activeCloudAccount = null,
-                errorMessage = null
-            )
-            if (category == FileCategory.DOWNLOADS) {
-                val root = localProvider.getPrimaryRootDirectory()
-                val dl = File(root, "Download").apply { if (!exists()) mkdirs() }
-                _currentDestination.value = OpenFileDestination.DOWNLOADS
-                openDirectory(localProvider.toFileReference(dl))
-                return@launch
-            }
-            val currentSettings = settings.first()
+            val currentSettings = settings.value
             val thresholdBytes = currentSettings.largeFileThresholdMb * 1024L * 1024L
-            val items = mediaStoreProvider.queryByCategory(category, thresholdBytes)
+            val indexedItems = mediaStoreProvider.queryByCategory(category, thresholdBytes)
+            val combinedItems = if (category == FileCategory.RECENT_FILES) {
+                val openedRefs = recentFiles.value.mapNotNull { rec ->
+                    val f = File(rec.uriOrPath)
+                    if (f.exists() && f.canRead()) localProvider.toFileReference(f) else null
+                }
+                (openedRefs + indexedItems).distinctBy { it.uriOrPath }
+            } else {
+                indexedItems
+            }
             val sorted = FileSortAndFilterEngine.sortFiles(
-                items,
+                combinedItems,
                 if (category == FileCategory.LARGE_FILES) SortField.SIZE else currentSettings.defaultSortField,
                 if (category == FileCategory.LARGE_FILES) SortOrder.DESCENDING else currentSettings.defaultSortOrder
             )
@@ -741,10 +755,16 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             if (item.providerType == ProviderType.LOCAL) {
                 val file = File(item.uriOrPath)
+                val detailedRef = localProvider.toFileReference(
+                    file = file,
+                    includeChildCount = true,
+                    includeCanonicalPath = true
+                )
                 if (file.isDirectory && file.canRead()) {
                     val dirSize = localProvider.calculateDirectorySize(file)
-                    _propertiesFile.value = item.copy(sizeBytes = dirSize)
+                    _propertiesFile.value = detailedRef.copy(sizeBytes = dirSize)
                 } else if (file.isFile && file.canRead()) {
+                    _propertiesFile.value = detailedRef
                     if (item.extension == "apk") {
                         _propertiesApkInfo.value = appManager.inspectApkFile(file).getOrNull()
                     }
@@ -766,8 +786,46 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Bookmarks & SAF Grants
+    // Bookmarks, Recent Files & SAF Grants
     // ---------------------------------------------------------------------------------------------
+
+    fun openBookmark(bm: BookmarkEntity) {
+        when (bm.providerType) {
+            ProviderType.SAF.name -> {
+                val uri = Uri.parse(bm.uriOrPath)
+                val ref = safProvider.fromTreeUri(uri, bm.title)
+                if (ref.isDirectory) {
+                    _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
+                    openDirectory(ref)
+                } else {
+                    onFileItemClicked(ref)
+                }
+            }
+            else -> {
+                val file = File(bm.uriOrPath)
+                if (file.exists()) {
+                    val ref = localProvider.toFileReference(file)
+                    if (ref.isDirectory) {
+                        _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
+                        openDirectory(ref)
+                    } else {
+                        onFileItemClicked(ref)
+                    }
+                } else {
+                    showStatus("Bookmarked path '${bm.title}' no longer exists.")
+                }
+            }
+        }
+    }
+
+    fun openRecentFile(recent: RecentFileEntity) {
+        val file = File(recent.uriOrPath)
+        if (file.exists()) {
+            onFileItemClicked(localProvider.toFileReference(file))
+        } else {
+            showStatus("Recent file '${recent.displayName}' was moved or deleted.")
+        }
+    }
 
     fun toggleBookmark(item: FileReference) {
         viewModelScope.launch {
@@ -1288,23 +1346,58 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Settings & Privacy Actions
+    // Settings & Privacy Actions (Optimistic 0ms UI update + background DataStore persistence)
     // ---------------------------------------------------------------------------------------------
 
-    fun setThemeMode(mode: ThemeMode) = viewModelScope.launch { settingsStore.setThemeMode(mode) }
-    fun setDynamicColor(enabled: Boolean) = viewModelScope.launch { settingsStore.setDynamicColor(enabled) }
-    fun setViewMode(mode: ViewMode) = viewModelScope.launch { settingsStore.setViewMode(mode) }
-    fun setShowHiddenFiles(enabled: Boolean) = viewModelScope.launch {
-        settingsStore.setShowHiddenFiles(enabled)
-        refreshCurrentDirectory()
+    fun setThemeMode(mode: ThemeMode) {
+        _settings.value = _settings.value.copy(themeMode = mode)
+        viewModelScope.launch { settingsStore.setThemeMode(mode) }
     }
-    fun setShowThumbnails(enabled: Boolean) = viewModelScope.launch { settingsStore.setShowThumbnails(enabled) }
-    fun setConfirmBeforeDelete(enabled: Boolean) = viewModelScope.launch { settingsStore.setConfirmBeforeDelete(enabled) }
-    fun setMoveToTrashByDefault(enabled: Boolean) = viewModelScope.launch { settingsStore.setMoveToTrashByDefault(enabled) }
-    fun setVerifyChecksumAfterTransfer(enabled: Boolean) = viewModelScope.launch { settingsStore.setVerifyChecksumAfterTransfer(enabled) }
-    fun setSorting(field: SortField, order: SortOrder) = viewModelScope.launch {
-        settingsStore.setSorting(field, order)
-        refreshCurrentDirectory()
+
+    fun setDynamicColor(enabled: Boolean) {
+        _settings.value = _settings.value.copy(useDynamicColor = enabled)
+        viewModelScope.launch { settingsStore.setDynamicColor(enabled) }
+    }
+
+    fun setViewMode(mode: ViewMode) {
+        _settings.value = _settings.value.copy(defaultViewMode = mode)
+        viewModelScope.launch { settingsStore.setViewMode(mode) }
+    }
+
+    fun setShowHiddenFiles(enabled: Boolean) {
+        _settings.value = _settings.value.copy(showHiddenFiles = enabled)
+        viewModelScope.launch {
+            settingsStore.setShowHiddenFiles(enabled)
+            refreshCurrentDirectory()
+        }
+    }
+
+    fun setShowThumbnails(enabled: Boolean) {
+        _settings.value = _settings.value.copy(showThumbnails = enabled)
+        viewModelScope.launch { settingsStore.setShowThumbnails(enabled) }
+    }
+
+    fun setConfirmBeforeDelete(enabled: Boolean) {
+        _settings.value = _settings.value.copy(confirmBeforeDelete = enabled)
+        viewModelScope.launch { settingsStore.setConfirmBeforeDelete(enabled) }
+    }
+
+    fun setMoveToTrashByDefault(enabled: Boolean) {
+        _settings.value = _settings.value.copy(moveToTrashByDefault = enabled)
+        viewModelScope.launch { settingsStore.setMoveToTrashByDefault(enabled) }
+    }
+
+    fun setVerifyChecksumAfterTransfer(enabled: Boolean) {
+        _settings.value = _settings.value.copy(verifyChecksumAfterTransfer = enabled)
+        viewModelScope.launch { settingsStore.setVerifyChecksumAfterTransfer(enabled) }
+    }
+
+    fun setSorting(field: SortField, order: SortOrder) {
+        _settings.value = _settings.value.copy(defaultSortField = field, defaultSortOrder = order)
+        viewModelScope.launch {
+            settingsStore.setSorting(field, order)
+            refreshCurrentDirectory()
+        }
     }
 
     fun clearAllPrivacyHistoryAndCredentials(clearVault: Boolean) {

@@ -198,18 +198,34 @@ class TransferQueueEngine(
 
                     // Check for collision
                     if (destProvider.exists(destinationDir, targetName)) {
-                        val resolution = stickyResolution ?: run {
-                            val deferred = CompletableDeferred<Pair<ConflictResolution, Boolean>>()
-                            _conflictPrompt.value = ConflictPromptRequest(
-                                sourceFile = sourceItem,
-                                destinationDirectory = destinationDir,
-                                conflictingName = targetName,
-                                responseDeferred = deferred
-                            )
-                            val (choice, applyToAll) = deferred.await()
-                            _conflictPrompt.value = null
-                            if (applyToAll) stickyResolution = choice
-                            choice
+                        val isSameSourceAndDest = sourceItem.providerType == destinationDir.providerType &&
+                            sourceItem.parentUriOrPath == destinationDir.uriOrPath &&
+                            sourceItem.displayName == targetName
+
+                        if (isSameSourceAndDest && isMove) {
+                            // Moving a file onto itself in the same directory is a safe no-op
+                            processedFiles++
+                            createdDestinations.add(sourceItem)
+                            continue
+                        }
+
+                        val resolution = if (isSameSourceAndDest && !isMove) {
+                            // Copying a file into the same directory must auto-rename so it never deletes its own source
+                            ConflictResolution.KEEP_BOTH
+                        } else {
+                            stickyResolution ?: run {
+                                val deferred = CompletableDeferred<Pair<ConflictResolution, Boolean>>()
+                                _conflictPrompt.value = ConflictPromptRequest(
+                                    sourceFile = sourceItem,
+                                    destinationDirectory = destinationDir,
+                                    conflictingName = targetName,
+                                    responseDeferred = deferred
+                                )
+                                val (choice, applyToAll) = deferred.await()
+                                _conflictPrompt.value = null
+                                if (applyToAll) stickyResolution = choice
+                                choice
+                            }
                         }
 
                         when (resolution) {
@@ -226,7 +242,7 @@ class TransferQueueEngine(
                                 )
                             }
                             ConflictResolution.OVERWRITE -> {
-                                if (destinationDir.providerType == ProviderType.LOCAL) {
+                                if (destinationDir.providerType == ProviderType.LOCAL && !isSameSourceAndDest) {
                                     File(destinationDir.uriOrPath, targetName).deleteRecursively()
                                 }
                             }
@@ -363,6 +379,19 @@ class TransferQueueEngine(
         val srcProvider = providerFor(source.providerType)
         val dstProvider = providerFor(destinationParent.providerType)
 
+        // Prevent copying or moving a folder into itself or its own subdirectory
+        if (source.isDirectory &&
+            source.providerType == ProviderType.LOCAL &&
+            destinationParent.providerType == ProviderType.LOCAL
+        ) {
+            val srcCanonical = runCatching { File(source.uriOrPath).canonicalPath }.getOrDefault(source.uriOrPath)
+            val dstCanonical = runCatching { File(destinationParent.uriOrPath, targetName).canonicalPath }
+                .getOrDefault("${destinationParent.uriOrPath}/$targetName")
+            if (dstCanonical == srcCanonical || dstCanonical.startsWith("$srcCanonical${File.separator}")) {
+                throw IllegalArgumentException("Cannot copy or move folder '${source.displayName}' into itself.")
+            }
+        }
+
         // Fast atomic move when both source and destination are on LocalFileSystemProvider
         if (isMove &&
             source.providerType == ProviderType.LOCAL &&
@@ -475,9 +504,9 @@ class TransferQueueEngine(
                     val trashFile = File(trashRootDir, "${UUID.randomUUID()}_${item.displayName}")
                     val originalParent = item.parentUriOrPath ?: localProvider.getPrimaryRootDirectory().absolutePath
 
-                    // Check free space when copying across volumes/SAF
+                    // Check free space when copying across volumes/SAF (guard against 0-total virtual StatFs)
                     val stat = runCatching { StatFs(trashRootDir.absolutePath) }.getOrNull()
-                    val availableBytes = stat?.availableBytes ?: Long.MAX_VALUE
+                    val availableBytes = if (stat != null && stat.totalBytes > 0L) stat.availableBytes else Long.MAX_VALUE
                     if (item.sizeBytes > availableBytes - 10L * 1024 * 1024) {
                         throw IllegalStateException("Insufficient storage space to move '${item.displayName}' to Trash. Choose permanent delete instead.")
                     }

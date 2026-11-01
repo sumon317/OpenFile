@@ -255,6 +255,10 @@ fun BreadcrumbBar(
     }
 }
 
+private val rowDateFormat = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue(): SimpleDateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FileItemRow(
@@ -277,7 +281,8 @@ fun FileItemRow(
     var menuExpanded by remember { mutableStateOf(false) }
     val dateStr = remember(file.lastModifiedEpochMs) {
         if (file.lastModifiedEpochMs <= 0L) ""
-        else SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(file.lastModifiedEpochMs))
+        else (rowDateFormat.get() ?: SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()))
+            .format(Date(file.lastModifiedEpochMs))
     }
     val displayTitle = if (!showExtensions && !file.isDirectory && file.displayName.contains('.')) {
         file.displayName.substringBeforeLast('.')

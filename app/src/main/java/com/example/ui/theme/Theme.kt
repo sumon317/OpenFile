@@ -1,5 +1,6 @@
 package com.example.ui.theme
 
+import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
@@ -8,8 +9,11 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 
 enum class ThemeMode {
     SYSTEM,
@@ -30,14 +34,20 @@ private val LightColorScheme = lightColorScheme(
     tertiary = AmberTertiaryLight,
     onTertiary = OnAmberTertiaryLight,
     tertiaryContainer = AmberContainerLight,
-    onTertiaryContainer = OnAmberContainerLight,
+    onTertiaryContainer = OnAmberTertiaryContainerLight,
     background = SurfaceLight,
     onBackground = OnSurfaceLight,
     surface = SurfaceLight,
     onSurface = OnSurfaceLight,
+    surfaceContainerLowest = SurfaceContainerLowestLight,
+    surfaceContainerLow = SurfaceContainerLowLight,
+    surfaceContainer = SurfaceContainerLight,
+    surfaceContainerHigh = SurfaceContainerHighLight,
+    surfaceContainerHighest = SurfaceContainerHighestLight,
     surfaceVariant = SurfaceVariantLight,
     onSurfaceVariant = OnSurfaceVariantLight,
-    outline = OutlineLight
+    outline = OutlineLight,
+    outlineVariant = OutlineVariantLight
 )
 
 private val DarkColorScheme = darkColorScheme(
@@ -57,18 +67,26 @@ private val DarkColorScheme = darkColorScheme(
     onBackground = OnSurfaceDark,
     surface = SurfaceDark,
     onSurface = OnSurfaceDark,
+    surfaceContainerLowest = SurfaceContainerLowestDark,
+    surfaceContainerLow = SurfaceContainerLowDark,
+    surfaceContainer = SurfaceContainerDark,
+    surfaceContainerHigh = SurfaceContainerHighDark,
+    surfaceContainerHighest = SurfaceContainerHighestDark,
     surfaceVariant = SurfaceVariantDark,
     onSurfaceVariant = OnSurfaceVariantDark,
-    outline = OutlineDark
+    outline = OutlineDark,
+    outlineVariant = OutlineVariantDark
 )
 
 private val AmoledColorScheme = DarkColorScheme.copy(
     background = SurfaceAmoled,
     surface = SurfaceAmoled,
+    surfaceContainerLowest = SurfaceContainerLowestAmoled,
+    surfaceContainerLow = SurfaceContainerLowAmoled,
     surfaceContainer = SurfaceContainerAmoled,
-    surfaceContainerLow = SurfaceAmoled,
-    surfaceContainerHigh = SurfaceVariantAmoled,
-    surfaceVariant = SurfaceVariantAmoled
+    surfaceContainerHigh = SurfaceContainerHighAmoled,
+    surfaceVariant = SurfaceVariantAmoled,
+    outlineVariant = OutlineVariantAmoled
 )
 
 @Composable
@@ -98,11 +116,26 @@ fun OpenFileTheme(
         baseScheme.copy(
             background = Color.Black,
             surface = Color.Black,
+            surfaceContainerLowest = SurfaceContainerLowestAmoled,
+            surfaceContainerLow = SurfaceContainerLowAmoled,
             surfaceContainer = SurfaceContainerAmoled,
-            surfaceContainerLow = Color.Black
+            surfaceContainerHigh = SurfaceContainerHighAmoled,
+            outlineVariant = OutlineVariantAmoled
         )
     } else {
         baseScheme
+    }
+
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as? Activity)?.window
+            if (window != null) {
+                val insetsController = WindowCompat.getInsetsController(window, view)
+                insetsController.isAppearanceLightStatusBars = !useDark
+                insetsController.isAppearanceLightNavigationBars = !useDark
+            }
+        }
     }
 
     MaterialTheme(
