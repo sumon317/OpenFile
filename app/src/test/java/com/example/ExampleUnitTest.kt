@@ -159,4 +159,43 @@ class ExampleUnitTest {
         assertTrue("Expected fast sort+filter (< 500ms), took ${elapsedMs}ms", elapsedMs < 500)
         assertTrue(filtered.isNotEmpty())
     }
+
+    @Test
+    fun `sorting and filtering 5000 items across all SortFields stays within 60fps UI responsiveness budget`() {
+        val rawItems = (1..5000).map { i ->
+            val isDir = i % 15 == 0
+            val ext = when (i % 5) {
+                0 -> "pdf"
+                1 -> "jpg"
+                2 -> "mp4"
+                3 -> "zip"
+                else -> "txt"
+            }
+            FileReference(
+                providerType = ProviderType.LOCAL,
+                uriOrPath = "/storage/emulated/0/bench/item_$i.$ext",
+                displayName = if (isDir) "Dir_$i" else "File_${5000 - i}.$ext",
+                parentUriOrPath = "/storage/emulated/0/bench",
+                isDirectory = isDir,
+                sizeBytes = if (isDir) 0L else ((i % 97) * 4096L),
+                lastModifiedEpochMs = 1_700_000_000_000L + (i % 1000) * 1000L,
+                extension = if (isDir) "" else ext
+            )
+        }
+
+        val startNs = System.nanoTime()
+        for (field in SortField.entries) {
+            val sorted = FileSortAndFilterEngine.sortFiles(rawItems, field, SortOrder.ASCENDING)
+            assertEquals(5000, sorted.size)
+        }
+        val filtered = FileSortAndFilterEngine.filterFiles(
+            files = rawItems,
+            query = "File_4",
+            extensionFilter = "pdf",
+            showHidden = false
+        )
+        val elapsedMs = (System.nanoTime() - startNs) / 1_000_000
+        assertTrue("Expected 5,000-item multi-sort + filter < 400ms, took ${elapsedMs}ms", elapsedMs < 400)
+        assertTrue(filtered.all { it.extension == "pdf" && it.displayName.contains("File_4") })
+    }
 }

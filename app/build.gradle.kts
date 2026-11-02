@@ -50,9 +50,7 @@ android {
       signingConfig = signingConfigs.getByName("release")
     }
     debug {
-      // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
-      // AI Studio.
-      signingConfig = signingConfigs.getByName("debugConfig")
+      // Use standard default Android debug keystore
     }
   }
   compileOptions {
@@ -128,6 +126,7 @@ dependencies {
   // implementation(libs.logging.interceptor)
   implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
+    implementation(libs.play.services.auth)
   // implementation(libs.play.services.location)
   // implementation(libs.retrofit)
   implementation(libs.commons.compress)

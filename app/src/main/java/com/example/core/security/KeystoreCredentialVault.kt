@@ -25,6 +25,7 @@ class KeystoreCredentialVault(context: Context) {
     private val vaultFile = File(context.filesDir, "openfile_credential_vault.properties")
     private val fallbackKeyFile = File(context.filesDir, ".openfile_vault_fallback.key")
     private val lock = Any()
+    private var cachedProperties: Properties? = null
 
     companion object {
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
@@ -107,6 +108,7 @@ class KeystoreCredentialVault(context: Context) {
      */
     fun clearAllSecrets() {
         synchronized(lock) {
+            cachedProperties = Properties()
             if (vaultFile.exists()) vaultFile.delete()
             if (fallbackKeyFile.exists()) fallbackKeyFile.delete()
             try {
@@ -163,14 +165,17 @@ class KeystoreCredentialVault(context: Context) {
     }
 
     private fun loadProperties(): Properties {
+        cachedProperties?.let { return it }
         val props = Properties()
         if (vaultFile.exists()) {
             vaultFile.inputStream().use { props.load(it) }
         }
+        cachedProperties = props
         return props
     }
 
     private fun saveProperties(props: Properties) {
+        cachedProperties = props
         vaultFile.outputStream().use { props.store(it, "OpenFile Encrypted Credential Vault") }
     }
 }

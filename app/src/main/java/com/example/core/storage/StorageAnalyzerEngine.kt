@@ -41,6 +41,7 @@ class StorageAnalyzerEngine(
             var scannedFiles = 0
             var scannedDirs = 0
             var scannedBytes = 0L
+            var lastProgressEmitMs = 0L
 
             val stack = ArrayDeque<File>()
             stack.add(rootDir)
@@ -77,7 +78,11 @@ class StorageAnalyzerEngine(
                         extensionStats[extKey] = (prevExt.first + 1) to (prevExt.second + size)
 
                         if (scannedFiles % 25 == 0) {
-                            onProgress(scannedFiles, scannedBytes, child.name)
+                            val now = System.currentTimeMillis()
+                            if (now - lastProgressEmitMs >= 100L) {
+                                lastProgressEmitMs = now
+                                onProgress(scannedFiles, scannedBytes, child.name)
+                            }
                         }
                     }
                 }

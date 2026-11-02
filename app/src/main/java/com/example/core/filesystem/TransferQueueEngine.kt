@@ -189,6 +189,7 @@ class TransferQueueEngine(
             dao.upsertTransferJob(initialEntity)
 
             try {
+                var lastDbUpdateMs = 0L
                 for (sourceItem in clip.items) {
                     coroutineContext.ensureActive()
                     waitIfPaused(jobId, initialEntity, transferredBytes, processedFiles)
@@ -242,7 +243,7 @@ class TransferQueueEngine(
                                 )
                             }
                             ConflictResolution.OVERWRITE -> {
-                                if (destinationDir.providerType == ProviderType.LOCAL && !isSameSourceAndDest) {
+                                if (destinationDir.providerType == ProviderType.LOCAL) {
                                     File(destinationDir.uriOrPath, targetName).deleteRecursively()
                                 }
                             }
@@ -263,14 +264,18 @@ class TransferQueueEngine(
                     )
                     createdDestinations.add(transferredRef)
                     processedFiles++
-                    dao.upsertTransferJob(
-                        initialEntity.copy(
-                            transferredBytes = transferredBytes.coerceAtMost(totalBytes),
-                            processedFiles = processedFiles,
-                            status = "RUNNING",
-                            updatedAt = System.currentTimeMillis()
+                    val now = System.currentTimeMillis()
+                    if (now - lastDbUpdateMs >= 100L || processedFiles == clip.items.size) {
+                        lastDbUpdateMs = now
+                        dao.upsertTransferJob(
+                            initialEntity.copy(
+                                transferredBytes = transferredBytes.coerceAtMost(totalBytes),
+                                processedFiles = processedFiles,
+                                status = "RUNNING",
+                                updatedAt = now
+                            )
                         )
-                    )
+                    }
                 }
 
                 if (isMove) {

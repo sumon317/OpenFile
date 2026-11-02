@@ -399,6 +399,10 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("top_bar_drawer_button").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("nav_internal_storage").performScrollTo().performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+            !composeTestRule.activity.viewModel.browserState.value.isLoading &&
+                composeTestRule.activity.viewModel.browserState.value.items.isNotEmpty()
+        }
         composeTestRule.waitForIdle()
 
         // Verify KDE Dolphin-style directory status footer bar is displayed
@@ -439,4 +443,188 @@ class ExampleRobolectricTest {
             benchRoot.deleteRecursively()
         }
     }
+
+    @Test
+    fun `UI responsiveness benchmark verifies non-blocking main-thread latency and rapid search debouncing`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+
+        // 1. Measure main-thread return latency of openDirectory and openCategoryOrSpecialFolder (must be < 50ms)
+        val workspaceRef = viewModel.localProvider.toFileReference(viewModel.localProvider.getAppWorkspaceDirectory())
+        var openDirMainThreadMs = 0L
+        var openCategoryMainThreadMs = 0L
+
+        composeTestRule.runOnUiThread {
+            val t0 = System.nanoTime()
+            viewModel.openDirectory(workspaceRef)
+            openDirMainThreadMs = (System.nanoTime() - t0) / 1_000_000
+
+            val t1 = System.nanoTime()
+            viewModel.openCategoryOrSpecialFolder(com.example.core.model.FileCategory.IMAGES)
+            openCategoryMainThreadMs = (System.nanoTime() - t1) / 1_000_000
+        }
+
+        assertTrue("openDirectory must not block main thread (< 50ms), took ${openDirMainThreadMs}ms", openDirMainThreadMs < 50)
+        assertTrue("openCategoryOrSpecialFolder must not block main thread (< 50ms), took ${openCategoryMainThreadMs}ms", openCategoryMainThreadMs < 50)
+
+        // 2. Measure optimistic 0ms settings toggle latency on main thread
+        var themeToggleMainThreadMs = 0L
+        composeTestRule.runOnUiThread {
+            val t0 = System.nanoTime()
+            viewModel.setShowHiddenFiles(true)
+            viewModel.setShowThumbnails(true)
+            themeToggleMainThreadMs = (System.nanoTime() - t0) / 1_000_000
+        }
+        assertTrue("Optimistic settings toggle must complete in < 20ms, took ${themeToggleMainThreadMs}ms", themeToggleMainThreadMs < 20)
+
+        // 3. Verify rapid typing in search box is debounced and does not flood Room DB
+        viewModel.dao.clearSearchHistory()
+        val rapidKeystrokes = listOf("re", "rep", "repo", "repor", "report", "report_2026")
+        composeTestRule.runOnUiThread {
+            for (partial in rapidKeystrokes) {
+                viewModel.updateSearchQuery(partial)
+            }
+        }
+        assertEquals("report_2026", viewModel.browserState.value.searchQuery)
+        // Wait for 350ms debounce window to elapse
+        delay(500L)
+        composeTestRule.waitForIdle()
+        // Only the final debounced query should have been persisted
+        val savedQueries = viewModel.searchHistory.value
+        assertTrue("Debounced search should not write every intermediate keystroke", savedQueries.size <= 1)
+
+        // 4. Verify in-memory KeystoreCredentialVault cache serves repeated countStoredSecrets in < 50ms
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val vault = KeystoreCredentialVault(context)
+        vault.storeSecret(null, "cached_perf_token")
+        val cacheStartNs = System.nanoTime()
+        repeat(100) {
+            vault.countStoredSecrets()
+        }
+        val cacheElapsedMs = (System.nanoTime() - cacheStartNs) / 1_000_000
+        assertTrue("100 cached vault count calls should take < 50ms, took ${cacheElapsedMs}ms", cacheElapsedMs < 50)
+
+        // 5. Verify parallel two-stage duplicate detection across 80 same-size 64 KB files
+        val tempDir = Files.createTempDirectory("openfile_parallel_dup_bench").toFile()
+        try {
+            val candidates = mutableListOf<com.example.core.model.FileReference>()
+            val baseSize = 64 * 1024
+            for (group in 1..20) {
+                val payload = ByteArray(baseSize) { idx -> ((idx + group * 13) and 0xFF).toByte() }
+                for (copy in 1..2) {
+                    val f = File(tempDir, "dup_${group}_$copy.bin").apply { writeBytes(payload) }
+                    candidates.add(viewModel.localProvider.toFileReference(f))
+                }
+            }
+            for (u in 1..40) {
+                val uniquePayload = ByteArray(baseSize) { idx -> ((idx * 7 + u * 31) and 0xFF).toByte() }
+                val f = File(tempDir, "unique_$u.bin").apply { writeBytes(uniquePayload) }
+                candidates.add(viewModel.localProvider.toFileReference(f))
+            }
+            val dupStartMs = System.currentTimeMillis()
+            val groups = com.example.core.filesystem.ChecksumAndDuplicateEngine.findDuplicates(candidates, viewModel.localProvider)
+            val dupElapsedMs = System.currentTimeMillis() - dupStartMs
+            assertEquals(20, groups.size)
+            assertTrue("Expected parallel duplicate scan of 80 files < 1500ms, took ${dupElapsedMs}ms", dupElapsedMs < 1500)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `File Manager Plus home dashboard 12-tile grid and bottom selection and clipboard bars work smoothly`() {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+
+        // 1. Verify File Manager + 12-tile grid tags and Storage Analysis card on Home screen
+        val expectedTiles = listOf(
+            "shortcut_downloads",
+            "shortcut_images",
+            "shortcut_audio",
+            "shortcut_videos",
+            "shortcut_documents",
+            "shortcut_applications",
+            "shortcut_recent_files",
+            "shortcut_archives",
+            "shortcut_large_files",
+            "home_cloud_button",
+            "home_network_button",
+            "home_access_pc_button"
+        )
+        for (tag in expectedTiles) {
+            composeTestRule.onNodeWithTag(tag).assertExists()
+        }
+        composeTestRule.onNodeWithTag("home_analyzer_button").assertExists()
+
+        // 2. Verify 'Remote' tile opens NetworkScreen on tab 1 (Remote Connections)
+        composeTestRule.runOnUiThread {
+            viewModel.openNetworkTab(1)
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("network_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("network_add_profile_button").assertIsDisplayed()
+
+        // 3. Verify 'Access from PC' opens NetworkScreen on tab 0 (Wi-Fi FTP Server)
+        composeTestRule.runOnUiThread {
+            viewModel.openNetworkTab(0)
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("network_tab_ftp_server").assertIsDisplayed()
+
+        // 4. Navigate to Internal Storage workspace, select 1 item, and verify Bottom Selection Bar (Copy, Move, Rename, Delete, Share, Compress)
+        val workspaceRef = viewModel.localProvider.toFileReference(viewModel.localProvider.getAppWorkspaceDirectory())
+        composeTestRule.runOnUiThread {
+            viewModel.openVolumeInBrowser(workspaceRef)
+        }
+        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            !viewModel.browserState.value.isLoading && viewModel.browserState.value.items.isNotEmpty()
+        }
+        composeTestRule.waitForIdle()
+
+        val firstItem = viewModel.browserState.value.items.first()
+        composeTestRule.runOnUiThread {
+            viewModel.toggleSelection(firstItem)
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("bottom_selection_bar").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("multiselect_copy").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("multiselect_cut").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("multiselect_rename").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("multiselect_delete").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("multiselect_share").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("multiselect_compress").assertIsDisplayed()
+
+        // 5. Tap Copy on the bottom selection bar -> verify Bottom Clipboard Bar appears with Paste Here
+        composeTestRule.onNodeWithTag("multiselect_copy").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("bottom_clipboard_bar").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("browser_paste_button").assertIsDisplayed()
+
+        // 6. Navigate to Cloud Storage -> tap Connect on OneDrive -> verify direct in-app Web Login & Storage Portal opens
+        composeTestRule.runOnUiThread {
+            viewModel.navigateToDestination(OpenFileDestination.CLOUD_STORAGE)
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("connect_ONEDRIVE").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("cloud_web_portal_view").assertIsDisplayed()
+
+        // Simulate user completing login on the webpage -> verify account is persisted under Connected Accounts
+        composeTestRule.runOnUiThread {
+            viewModel.onWebCloudAuthenticated(com.example.core.cloud.CloudProviderKind.ONEDRIVE, "user@outlook.com")
+        }
+        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            viewModel.cloudAccounts.value.any { it.provider == "ONEDRIVE" }
+        }
+        composeTestRule.onNodeWithTag("cloud_web_portal_close").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Connected Accounts").assertExists()
+        composeTestRule.onNodeWithTag("cloud_account_card_ONEDRIVE").assertExists()
+    }
 }
+
+
+

@@ -72,7 +72,9 @@ class AppManagerEngine(
             val label = runCatching { pm.getApplicationLabel(appInfo).toString() }
                 .getOrDefault(pkg.packageName)
             val sourceDir = appInfo.sourceDir ?: ""
-            val apkSize = if (sourceDir.isNotEmpty()) File(sourceDir).length() else 0L
+            val apkFile = if (sourceDir.isNotEmpty()) File(sourceDir) else null
+            val apkSize = apkFile?.length() ?: 0L
+            val canShare = apkFile != null && apkFile.canRead()
             val vCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 pkg.longVersionCode
             } else {
@@ -92,7 +94,8 @@ class AppManagerEngine(
                 lastUpdateTimeMs = pkg.lastUpdateTime,
                 isSystemApp = isSystem,
                 targetSdk = appInfo.targetSdkVersion,
-                minSdk = minSdk
+                minSdk = minSdk,
+                canShareApk = canShare
             )
         }.sortedBy { it.appName.lowercase() }
     }

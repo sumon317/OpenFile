@@ -253,7 +253,8 @@ data class InstalledAppInfo(
     val lastUpdateTimeMs: Long,
     val isSystemApp: Boolean,
     val targetSdk: Int,
-    val minSdk: Int
+    val minSdk: Int,
+    val canShareApk: Boolean = apkPath.isNotEmpty()
 )
 
 @Immutable

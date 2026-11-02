@@ -29,10 +29,13 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -58,13 +61,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.core.model.ProviderType
@@ -116,7 +123,10 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
     val isScanningLan by viewModel.isScanningLan.collectAsStateWithLifecycle()
     val sshHostKeyPrompt by viewModel.sshHostKeyPrompt.collectAsStateWithLifecycle()
     val activePkceSession by viewModel.activePkceSession.collectAsStateWithLifecycle()
+    val activeWebCloudProvider by viewModel.activeWebCloudProvider.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
+    val categoryCounts by viewModel.categoryCounts.collectAsStateWithLifecycle()
+    val selectedNetworkTab by viewModel.selectedNetworkTab.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -159,8 +169,17 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
         viewModel.clearStatusMessage()
     }
 
-    // Hardware Back navigation handling for browser stack & sub-destinations
-    BackHandler(enabled = currentDest != OpenFileDestination.HOME || browserState.isMultiSelectActive || browserState.inspectArchiveFile != null) {
+    // Hardware Back navigation handling for browser stack, active cloud web portal & sub-destinations
+    BackHandler(
+        enabled = currentDest != OpenFileDestination.HOME ||
+            browserState.isMultiSelectActive ||
+            browserState.inspectArchiveFile != null ||
+            activeWebCloudProvider != null
+    ) {
+        if (activeWebCloudProvider != null) {
+            viewModel.closeWebCloudPortal()
+            return@BackHandler
+        }
         val handledInBrowser = if (currentDest in setOf(
                 OpenFileDestination.INTERNAL_STORAGE,
                 OpenFileDestination.DOWNLOADS,
@@ -234,7 +253,9 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                         snackbarHostState = snackbarHostState,
                         onOpenDrawer = {},
                         onNavigateUp = {
-                            if (!viewModel.navigateUpInBrowser()) {
+                            if (activeWebCloudProvider != null) {
+                                viewModel.closeWebCloudPortal()
+                            } else if (!viewModel.navigateUpInBrowser()) {
                                 viewModel.navigateToDestination(OpenFileDestination.HOME)
                             }
                         },
@@ -268,6 +289,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                             isScanningLan = isScanningLan,
                             sshHostKeyPrompt = sshHostKeyPrompt,
                             activePkceSession = activePkceSession,
+                            categoryCounts = categoryCounts,
+                            selectedNetworkTab = selectedNetworkTab,
                             onRequestSafAccess = { safTreeLauncher.launch(null) }
                         )
                     }
@@ -341,7 +364,9 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                     snackbarHostState = snackbarHostState,
                     onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
                     onNavigateUp = {
-                        if (!viewModel.navigateUpInBrowser()) {
+                        if (activeWebCloudProvider != null) {
+                            viewModel.closeWebCloudPortal()
+                        } else if (!viewModel.navigateUpInBrowser()) {
                             viewModel.navigateToDestination(OpenFileDestination.HOME)
                         }
                     },
@@ -375,6 +400,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                         isScanningLan = isScanningLan,
                         sshHostKeyPrompt = sshHostKeyPrompt,
                         activePkceSession = activePkceSession,
+                        categoryCounts = categoryCounts,
+                        selectedNetworkTab = selectedNetworkTab,
                         onRequestSafAccess = { safTreeLauncher.launch(null) }
                     )
                 }
@@ -397,7 +424,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
         FilePreviewDialog(
             file = previewFile!!,
             onDismiss = { viewModel.closePreviewDialog() },
-            onOpenExternal = { viewModel.openWithExternalApp(it) }
+            onOpenExternal = { viewModel.openWithExternalApp(it, forceChooser = true) }
         )
     }
 
@@ -412,7 +439,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                 viewModel.appManager.installApkWithSystemInstaller(apkFile)
                     .onFailure { viewModel.showStatus("Install failed: ${it.message}") }
             },
-            onOpenExternal = { viewModel.openWithExternalApp(it) }
+            onOpenExternal = { viewModel.openWithExternalApp(it, forceChooser = true) }
         )
     }
 
@@ -450,6 +477,8 @@ private fun MainScaffoldContent(
     onDismissUndo: () -> Unit,
     content: @Composable () -> Unit
 ) {
+    var showOverflowMenu by remember { mutableStateOf(false) }
+
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -481,8 +510,10 @@ private fun MainScaffoldContent(
                 title = {
                     Text(
                         text = if (currentDest == OpenFileDestination.HOME) "OpenFile" else currentDest.title,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 },
                 actions = {
@@ -517,19 +548,39 @@ private fun MainScaffoldContent(
                             Icon(Icons.Filled.SwapVert, contentDescription = "Transfer Queue")
                         }
                     }
-                    // Mount SAF Document Tree
-                    IconButton(
-                        onClick = onRequestSaf,
-                        modifier = Modifier.testTag("top_bar_saf_button")
-                    ) {
-                        Icon(Icons.Filled.FolderOpen, contentDescription = "Grant SAF Folder Access")
-                    }
                     // Refresh
                     IconButton(
                         onClick = onRefresh,
                         modifier = Modifier.testTag("top_bar_refresh_button")
                     ) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh directory")
+                    }
+                    // Overflow Menu (Mount SAF Folder, etc.)
+                    Box {
+                        IconButton(
+                            onClick = { showOverflowMenu = true },
+                            modifier = Modifier.testTag("top_bar_overflow_button")
+                        ) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "More options")
+                        }
+                        DropdownMenu(
+                            expanded = showOverflowMenu,
+                            onDismissRequest = { showOverflowMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Mount SAF Folder") },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    onRequestSaf()
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.FolderOpen,
+                                        contentDescription = null
+                                    )
+                                }
+                            )
+                        }
                     }
                 }
             )
@@ -602,6 +653,8 @@ private fun DestinationRouter(
     isScanningLan: Boolean,
     sshHostKeyPrompt: SshHostKeyPrompt?,
     activePkceSession: com.example.core.cloud.PkceSession?,
+    categoryCounts: Map<com.example.core.model.FileCategory, Int>,
+    selectedNetworkTab: Int,
     onRequestSafAccess: () -> Unit
 ) {
     when (currentDest) {
@@ -611,14 +664,18 @@ private fun DestinationRouter(
                 bookmarks = bookmarks,
                 recentFiles = recentFiles,
                 ftpState = ftpState,
+                categoryCounts = categoryCounts,
+                cloudAccountsCount = cloudAccounts.size,
+                remoteProfilesCount = networkProfiles.size,
                 onVolumeClick = { vol ->
-                    viewModel.navigateToDestination(OpenFileDestination.INTERNAL_STORAGE)
-                    viewModel.openDirectory(vol.rootReference)
+                    viewModel.openVolumeInBrowser(vol.rootReference)
                 },
                 onRequestSafAccess = onRequestSafAccess,
                 onNavigateDestination = { viewModel.navigateToDestination(it) },
                 onBookmarkClick = { bm -> viewModel.openBookmark(bm) },
-                onRecentFileClick = { recent -> viewModel.openRecentFile(recent) }
+                onRecentFileClick = { recent -> viewModel.openRecentFile(recent) },
+                onOpenAccessFromPc = { viewModel.openNetworkTab(0) },
+                onOpenRemoteConnections = { viewModel.openNetworkTab(1) }
             )
         }
 
@@ -661,7 +718,9 @@ private fun DestinationRouter(
                 onCompressSelected = { name, fmt -> viewModel.createArchiveFromSelection(name, fmt) },
                 onExtractArchive = { archiveRef, entries -> viewModel.extractArchiveToFolder(archiveRef, entries) },
                 onCloseArchiveInspector = { viewModel.navigateUpInBrowser() },
-                onDownloadRemoteItem = { viewModel.downloadRemoteItemToDownloads(it) }
+                onDownloadRemoteItem = { viewModel.downloadRemoteItemToDownloads(it) },
+                onOpenWithExternal = { viewModel.openWithExternalApp(it, forceChooser = true) },
+                onQuickPreview = { viewModel.openBuiltInPreview(it) }
             )
         }
 
@@ -778,11 +837,14 @@ private fun DestinationRouter(
                 onConnectProfile = { viewModel.openRemoteNetworkDirectory(it) },
                 onScanLan = { viewModel.scanLanForServers() },
                 onTrustSshHostKey = { viewModel.trustAndPinSshHostKey(it) },
-                onDismissSshPrompt = { viewModel.dismissSshHostKeyPrompt() }
+                onDismissSshPrompt = { viewModel.dismissSshHostKeyPrompt() },
+                initialTab = selectedNetworkTab
             )
         }
 
         OpenFileDestination.CLOUD_STORAGE -> {
+            val activeWebProvider by viewModel.activeWebCloudProvider.collectAsStateWithLifecycle()
+            val activeWebUrl by viewModel.activeWebCloudUrl.collectAsStateWithLifecycle()
             CloudStorageScreen(
                 accounts = cloudAccounts,
                 activePkceSession = activePkceSession,
@@ -790,13 +852,30 @@ private fun DestinationRouter(
                 onCompleteOAuth = { email, code, direct -> viewModel.completeCloudOAuthWithCode(email, code, direct) },
                 onOpenCloudAccount = { viewModel.openCloudDirectory(it) },
                 onDisconnectAccount = { viewModel.disconnectCloudAccount(it) },
-                onShowMessage = { viewModel.showStatus(it) }
+                onShowMessage = { viewModel.showStatus(it) },
+                onGoogleDriveAuthorized = { token, email -> viewModel.onGoogleDriveAuthorized(token, email) },
+                activeWebCloudProvider = activeWebProvider,
+                activeWebCloudUrl = activeWebUrl,
+                onConnectProviderDirect = { provider -> viewModel.connectCloudProviderDirect(provider) },
+                onWebCloudAuthenticated = { provider, label -> viewModel.onWebCloudAuthenticated(provider, label) },
+                onOAuthRedirectUri = { uri -> viewModel.handleOAuthRedirect(uri) },
+                onDownloadCloudWebFile = { url, cookies, ua, cd, mime ->
+                    viewModel.downloadFromCloudWebSession(url, cookies, ua, cd, mime)
+                },
+                onCloseWebCloudPortal = { viewModel.closeWebCloudPortal() }
             )
         }
 
         OpenFileDestination.SETTINGS -> {
-            val vaultCount = remember(networkProfiles, cloudAccounts, settings) {
-                viewModel.credentialVault.countStoredSecrets()
+            val vaultCount by produceState(
+                initialValue = 0,
+                networkProfiles,
+                cloudAccounts,
+                settings
+            ) {
+                value = withContext(Dispatchers.IO) {
+                    viewModel.credentialVault.countStoredSecrets()
+                }
             }
             SettingsScreen(
                 settings = settings,

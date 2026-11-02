@@ -1,5 +1,6 @@
 package com.example
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -26,6 +27,25 @@ class MainActivity : ComponentActivity() {
             ) {
                 OpenFileAppShell(viewModel = viewModel)
             }
+        }
+        if (savedInstanceState == null) handleOAuthIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.refreshStorageVolumes()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleOAuthIntent(intent)
+    }
+
+    private fun handleOAuthIntent(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (intent.action == Intent.ACTION_VIEW && data.scheme == "com.openfile.manager") {
+            viewModel.handleOAuthRedirect(data)
         }
     }
 }

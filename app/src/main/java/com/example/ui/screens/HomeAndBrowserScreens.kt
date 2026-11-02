@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,9 +23,11 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Analytics
@@ -33,6 +36,7 @@ import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.ContentPaste
@@ -40,6 +44,7 @@ import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.GridView
@@ -47,8 +52,10 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lan
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material.icons.filled.VideoFile
@@ -76,10 +83,15 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -122,7 +134,12 @@ fun HomeScreen(
     onRequestSafAccess: () -> Unit,
     onNavigateDestination: (OpenFileDestination) -> Unit,
     onBookmarkClick: (BookmarkEntity) -> Unit,
-    onRecentFileClick: (RecentFileEntity) -> Unit
+    onRecentFileClick: (RecentFileEntity) -> Unit,
+    categoryCounts: Map<FileCategory, Int> = emptyMap(),
+    cloudAccountsCount: Int = 0,
+    remoteProfilesCount: Int = 0,
+    onOpenAccessFromPc: () -> Unit = { onNavigateDestination(OpenFileDestination.NETWORK) },
+    onOpenRemoteConnections: () -> Unit = { onNavigateDestination(OpenFileDestination.NETWORK) }
 ) {
     LazyColumn(
         modifier = Modifier
@@ -140,7 +157,7 @@ fun HomeScreen(
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onNavigateDestination(OpenFileDestination.NETWORK) }
+                        .clickable { onOpenAccessFromPc() }
                 ) {
                     Row(
                         modifier = Modifier
@@ -150,12 +167,13 @@ fun HomeScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Filled.Lan, contentDescription = null)
+                            Icon(Icons.Filled.Computer, contentDescription = null)
                             Spacer(modifier = Modifier.width(10.dp))
                             Column {
                                 Text(
-                                    text = "Local Wi-Fi FTP Server Active",
-                                    style = MaterialTheme.typography.titleSmall
+                                    text = "Access from PC Active",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
                                     text = ftpState.connectionUrl,
@@ -169,36 +187,35 @@ fun HomeScreen(
             }
         }
 
-        // Section 1: Storage Volumes & SAF Grants
+        // Section 1: Storage Volumes (File Manager + Top Storage Cards)
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Storage Devices", style = MaterialTheme.typography.titleMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(
-                        onClick = onRequestSafAccess,
-                        modifier = Modifier.testTag("home_add_saf_button")
-                    ) {
-                        Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Mount SAF Folder")
-                    }
-                    TextButton(
-                        onClick = { onNavigateDestination(OpenFileDestination.STORAGE_ANALYSIS) },
-                        modifier = Modifier.testTag("home_analyzer_button")
-                    ) {
-                        Icon(Icons.Filled.Analytics, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Analyze")
-                    }
+                Text(
+                    text = "Storage Devices",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                TextButton(
+                    onClick = { onNavigateDestination(OpenFileDestination.STORAGE_ANALYSIS) },
+                    modifier = Modifier.testTag("home_analyzer_button")
+                ) {
+                    Icon(Icons.Filled.Analytics, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Analyze")
                 }
             }
         }
 
-        items(volumes, key = { it.id }) { vol ->
+        items(
+            items = volumes,
+            key = { it.id },
+            contentType = { "volume_card" }
+        ) { vol ->
             val barColor = when {
                 vol.usageFraction > 0.88f -> StorageDangerCrimson
                 vol.usageFraction > 0.75f -> StorageWarningOrange
@@ -211,6 +228,7 @@ fun HomeScreen(
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow
                 ),
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("volume_card_${vol.id}")
@@ -227,14 +245,30 @@ fun HomeScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = if (vol.isSafGrantRevoked) Icons.Filled.Warning else Icons.Filled.Storage,
-                                contentDescription = null,
-                                tint = if (vol.isSafGrantRevoked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (vol.isSafGrantRevoked) MaterialTheme.colorScheme.error.copy(alpha = 0.15f)
+                                        else barColor.copy(alpha = 0.15f)
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (vol.isSafGrantRevoked) Icons.Filled.Warning else Icons.Filled.Storage,
+                                    contentDescription = null,
+                                    tint = if (vol.isSafGrantRevoked) MaterialTheme.colorScheme.error else barColor,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
                             Column {
-                                Text(vol.title, style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    text = vol.title,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
                                 Text(
                                     text = vol.subtitle,
                                     style = MaterialTheme.typography.bodySmall,
@@ -246,26 +280,30 @@ fun HomeScreen(
                         }
                         Text(
                             text = "${(vol.usageFraction * 100).toInt()}%",
-                            style = MaterialTheme.typography.labelLarge,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
                             color = barColor
                         )
                     }
                     LinearProgressIndicator(
                         progress = { vol.usageFraction },
                         color = barColor,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(3.dp))
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "${formatByteSize(vol.usedBytes)} used",
+                            text = "${formatByteSize(vol.usedBytes)} / ${formatByteSize(vol.totalBytes)}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "${formatByteSize(vol.availableBytes)} free of ${formatByteSize(vol.totalBytes)}",
+                            text = "${formatByteSize(vol.availableBytes)} free",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -274,35 +312,135 @@ fun HomeScreen(
             }
         }
 
-        // Section 2: Category Grid (9 shortcuts)
+        // Section 2: File Manager + Symmetrical 3-Column Circular-Badge Grid
         item {
-            Text("Categories & Quick Access", style = MaterialTheme.typography.titleMedium)
-            Spacer(modifier = Modifier.height(8.dp))
-            val shortcuts = listOf(
-                Triple("Downloads", Icons.Filled.Download, OpenFileDestination.DOWNLOADS),
-                Triple("Images", Icons.Filled.Image, OpenFileDestination.IMAGES),
-                Triple("Videos", Icons.Filled.VideoFile, OpenFileDestination.VIDEOS),
-                Triple("Audio", Icons.Filled.AudioFile, OpenFileDestination.AUDIO),
-                Triple("Documents", Icons.Filled.Description, OpenFileDestination.DOCUMENTS),
-                Triple("Apps & APKs", Icons.Filled.Android, OpenFileDestination.APPLICATIONS),
-                Triple("Archives", Icons.Filled.FolderZip, OpenFileDestination.ARCHIVES),
-                Triple("Large Files", Icons.Filled.Storage, OpenFileDestination.LARGE_FILES),
-                Triple("Recent", Icons.Filled.History, OpenFileDestination.RECENT_FILES)
+            Text(
+                text = "Categories & Quick Access",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
             )
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                shortcuts.chunked(3).forEach { rowItems ->
+            Spacer(modifier = Modifier.height(10.dp))
+
+            fun countLabel(cat: FileCategory, fallback: String): String {
+                val c = categoryCounts[cat]
+                return if (c != null) "$c items" else fallback
+            }
+
+            val gridTiles = listOf(
+                HomeTileSpec(
+                    label = "Downloads",
+                    subtitle = countLabel(FileCategory.DOWNLOADS, "Folder"),
+                    icon = Icons.Filled.Download,
+                    badgeColor = Color(0xFF26A69A),
+                    testTag = "shortcut_${OpenFileDestination.DOWNLOADS.route}",
+                    onClick = { onNavigateDestination(OpenFileDestination.DOWNLOADS) }
+                ),
+                HomeTileSpec(
+                    label = "Images",
+                    subtitle = countLabel(FileCategory.IMAGES, "Photos"),
+                    icon = Icons.Filled.Image,
+                    badgeColor = Color(0xFFFF7043),
+                    testTag = "shortcut_${OpenFileDestination.IMAGES.route}",
+                    onClick = { onNavigateDestination(OpenFileDestination.IMAGES) }
+                ),
+                HomeTileSpec(
+                    label = "Audio",
+                    subtitle = countLabel(FileCategory.AUDIO, "Music"),
+                    icon = Icons.Filled.AudioFile,
+                    badgeColor = Color(0xFFAB47BC),
+                    testTag = "shortcut_${OpenFileDestination.AUDIO.route}",
+                    onClick = { onNavigateDestination(OpenFileDestination.AUDIO) }
+                ),
+                HomeTileSpec(
+                    label = "Videos",
+                    subtitle = countLabel(FileCategory.VIDEOS, "Movies"),
+                    icon = Icons.Filled.VideoFile,
+                    badgeColor = Color(0xFFEF5350),
+                    testTag = "shortcut_${OpenFileDestination.VIDEOS.route}",
+                    onClick = { onNavigateDestination(OpenFileDestination.VIDEOS) }
+                ),
+                HomeTileSpec(
+                    label = "Documents",
+                    subtitle = countLabel(FileCategory.DOCUMENTS, "PDF & Office"),
+                    icon = Icons.Filled.Description,
+                    badgeColor = Color(0xFF42A5F5),
+                    testTag = "shortcut_${OpenFileDestination.DOCUMENTS.route}",
+                    onClick = { onNavigateDestination(OpenFileDestination.DOCUMENTS) }
+                ),
+                HomeTileSpec(
+                    label = "Apps & APKs",
+                    subtitle = categoryCounts[FileCategory.APPLICATIONS]?.let { "$it apps" } ?: "Installed",
+                    icon = Icons.Filled.Android,
+                    badgeColor = ApkGreen,
+                    testTag = "shortcut_${OpenFileDestination.APPLICATIONS.route}",
+                    onClick = { onNavigateDestination(OpenFileDestination.APPLICATIONS) }
+                ),
+                HomeTileSpec(
+                    label = "New Files",
+                    subtitle = countLabel(FileCategory.RECENT_FILES, "Recent"),
+                    icon = Icons.Filled.History,
+                    badgeColor = Color(0xFF29B6F6),
+                    testTag = "shortcut_${OpenFileDestination.RECENT_FILES.route}",
+                    onClick = { onNavigateDestination(OpenFileDestination.RECENT_FILES) }
+                ),
+                HomeTileSpec(
+                    label = "Archives",
+                    subtitle = countLabel(FileCategory.ARCHIVES, "ZIP / 7Z"),
+                    icon = Icons.Filled.FolderZip,
+                    badgeColor = FolderAmber,
+                    testTag = "shortcut_${OpenFileDestination.ARCHIVES.route}",
+                    onClick = { onNavigateDestination(OpenFileDestination.ARCHIVES) }
+                ),
+                HomeTileSpec(
+                    label = "Large Files",
+                    subtitle = countLabel(FileCategory.LARGE_FILES, "> 25 MB"),
+                    icon = Icons.Filled.Storage,
+                    badgeColor = Color(0xFFEC407A),
+                    testTag = "shortcut_${OpenFileDestination.LARGE_FILES.route}",
+                    onClick = { onNavigateDestination(OpenFileDestination.LARGE_FILES) }
+                ),
+                HomeTileSpec(
+                    label = "Cloud Drives",
+                    subtitle = if (cloudAccountsCount > 0) "$cloudAccountsCount connected" else "Drive / OneDrive",
+                    icon = Icons.Filled.Cloud,
+                    badgeColor = Color(0xFF5C6BC0),
+                    testTag = "home_cloud_button",
+                    onClick = { onNavigateDestination(OpenFileDestination.CLOUD_STORAGE) }
+                ),
+                HomeTileSpec(
+                    label = "Remote",
+                    subtitle = if (remoteProfilesCount > 0) "$remoteProfilesCount server(s)" else "SMB / SFTP / FTP",
+                    icon = Icons.Filled.Lan,
+                    badgeColor = Color(0xFFFFA726),
+                    testTag = "home_network_button",
+                    onClick = onOpenRemoteConnections
+                ),
+                HomeTileSpec(
+                    label = "Access from PC",
+                    subtitle = if (ftpState.isRunning) "Server Active" else "Wi-Fi FTP",
+                    icon = Icons.Filled.Computer,
+                    badgeColor = Color(0xFF00ACC1),
+                    testTag = "home_access_pc_button",
+                    onClick = onOpenAccessFromPc
+                )
+            )
+
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                gridTiles.chunked(3).forEach { rowItems ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        rowItems.forEach { (label, icon, dest) ->
+                        rowItems.forEach { tile ->
                             CategoryShortcutCard(
-                                label = label,
-                                icon = icon,
-                                onClick = { onNavigateDestination(dest) },
+                                label = tile.label,
+                                subtitle = tile.subtitle,
+                                icon = tile.icon,
+                                badgeColor = tile.badgeColor,
+                                onClick = tile.onClick,
                                 modifier = Modifier
                                     .weight(1f)
-                                    .testTag("shortcut_${dest.route}")
+                                    .testTag(tile.testTag)
                             )
                         }
                     }
@@ -310,31 +448,60 @@ fun HomeScreen(
             }
         }
 
-        // Section 3: Network & Cloud Connections
+        // Section 3: File Manager + Dedicated Storage Analysis Card
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            Card(
+                onClick = { onNavigateDestination(OpenFileDestination.STORAGE_ANALYSIS) },
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                ),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                FilledTonalButton(
-                    onClick = { onNavigateDestination(OpenFileDestination.NETWORK) },
+                Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .testTag("home_network_button")
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Icon(Icons.Filled.Lan, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Network & FTP")
-                }
-                FilledTonalButton(
-                    onClick = { onNavigateDestination(OpenFileDestination.CLOUD_STORAGE) },
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("home_cloud_button")
-                ) {
-                    Icon(Icons.Filled.Cloud, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Cloud Drives")
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Analytics,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Storage Analysis",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Clean large files, duplicate files, and space hogs",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    FilledTonalButton(
+                        onClick = { onNavigateDestination(OpenFileDestination.STORAGE_ANALYSIS) }
+                    ) {
+                        Text("Analyze")
+                    }
                 }
             }
         }
@@ -347,7 +514,11 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Pinned Bookmarks", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = "Pinned Bookmarks",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
                     TextButton(onClick = { onNavigateDestination(OpenFileDestination.BOOKMARKS) }) {
                         Text("View All")
                     }
@@ -381,7 +552,11 @@ fun HomeScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Recently Opened Files", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = "Recently Opened Files",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
                 if (recentFiles.isNotEmpty()) {
                     TextButton(onClick = { onNavigateDestination(OpenFileDestination.RECENT_FILES) }) {
                         Text("More")
@@ -399,7 +574,11 @@ fun HomeScreen(
                 )
             }
         } else {
-            items(recentFiles.take(8), key = { it.uriOrPath }) { recent ->
+            items(
+                items = recentFiles.take(8),
+                key = { it.uriOrPath },
+                contentType = { "recent_file" }
+            ) { recent ->
                 Surface(
                     onClick = { onRecentFileClick(recent) },
                     shape = RoundedCornerShape(10.dp),
@@ -440,10 +619,21 @@ fun HomeScreen(
     }
 }
 
+private data class HomeTileSpec(
+    val label: String,
+    val subtitle: String,
+    val icon: ImageVector,
+    val badgeColor: Color,
+    val testTag: String,
+    val onClick: () -> Unit
+)
+
 @Composable
 private fun CategoryShortcutCard(
     label: String,
+    subtitle: String,
     icon: ImageVector,
+    badgeColor: Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -452,25 +642,41 @@ private fun CategoryShortcutCard(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow
         ),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(14.dp),
         modifier = modifier
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 12.dp, horizontal = 8.dp),
+                .padding(vertical = 12.dp, horizontal = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(24.dp)
-            )
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(badgeColor.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = label,
+                    tint = badgeColor,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -510,7 +716,9 @@ fun FileBrowserScreen(
     onCompressSelected: (String, ArchiveCreationFormat) -> Unit,
     onExtractArchive: (FileReference, Set<String>?) -> Unit,
     onCloseArchiveInspector: () -> Unit,
-    onDownloadRemoteItem: (FileReference) -> Unit
+    onDownloadRemoteItem: (FileReference) -> Unit,
+    onOpenWithExternal: ((FileReference) -> Unit)? = null,
+    onQuickPreview: ((FileReference) -> Unit)? = null
 ) {
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var showNewFileDialog by remember { mutableStateOf(false) }
@@ -522,18 +730,30 @@ fun FileBrowserScreen(
 
     val bookmarkedPaths = remember(bookmarks) { bookmarks.map { it.uriOrPath }.toSet() }
 
-    val filteredItems = remember(
+    val initialUnfiltered = remember(browserState.items, settings.showHiddenFiles) {
+        if (settings.showHiddenFiles) browserState.items
+        else browserState.items.filter { !it.isHidden }
+    }
+
+    val filteredItems by produceState(
+        initialValue = initialUnfiltered,
         browserState.items,
         browserState.searchQuery,
         extensionFilter,
         settings.showHiddenFiles
     ) {
-        FileSortAndFilterEngine.filterFiles(
-            files = browserState.items,
-            query = browserState.searchQuery,
-            extensionFilter = extensionFilter,
-            showHidden = settings.showHiddenFiles
-        )
+        value = if (browserState.searchQuery.isBlank() && extensionFilter == null) {
+            initialUnfiltered
+        } else {
+            withContext(Dispatchers.Default) {
+                FileSortAndFilterEngine.filterFiles(
+                    files = browserState.items,
+                    query = browserState.searchQuery,
+                    extensionFilter = extensionFilter,
+                    showHidden = settings.showHiddenFiles
+                )
+            }
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -541,25 +761,26 @@ fun FileBrowserScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 6.dp),
+                .padding(horizontal = 12.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             OutlinedTextField(
                 value = browserState.searchQuery,
                 onValueChange = onSearchQueryChange,
-                placeholder = { Text("Search name or extension...") },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                placeholder = { Text("Search...", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
                 trailingIcon = {
                     if (browserState.searchQuery.isNotEmpty()) {
                         IconButton(onClick = { onSearchQueryChange("") }) {
-                            Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                            Icon(Icons.Filled.Close, contentDescription = "Clear search", modifier = Modifier.size(18.dp))
                         }
                     }
                 },
                 singleLine = true,
                 modifier = Modifier
                     .weight(1f)
+                    .height(48.dp)
                     .testTag("browser_search_input")
             )
 
@@ -568,11 +789,12 @@ fun FileBrowserScreen(
                 onClick = {
                     onToggleViewMode(if (settings.defaultViewMode == ViewMode.LIST) ViewMode.GRID else ViewMode.LIST)
                 },
-                modifier = Modifier.testTag("browser_toggle_view_mode")
+                modifier = Modifier.size(38.dp).testTag("browser_toggle_view_mode")
             ) {
                 Icon(
                     imageVector = if (settings.defaultViewMode == ViewMode.LIST) Icons.Filled.GridView else Icons.AutoMirrored.Filled.ViewList,
-                    contentDescription = "Toggle List or Grid view"
+                    contentDescription = "Toggle List or Grid view",
+                    modifier = Modifier.size(20.dp)
                 )
             }
 
@@ -580,9 +802,9 @@ fun FileBrowserScreen(
             Box {
                 IconButton(
                     onClick = { showSortMenu = true },
-                    modifier = Modifier.testTag("browser_sort_button")
+                    modifier = Modifier.size(38.dp).testTag("browser_sort_button")
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort files")
+                    Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort files", modifier = Modifier.size(20.dp))
                 }
                 DropdownMenu(
                     expanded = showSortMenu,
@@ -625,15 +847,15 @@ fun FileBrowserScreen(
             if (browserState.currentDirectory != null) {
                 IconButton(
                     onClick = { showNewFolderDialog = true },
-                    modifier = Modifier.testTag("browser_new_folder_button")
+                    modifier = Modifier.size(38.dp).testTag("browser_new_folder_button")
                 ) {
-                    Icon(Icons.Filled.CreateNewFolder, contentDescription = "New Folder")
+                    Icon(Icons.Filled.CreateNewFolder, contentDescription = "New Folder", modifier = Modifier.size(20.dp))
                 }
                 IconButton(
                     onClick = { showNewFileDialog = true },
-                    modifier = Modifier.testTag("browser_new_file_button")
+                    modifier = Modifier.size(38.dp).testTag("browser_new_file_button")
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = "New Text File")
+                    Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = "New Text File", modifier = Modifier.size(20.dp))
                 }
             }
         }
@@ -689,41 +911,7 @@ fun FileBrowserScreen(
             }
         }
 
-        // Clipboard Paste Banner if items are waiting in clipboard
-        if (clipboard.isNotEmpty && browserState.currentDirectory != null) {
-            Surface(
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "${clipboard.items.size} item(s) ready to ${if (clipboard.mode == ClipboardMode.CUT) "Move" else "Copy"}",
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        TextButton(onClick = onClearClipboard) {
-                            Text("Cancel")
-                        }
-                        Button(
-                            onClick = onPasteHere,
-                            modifier = Modifier.testTag("browser_paste_button")
-                        ) {
-                            Icon(Icons.Filled.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Paste Here")
-                        }
-                    }
-                }
-            }
-        }
-
-        // Multi-Selection Action Bar
+        // Multi-Selection Top Header Strip
         if (browserState.isMultiSelectActive) {
             Surface(
                 color = MaterialTheme.colorScheme.primaryContainer,
@@ -732,7 +920,7 @@ fun FileBrowserScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -742,53 +930,18 @@ fun FileBrowserScreen(
                         }
                         Text(
                             text = "${browserState.selectedUris.size} selected",
-                            style = MaterialTheme.typography.titleSmall
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
                         )
                     }
-                    Row {
-                        IconButton(onClick = onSelectAll, modifier = Modifier.testTag("multiselect_select_all")) {
-                            Icon(Icons.Filled.SelectAll, contentDescription = "Select all")
-                        }
-                        IconButton(
-                            onClick = {
-                                val sel = browserState.items.filter { it.uriOrPath in browserState.selectedUris }
-                                onCopyItems(sel, ClipboardMode.COPY)
-                            },
-                            modifier = Modifier.testTag("multiselect_copy")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(
+                            onClick = onSelectAll,
+                            modifier = Modifier.testTag("multiselect_select_all")
                         ) {
-                            Icon(Icons.Filled.ContentCopy, contentDescription = "Copy selected")
-                        }
-                        IconButton(
-                            onClick = {
-                                val sel = browserState.items.filter { it.uriOrPath in browserState.selectedUris }
-                                onCopyItems(sel, ClipboardMode.CUT)
-                            },
-                            modifier = Modifier.testTag("multiselect_cut")
-                        ) {
-                            Icon(Icons.Filled.ContentCut, contentDescription = "Cut selected")
-                        }
-                        IconButton(
-                            onClick = { showCompressDialog = true },
-                            modifier = Modifier.testTag("multiselect_compress")
-                        ) {
-                            Icon(Icons.Filled.FolderZip, contentDescription = "Compress to Archive")
-                        }
-                        IconButton(
-                            onClick = {
-                                val sel = browserState.items.filter { it.uriOrPath in browserState.selectedUris }
-                                if (settings.confirmBeforeDelete) {
-                                    deleteConfirmTargets = sel
-                                } else {
-                                    onDeleteItems(sel, settings.moveToTrashByDefault)
-                                }
-                            },
-                            modifier = Modifier.testTag("multiselect_delete")
-                        ) {
-                            Icon(
-                                Icons.Filled.Delete,
-                                contentDescription = "Delete selected",
-                                tint = MaterialTheme.colorScheme.error
-                            )
+                            Icon(Icons.Filled.SelectAll, contentDescription = "Select all", modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Select All")
                         }
                     }
                 }
@@ -838,7 +991,11 @@ fun FileBrowserScreen(
                     }
                 }
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(browserState.archiveEntries, key = { it.entryPath }) { entry ->
+                    items(
+                        items = browserState.archiveEntries,
+                        key = { it.entryPath },
+                        contentType = { "archive_entry" }
+                    ) { entry ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1000,7 +1157,9 @@ fun FileBrowserScreen(
                                         onToggleBookmark = { onToggleBookmark(item) },
                                         onShare = { onShareItem(item) },
                                         onProperties = { onOpenProperties(item) },
-                                        onDownloadRemote = if (isRemote) ({ onDownloadRemoteItem(item) }) else null
+                                        onDownloadRemote = if (isRemote) ({ onDownloadRemoteItem(item) }) else null,
+                                        onOpenWith = if (!isRemote && onOpenWithExternal != null) ({ onOpenWithExternal(item) }) else null,
+                                        onQuickPreview = if (onQuickPreview != null) ({ onQuickPreview(item) }) else null
                                     )
                                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                                 }
@@ -1067,18 +1226,128 @@ fun FileBrowserScreen(
             }
         }
 
-        // KDE Dolphin-Style Directory Summary Footer Bar
-        val dirSummary = remember(filteredItems) {
-            var folders = 0
-            var files = 0
-            var totalBytes = 0L
-            for (item in filteredItems) {
-                if (item.isDirectory) folders++ else {
-                    files++
-                    totalBytes += item.sizeBytes
+        // File Manager + Contextual Bottom Selection Toolbar (Copy, Move, Rename, Delete, Share, Compress)
+        if (browserState.isMultiSelectActive) {
+            val selectedItemsList = remember(browserState.items, browserState.selectedUris) {
+                browserState.items.filter { it.uriOrPath in browserState.selectedUris }
+            }
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                tonalElevation = 6.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("bottom_selection_bar")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BottomActionBarItem(
+                        icon = Icons.Filled.ContentCopy,
+                        label = "Copy",
+                        testTag = "multiselect_copy",
+                        onClick = { onCopyItems(selectedItemsList, ClipboardMode.COPY) }
+                    )
+                    BottomActionBarItem(
+                        icon = Icons.Filled.ContentCut,
+                        label = "Move",
+                        testTag = "multiselect_cut",
+                        onClick = { onCopyItems(selectedItemsList, ClipboardMode.CUT) }
+                    )
+                    if (selectedItemsList.size == 1) {
+                        BottomActionBarItem(
+                            icon = Icons.Filled.Edit,
+                            label = "Rename",
+                            testTag = "multiselect_rename",
+                            onClick = { renameTarget = selectedItemsList.first() }
+                        )
+                    }
+                    BottomActionBarItem(
+                        icon = Icons.Filled.Delete,
+                        label = "Delete",
+                        testTag = "multiselect_delete",
+                        tint = MaterialTheme.colorScheme.error,
+                        onClick = {
+                            if (settings.confirmBeforeDelete) {
+                                deleteConfirmTargets = selectedItemsList
+                            } else {
+                                onDeleteItems(selectedItemsList, settings.moveToTrashByDefault)
+                            }
+                        }
+                    )
+                    if (selectedItemsList.size == 1) {
+                        BottomActionBarItem(
+                            icon = Icons.Filled.Share,
+                            label = "Share",
+                            testTag = "multiselect_share",
+                            onClick = { onShareItem(selectedItemsList.first()) }
+                        )
+                    }
+                    BottomActionBarItem(
+                        icon = Icons.Filled.FolderZip,
+                        label = "Compress",
+                        testTag = "multiselect_compress",
+                        onClick = { showCompressDialog = true }
+                    )
                 }
             }
-            Triple(folders, files, totalBytes)
+        }
+
+        // File Manager + Persistent Bottom Clipboard Paste Bar
+        if (clipboard.isNotEmpty && browserState.currentDirectory != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                tonalElevation = 4.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("bottom_clipboard_bar")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "${clipboard.items.size} item(s) ready to ${if (clipboard.mode == ClipboardMode.CUT) "Move" else "Copy"}",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        TextButton(onClick = onClearClipboard) {
+                            Text("Cancel")
+                        }
+                        Button(
+                            onClick = onPasteHere,
+                            modifier = Modifier.testTag("browser_paste_button")
+                        ) {
+                            Icon(Icons.Filled.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Paste Here")
+                        }
+                    }
+                }
+            }
+        }
+
+        // KDE Dolphin-Style Directory Summary Footer Bar
+        val dirSummary by produceState(initialValue = Triple(0, 0, 0L), filteredItems) {
+            value = withContext(Dispatchers.Default) {
+                var folders = 0
+                var files = 0
+                var totalBytes = 0L
+                for (item in filteredItems) {
+                    if (item.isDirectory) folders++ else {
+                        files++
+                        totalBytes += item.sizeBytes
+                    }
+                }
+                Triple(folders, files, totalBytes)
+            }
         }
         Surface(
             color = MaterialTheme.colorScheme.surfaceContainer,
@@ -1311,3 +1580,35 @@ fun FileBrowserScreen(
         )
     }
 }
+
+@Composable
+private fun BottomActionBarItem(
+    icon: ImageVector,
+    label: String,
+    testTag: String,
+    tint: Color = MaterialTheme.colorScheme.onSurface,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .testTag(testTag),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = tint,
+            modifier = Modifier.size(22.dp)
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = tint
+        )
+    }
+}
+

@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -58,6 +59,7 @@ import com.example.core.storage.StorageAnalyzerEngine
 import com.example.ui.theme.ThemeMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -140,7 +142,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     val cloudAccounts: StateFlow<List<CloudAccountEntity>> = dao.observeCloudAccounts().stateIn(
         viewModelScope,
-        SharingStarted.WhileSubscribed(5000),
+        SharingStarted.Eagerly,
         emptyList()
     )
 
@@ -168,11 +170,18 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         emptyList()
     )
 
-    val storageVolumes: StateFlow<List<StorageVolumeInfo>> = safGrants.combine(settings) { grants, _ ->
-        localProvider.getStorageVolumes(
-            safProvider = safProvider,
-            persistedGrantUris = grants.map { it.treeUriString to it.displayName }
-        )
+    private val _volumeRefreshTrigger = MutableStateFlow(0L)
+    fun refreshStorageVolumes() {
+        _volumeRefreshTrigger.value = System.currentTimeMillis()
+    }
+
+    val storageVolumes: StateFlow<List<StorageVolumeInfo>> = combine(safGrants, settings, _volumeRefreshTrigger) { grants, _, _ ->
+        withContext(Dispatchers.IO) {
+            localProvider.getStorageVolumes(
+                safProvider = safProvider,
+                persistedGrantUris = grants.map { it.treeUriString to it.displayName }
+            )
+        }
     }.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000),
@@ -188,6 +197,8 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     // Browser UI state
     private val _browserState = MutableStateFlow(BrowserUiState())
     val browserState: StateFlow<BrowserUiState> = _browserState.asStateFlow()
+    private var browseDirectoryJob: Job? = null
+    private var searchDebounceJob: Job? = null
 
     // Preview & Properties modals
     private val _previewFile = MutableStateFlow<FileReference?>(null)
@@ -233,9 +244,24 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     private val _sshHostKeyPrompt = MutableStateFlow<SshHostKeyPrompt?>(null)
     val sshHostKeyPrompt: StateFlow<SshHostKeyPrompt?> = _sshHostKeyPrompt.asStateFlow()
 
-    // Cloud PKCE session state
+    // Cloud PKCE session state & Direct In-App Web Cloud Login/Portal state
     private val _activePkceSession = MutableStateFlow<PkceSession?>(null)
     val activePkceSession: StateFlow<PkceSession?> = _activePkceSession.asStateFlow()
+
+    private val _activeWebCloudProvider = MutableStateFlow<CloudProviderKind?>(null)
+    val activeWebCloudProvider: StateFlow<CloudProviderKind?> = _activeWebCloudProvider.asStateFlow()
+
+    private val _activeWebCloudUrl = MutableStateFlow<String?>(null)
+    val activeWebCloudUrl: StateFlow<String?> = _activeWebCloudUrl.asStateFlow()
+
+    // File Manager + Home Category Counts & Instant Pre-warmed Category Cache
+    private val _categoryCounts = MutableStateFlow<Map<FileCategory, Int>>(emptyMap())
+    val categoryCounts: StateFlow<Map<FileCategory, Int>> = _categoryCounts.asStateFlow()
+    private val categoryCache = java.util.concurrent.ConcurrentHashMap<FileCategory, List<FileReference>>()
+
+    // Active tab inside NetworkScreen (0 = Access from PC / Wi-Fi FTP Server, 1 = Remote Connections)
+    private val _selectedNetworkTab = MutableStateFlow(0)
+    val selectedNetworkTab: StateFlow<Int> = _selectedNetworkTab.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -243,11 +269,39 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 _settings.value = persisted
             }
         }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             // Crash recovery: mark any stale RUNNING transfer jobs from a previous process death as INTERRUPTED
             dao.markRunningJobsAsInterrupted()
             openPrimaryStorageRoot()
+            refreshCategoryCountsAndPrewarm()
         }
+    }
+
+    fun refreshCategoryCountsAndPrewarm() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val thresholdBytes = _settings.value.largeFileThresholdMb * 1024L * 1024L
+            _categoryCounts.value = mediaStoreProvider.queryCategoryCounts(thresholdBytes)
+            // Pre-warm common categories in the background so tapping them on Home opens in 0ms
+            listOf(
+                FileCategory.IMAGES,
+                FileCategory.VIDEOS,
+                FileCategory.AUDIO,
+                FileCategory.DOCUMENTS,
+                FileCategory.ARCHIVES,
+                FileCategory.LARGE_FILES,
+                FileCategory.RECENT_FILES
+            ).forEach { cat ->
+                runCatching {
+                    val items = mediaStoreProvider.queryByCategory(cat, thresholdBytes)
+                    categoryCache[cat] = items
+                }
+            }
+        }
+    }
+
+    fun openNetworkTab(tabIndex: Int) {
+        _selectedNetworkTab.value = tabIndex
+        _currentDestination.value = OpenFileDestination.NETWORK
     }
 
     fun showStatus(message: String) {
@@ -265,7 +319,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     fun navigateToDestination(destination: OpenFileDestination) {
         _currentDestination.value = destination
         when (destination) {
-            OpenFileDestination.HOME -> {}
+            OpenFileDestination.HOME -> refreshCategoryCountsAndPrewarm()
             OpenFileDestination.INTERNAL_STORAGE -> openPrimaryStorageRoot()
             OpenFileDestination.DOWNLOADS -> openCategoryOrSpecialFolder(FileCategory.DOWNLOADS)
             OpenFileDestination.IMAGES -> openCategoryOrSpecialFolder(FileCategory.IMAGES)
@@ -285,16 +339,27 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun openVolumeInBrowser(rootReference: FileReference) {
+        _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
+        openDirectory(rootReference)
+    }
+
     fun openPrimaryStorageRoot() {
-        val rootDir = localProvider.getPrimaryRootDirectory()
-        openDirectory(localProvider.toFileReference(rootDir))
+        viewModelScope.launch {
+            val ref = withContext(Dispatchers.IO) {
+                val rootDir = localProvider.getPrimaryRootDirectory()
+                localProvider.toFileReference(rootDir)
+            }
+            openDirectory(ref)
+        }
     }
 
     fun openDirectory(directory: FileReference) {
+        browseDirectoryJob?.cancel()
         _browserState.value = _browserState.value.copy(
             currentDirectory = directory,
-            breadcrumbs = buildBreadcrumbs(directory),
             selectedUris = emptySet(),
+            searchQuery = "",
             isLoading = true,
             errorMessage = null,
             activeCategoryFilter = null,
@@ -303,29 +368,57 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             activeRemoteProfile = null,
             activeCloudAccount = null
         )
-        viewModelScope.launch {
+        browseDirectoryJob = viewModelScope.launch {
             val currentSettings = settings.value
+            val crumbs = withContext(Dispatchers.IO) { buildBreadcrumbs(directory) }
             val result = when (directory.providerType) {
                 ProviderType.SAF -> safProvider.listChildren(directory, currentSettings.showHiddenFiles)
                 else -> localProvider.listChildren(directory, currentSettings.showHiddenFiles)
             }
             result.fold(
                 onSuccess = { rawItems ->
-                    val sorted = FileSortAndFilterEngine.sortFiles(
-                        files = rawItems,
-                        field = currentSettings.defaultSortField,
-                        order = currentSettings.defaultSortOrder
-                    )
+                    val sorted = withContext(Dispatchers.Default) {
+                        FileSortAndFilterEngine.sortFiles(
+                            files = rawItems,
+                            field = currentSettings.defaultSortField,
+                            order = currentSettings.defaultSortOrder
+                        )
+                    }
                     _browserState.value = _browserState.value.copy(
                         currentDirectory = directory,
-                        breadcrumbs = buildBreadcrumbs(directory),
+                        breadcrumbs = crumbs,
                         items = sorted,
                         isLoading = false,
                         errorMessage = null
                     )
+                    // Non-blocking background pass to enrich local folder rows with child counts (File Manager + style)
+                    if (directory.providerType == ProviderType.LOCAL && sorted.any { it.isDirectory }) {
+                        val enriched = withContext(Dispatchers.IO) {
+                            sorted.map { item ->
+                                if (item.isDirectory && item.metadata["childCount"] == null) {
+                                    val count = runCatching {
+                                        val list = File(item.uriOrPath).list()
+                                        if (currentSettings.showHiddenFiles) list?.size else list?.count { !it.startsWith(".") }
+                                    }.getOrNull()
+                                    if (count != null) {
+                                        item.copy(metadata = item.metadata + ("childCount" to count.toString()))
+                                    } else {
+                                        item
+                                    }
+                                } else {
+                                    item
+                                }
+                            }
+                        }
+                        if (_browserState.value.currentDirectory?.uriOrPath == directory.uriOrPath) {
+                            _browserState.value = _browserState.value.copy(items = enriched)
+                        }
+                    }
                 },
                 onFailure = { err ->
                     _browserState.value = _browserState.value.copy(
+                        currentDirectory = directory,
+                        breadcrumbs = crumbs,
                         isLoading = false,
                         errorMessage = err.message ?: "Unable to read directory"
                     )
@@ -374,16 +467,23 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
 
         if (current.providerType == ProviderType.LOCAL) {
+            val parentCrumbs = state.breadcrumbs.dropLast(1)
+            if (parentCrumbs.isNotEmpty()) {
+                openDirectory(parentCrumbs.last())
+                return true
+            }
             val primaryRoot = localProvider.getPrimaryRootDirectory().absolutePath
             val workspaceRoot = localProvider.getAppWorkspaceDirectory().absolutePath
             if (current.uriOrPath == primaryRoot || current.uriOrPath == workspaceRoot) {
                 return false
             }
-            val parentFile = File(parentPath)
-            if (parentFile.exists() && parentFile.canRead()) {
-                openDirectory(localProvider.toFileReference(parentFile))
-                return true
+            viewModelScope.launch(Dispatchers.IO) {
+                val parentFile = File(parentPath)
+                if (parentFile.exists() && parentFile.canRead()) {
+                    openDirectory(localProvider.toFileReference(parentFile))
+                }
             }
+            return true
         } else if (current.providerType == ProviderType.SAF) {
             val parentCrumbs = state.breadcrumbs.dropLast(1)
             if (parentCrumbs.isNotEmpty()) {
@@ -416,41 +516,52 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     fun openCategoryOrSpecialFolder(category: FileCategory) {
         if (category == FileCategory.DOWNLOADS) {
-            val root = localProvider.getPrimaryRootDirectory()
-            val dl = File(root, "Download").apply { if (!exists()) mkdirs() }
             _currentDestination.value = OpenFileDestination.DOWNLOADS
-            openDirectory(localProvider.toFileReference(dl))
+            viewModelScope.launch(Dispatchers.IO) {
+                val root = localProvider.getPrimaryRootDirectory()
+                val dl = File(root, "Download").apply { if (!exists()) mkdirs() }
+                openDirectory(localProvider.toFileReference(dl))
+            }
             return
         }
+        browseDirectoryJob?.cancel()
+        val cached = categoryCache[category]
         _browserState.value = _browserState.value.copy(
             currentDirectory = null,
             breadcrumbs = emptyList(),
-            isLoading = true,
+            items = cached ?: emptyList(),
+            isLoading = cached == null,
             selectedUris = emptySet(),
+            searchQuery = "",
             activeCategoryFilter = category,
             inspectArchiveFile = null,
             activeRemoteProfile = null,
             activeCloudAccount = null,
             errorMessage = null
         )
-        viewModelScope.launch {
+        browseDirectoryJob = viewModelScope.launch {
             val currentSettings = settings.value
             val thresholdBytes = currentSettings.largeFileThresholdMb * 1024L * 1024L
             val indexedItems = mediaStoreProvider.queryByCategory(category, thresholdBytes)
+            categoryCache[category] = indexedItems
             val combinedItems = if (category == FileCategory.RECENT_FILES) {
-                val openedRefs = recentFiles.value.mapNotNull { rec ->
-                    val f = File(rec.uriOrPath)
-                    if (f.exists() && f.canRead()) localProvider.toFileReference(f) else null
+                withContext(Dispatchers.IO) {
+                    val openedRefs = recentFiles.value.mapNotNull { rec ->
+                        val f = File(rec.uriOrPath)
+                        if (f.exists() && f.canRead()) localProvider.toFileReference(f) else null
+                    }
+                    (openedRefs + indexedItems).distinctBy { it.uriOrPath }
                 }
-                (openedRefs + indexedItems).distinctBy { it.uriOrPath }
             } else {
                 indexedItems
             }
-            val sorted = FileSortAndFilterEngine.sortFiles(
-                combinedItems,
-                if (category == FileCategory.LARGE_FILES) SortField.SIZE else currentSettings.defaultSortField,
-                if (category == FileCategory.LARGE_FILES) SortOrder.DESCENDING else currentSettings.defaultSortOrder
-            )
+            val sorted = withContext(Dispatchers.Default) {
+                FileSortAndFilterEngine.sortFiles(
+                    combinedItems,
+                    if (category == FileCategory.LARGE_FILES) SortField.SIZE else currentSettings.defaultSortField,
+                    if (category == FileCategory.LARGE_FILES) SortOrder.DESCENDING else currentSettings.defaultSortOrder
+                )
+            }
             _browserState.value = _browserState.value.copy(
                 currentDirectory = null,
                 breadcrumbs = emptyList(),
@@ -497,19 +608,31 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             )
         }
 
-        // Check if archive
-        if (item.extension in FileCategory.ARCHIVES.extensions && item.providerType == ProviderType.LOCAL) {
+        // 1. Check if supported archive (ZIP, TAR, GZ, XZ, 7Z) -> open built-in archive inspector
+        if (item.extension.lowercase() in FileCategory.ARCHIVES.extensions && item.providerType == ProviderType.LOCAL) {
             inspectArchive(item)
             return
         }
 
-        // Check if APK
-        if (item.extension == "apk" && item.providerType == ProviderType.LOCAL) {
-            openPropertiesSheet(item)
+        // 2. Check if APK -> trigger Android's native PackageInstaller directly
+        if (item.extension.lowercase() == "apk" && item.providerType == ProviderType.LOCAL) {
+            appManager.installApkWithSystemInstaller(File(item.uriOrPath))
+                .onFailure { openPropertiesSheet(item) }
             return
         }
 
-        // Open in built-in previewer (text, code, markdown, json, image, audio, pdf)
+        // 3. For Remote/Cloud files that aren't local or MediaStore, show built-in preview dialog
+        if (item.providerType != ProviderType.LOCAL && item.providerType != ProviderType.MEDIA_STORE && item.providerType != ProviderType.SAF) {
+            _previewFile.value = item
+            return
+        }
+
+        // 4. Standard File Manager behavior: launch external / system handler (Video player, PDF viewer, Gallery, Music player, Office app, etc.)
+        // Falls back to built-in previewer ONLY if no external app is installed for this file type.
+        openWithExternalApp(item, forceChooser = false, fallbackToBuiltInPreview = true)
+    }
+
+    fun openBuiltInPreview(item: FileReference) {
         _previewFile.value = item
     }
 
@@ -517,26 +640,93 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         _previewFile.value = null
     }
 
-    fun openWithExternalApp(item: FileReference) {
+    fun openWithExternalApp(
+        item: FileReference,
+        forceChooser: Boolean = false,
+        fallbackToBuiltInPreview: Boolean = false
+    ) {
         runCatching {
+            val resolvedMime = resolveMimeType(item)
             val uri = if (item.providerType == ProviderType.LOCAL) {
-                FileProvider.getUriForFile(
-                    context,
-                    "${context.packageName}.fileprovider",
-                    File(item.uriOrPath)
-                )
+                val f = File(item.uriOrPath)
+                try {
+                    FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.fileprovider",
+                        f
+                    )
+                } catch (_: Exception) {
+                    Uri.fromFile(f)
+                }
             } else {
                 Uri.parse(item.uriOrPath)
             }
             val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, item.mimeType)
+                setDataAndType(uri, resolvedMime)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            context.startActivity(Intent.createChooser(intent, "Open ${item.displayName}").apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            })
+            val targetIntent = if (forceChooser) {
+                Intent.createChooser(intent, "Open ${item.displayName}").apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            } else {
+                intent
+            }
+            try {
+                context.startActivity(targetIntent)
+            } catch (e: Exception) {
+                // Try wildcard category MIME fallback (e.g. video/*, audio/*, image/*, text/*)
+                val wildcardMime = when {
+                    resolvedMime.startsWith("video/") -> "video/*"
+                    resolvedMime.startsWith("audio/") -> "audio/*"
+                    resolvedMime.startsWith("image/") -> "image/*"
+                    resolvedMime.startsWith("text/") -> "text/*"
+                    else -> null
+                }
+                if (wildcardMime != null && resolvedMime != wildcardMime) {
+                    intent.setDataAndType(uri, wildcardMime)
+                    val fallbackIntent = if (forceChooser) {
+                        Intent.createChooser(intent, "Open ${item.displayName}").apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                    } else {
+                        intent
+                    }
+                    context.startActivity(fallbackIntent)
+                } else {
+                    throw e
+                }
+            }
         }.onFailure {
-            showStatus("No external app available to open ${item.displayName}")
+            if (fallbackToBuiltInPreview && canPreviewBuiltIn(item)) {
+                _previewFile.value = item
+            } else {
+                showStatus("No app installed to open ${item.displayName}")
+            }
+        }
+    }
+
+    private fun canPreviewBuiltIn(item: FileReference): Boolean {
+        val ext = item.extension.lowercase()
+        val textExtensions = setOf(
+            "txt", "md", "log", "ini", "conf", "kt", "java", "py", "js", "ts", "sh",
+            "yaml", "yml", "json", "xml", "html", "htm", "csv", "c", "cpp", "h",
+            "hpp", "rs", "go", "rb", "php", "sql", "gradle", "properties", "toml"
+        )
+        return ext in textExtensions ||
+            ext == "pdf" ||
+            ext in FileCategory.IMAGES.extensions ||
+            ext in FileCategory.AUDIO.extensions
+    }
+
+    private fun resolveMimeType(item: FileReference): String {
+        val ext = item.extension.lowercase()
+        val guessed = LocalFileSystemProvider.guessMimeType(ext)
+        if (guessed != "application/octet-stream") return guessed
+        return if (item.mimeType.isNotBlank() && item.mimeType != "application/octet-stream" && item.mimeType != "*/*") {
+            item.mimeType
+        } else {
+            MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*"
         }
     }
 
@@ -575,9 +765,12 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     fun updateSearchQuery(query: String) {
         _browserState.value = _browserState.value.copy(searchQuery = query)
-        if (query.trim().length >= 2) {
-            viewModelScope.launch {
-                dao.insertSearchQuery(SearchQueryEntity(query = query.trim()))
+        searchDebounceJob?.cancel()
+        val trimmed = query.trim()
+        if (trimmed.length >= 2) {
+            searchDebounceJob = viewModelScope.launch(Dispatchers.IO) {
+                delay(350L)
+                dao.insertSearchQuery(SearchQueryEntity(query = trimmed))
             }
         }
     }
@@ -802,28 +995,37 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 }
             }
             else -> {
-                val file = File(bm.uriOrPath)
-                if (file.exists()) {
-                    val ref = localProvider.toFileReference(file)
-                    if (ref.isDirectory) {
-                        _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
-                        openDirectory(ref)
-                    } else {
-                        onFileItemClicked(ref)
+                viewModelScope.launch {
+                    val ref = withContext(Dispatchers.IO) {
+                        val file = File(bm.uriOrPath)
+                        if (file.exists()) localProvider.toFileReference(file) else null
                     }
-                } else {
-                    showStatus("Bookmarked path '${bm.title}' no longer exists.")
+                    if (ref != null) {
+                        if (ref.isDirectory) {
+                            _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
+                            openDirectory(ref)
+                        } else {
+                            onFileItemClicked(ref)
+                        }
+                    } else {
+                        showStatus("Bookmarked path '${bm.title}' no longer exists.")
+                    }
                 }
             }
         }
     }
 
     fun openRecentFile(recent: RecentFileEntity) {
-        val file = File(recent.uriOrPath)
-        if (file.exists()) {
-            onFileItemClicked(localProvider.toFileReference(file))
-        } else {
-            showStatus("Recent file '${recent.displayName}' was moved or deleted.")
+        viewModelScope.launch {
+            val ref = withContext(Dispatchers.IO) {
+                val file = File(recent.uriOrPath)
+                if (file.exists()) localProvider.toFileReference(file) else null
+            }
+            if (ref != null) {
+                onFileItemClicked(ref)
+            } else {
+                showStatus("Recent file '${recent.displayName}' was moved or deleted.")
+            }
         }
     }
 
@@ -1018,15 +1220,19 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     fun startLocalFtpServer(passwordPlain: String) {
         viewModelScope.launch {
             val cfg = settings.first()
-            val secretAlias = if (passwordPlain.isNotBlank()) {
-                credentialVault.storeSecret(cfg.ftpSecretAlias.ifBlank { null }, passwordPlain)
-            } else {
-                cfg.ftpSecretAlias
-            }
-            val resolvedPassword = if (passwordPlain.isNotBlank()) {
-                passwordPlain
-            } else {
-                credentialVault.retrieveSecret(secretAlias).orEmpty()
+            val (secretAlias, resolvedPassword, rootPath) = withContext(Dispatchers.IO) {
+                val alias = if (passwordPlain.isNotBlank()) {
+                    credentialVault.storeSecret(cfg.ftpSecretAlias.ifBlank { null }, passwordPlain)
+                } else {
+                    cfg.ftpSecretAlias
+                }
+                val resolved = if (passwordPlain.isNotBlank()) {
+                    passwordPlain
+                } else {
+                    credentialVault.retrieveSecret(alias).orEmpty()
+                }
+                val root = cfg.ftpRootPath.ifBlank { localProvider.getPrimaryRootDirectory().absolutePath }
+                Triple(alias, resolved, root)
             }
 
             if (!cfg.ftpAnonymousAllowed && resolvedPassword.isBlank()) {
@@ -1034,7 +1240,6 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 return@launch
             }
 
-            val rootPath = cfg.ftpRootPath.ifBlank { localProvider.getPrimaryRootDirectory().absolutePath }
             settingsStore.updateFtpServerConfig(
                 port = cfg.ftpPort,
                 passiveStart = cfg.ftpPassivePortStart,
@@ -1213,7 +1418,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     fun scanLanForServers() {
         viewModelScope.launch {
             _isScanningLan.value = true
-            val lanIp = FtpServerEngine.resolveLocalLanIpAddress()
+            val lanIp = withContext(Dispatchers.IO) { FtpServerEngine.resolveLocalLanIpAddress() }
             val found = RemoteNetworkClients.scanLocalNetworkForFileServers(lanIp)
             _discoveredLanHosts.value = found
             _isScanningLan.value = false
@@ -1222,8 +1427,94 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Cloud Storage OAuth 2.0 PKCE & Account Management
+    // Cloud Storage OAuth 2.0 PKCE, Direct In-App Web Login & Account Management
     // ---------------------------------------------------------------------------------------------
+
+    /**
+     * File Manager + style 1-tap Cloud Connect:
+     * Directly opens the provider's login webpage inside the app (either OAuth 2.0 PKCE if a client_id
+     * is configured in BuildConfig, or the provider's official web login & storage portal),
+     * logs the user in, and immediately shows their cloud storage inside the app.
+     */
+    fun connectCloudProviderDirect(provider: CloudProviderKind) {
+        val configuredClientId = provider.defaultClientIdFromBuildConfig()
+        if (configuredClientId.isNotBlank()) {
+            startCloudOAuthFlow(provider, configuredClientId).onSuccess { authUrl ->
+                _activeWebCloudProvider.value = provider
+                _activeWebCloudUrl.value = authUrl
+                return
+            }
+        }
+        // Directly open the provider's official web sign-in & cloud storage portal inside the app
+        _activeWebCloudProvider.value = provider
+        _activeWebCloudUrl.value = provider.loginUrl
+    }
+
+    /**
+     * Called automatically when the user finishes logging in on the in-app Cloud Web Portal
+     * and reaches their authenticated cloud drive (Google Drive, OneDrive, or Dropbox).
+     */
+    fun onWebCloudAuthenticated(provider: CloudProviderKind, detectedLabelOrEmail: String?) {
+        viewModelScope.launch {
+            val cleanLabel = detectedLabelOrEmail
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: "${provider.displayName} Web Account"
+            val existing = cloudAccounts.value.firstOrNull {
+                it.provider == provider.name &&
+                    it.clientId == CloudStorageEngine.WEB_SESSION_CLIENT_MARKER
+            }
+            if (existing == null || existing.accountEmail != cleanLabel) {
+                val alias = credentialVault.storeSecret(existing?.tokenSecretAlias, "WEB_COOKIE_SESSION")
+                dao.upsertCloudAccount(
+                    CloudAccountEntity(
+                        id = existing?.id ?: 0L,
+                        provider = provider.name,
+                        accountEmail = cleanLabel,
+                        displayName = provider.displayName,
+                        clientId = CloudStorageEngine.WEB_SESSION_CLIENT_MARKER,
+                        tokenSecretAlias = alias,
+                        refreshTokenSecretAlias = null,
+                        tokenExpiresAt = Long.MAX_VALUE
+                    )
+                )
+                if (existing == null) {
+                    showStatus("Connected ${provider.displayName} ($cleanLabel)")
+                }
+            }
+        }
+    }
+
+    fun closeWebCloudPortal() {
+        _activeWebCloudProvider.value = null
+        _activeWebCloudUrl.value = null
+    }
+
+    fun downloadFromCloudWebSession(
+        url: String,
+        cookies: String?,
+        userAgent: String?,
+        contentDisposition: String?,
+        mimeType: String?
+    ) {
+        viewModelScope.launch {
+            val downloadsDir = File(localProvider.getPrimaryRootDirectory(), "Download")
+            showStatus("Downloading cloud file to Download/...")
+            CloudStorageEngine.downloadFromWebSession(
+                url = url,
+                cookies = cookies,
+                userAgent = userAgent,
+                contentDisposition = contentDisposition,
+                mimeType = mimeType,
+                destDir = downloadsDir
+            ).onSuccess { savedFile ->
+                showStatus("Downloaded '${savedFile.name}' to Download/")
+                refreshCategoryCountsAndPrewarm()
+            }.onFailure { err ->
+                showStatus("Cloud download failed: ${err.message}")
+            }
+        }
+    }
 
     fun startCloudOAuthFlow(provider: CloudProviderKind, clientId: String): Result<String> {
         return runCatching {
@@ -1233,48 +1524,128 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    /**
+     * Stores a Google Drive account authorized on-device through Google Play services
+     * and immediately opens the Google Drive storage in the app.
+     */
+    fun onGoogleDriveAuthorized(accessToken: String, email: String?) {
+        viewModelScope.launch {
+            val resolvedEmail = email?.takeIf { it.isNotBlank() }
+                ?: CloudStorageEngine.fetchAccountEmail(CloudProviderKind.GOOGLE_DRIVE, accessToken)
+                ?: "Google Drive Account"
+            val existing = cloudAccounts.value.firstOrNull {
+                it.provider == CloudProviderKind.GOOGLE_DRIVE.name &&
+                    it.clientId == com.example.core.cloud.GoogleDriveOnDeviceAuth.ON_DEVICE_CLIENT_MARKER &&
+                    it.accountEmail == resolvedEmail
+            }
+            val alias = credentialVault.storeSecret(existing?.tokenSecretAlias, accessToken)
+            val entity = CloudAccountEntity(
+                id = existing?.id ?: 0L,
+                provider = CloudProviderKind.GOOGLE_DRIVE.name,
+                accountEmail = resolvedEmail,
+                displayName = CloudProviderKind.GOOGLE_DRIVE.displayName,
+                clientId = com.example.core.cloud.GoogleDriveOnDeviceAuth.ON_DEVICE_CLIENT_MARKER,
+                tokenSecretAlias = alias,
+                refreshTokenSecretAlias = null,
+                tokenExpiresAt = System.currentTimeMillis() + 55 * 60_000L
+            )
+            val rowId = dao.upsertCloudAccount(entity)
+            _activeWebCloudProvider.value = null
+            _activeWebCloudUrl.value = null
+            showStatus("Connected Google Drive ($resolvedEmail)")
+            openCloudDirectory(entity.copy(id = if (entity.id != 0L) entity.id else rowId))
+        }
+    }
+
+    /**
+     * Handles the OAuth 2.0 redirect (com.openfile.manager:/oauth2redirect) delivered by the browser or in-app WebView.
+     * Validates `state`, surfaces provider errors, exchanges the code automatically, and opens the cloud storage.
+     */
+    fun handleOAuthRedirect(uri: Uri) {
+        val error = uri.getQueryParameter("error")
+        if (error != null) {
+            val desc = uri.getQueryParameter("error_description") ?: error
+            _activePkceSession.value = null
+            _activeWebCloudProvider.value = null
+            _activeWebCloudUrl.value = null
+            showStatus("Cloud authorization failed: $desc")
+            return
+        }
+        val code = uri.getQueryParameter("code")
+        if (code.isNullOrBlank()) {
+            showStatus("Cloud authorization failed: no authorization code returned")
+            return
+        }
+        val session = _activePkceSession.value
+        if (session == null) {
+            showStatus("Cloud authorization expired. Tap Connect and try again.")
+            return
+        }
+        if (uri.getQueryParameter("state") != session.state) {
+            _activePkceSession.value = null
+            showStatus("Cloud authorization rejected: state mismatch")
+            return
+        }
+        completeCloudOAuthWithCode("", code, false)
+    }
+
     fun completeCloudOAuthWithCode(
         accountEmailOrLabel: String,
         authorizationCodeOrAccessToken: String,
         directAccessTokenMode: Boolean
     ) {
-        val session = _activePkceSession.value ?: return
+        val session = _activePkceSession.value
+        if (session == null) {
+            showStatus("Start the browser consent step first (button 1), then paste the code.")
+            return
+        }
         viewModelScope.launch {
             if (directAccessTokenMode) {
-                val tokenAlias = credentialVault.storeSecret(null, authorizationCodeOrAccessToken.trim())
-                dao.upsertCloudAccount(
-                    CloudAccountEntity(
-                        provider = session.provider.name,
-                        accountEmail = accountEmailOrLabel.ifBlank { "${session.provider.displayName} Account" },
-                        displayName = session.provider.displayName,
-                        clientId = session.clientId,
-                        tokenSecretAlias = tokenAlias,
-                        refreshTokenSecretAlias = null,
-                        tokenExpiresAt = System.currentTimeMillis() + 3600_000L
-                    )
+                val token = authorizationCodeOrAccessToken.trim()
+                val resolvedEmail = accountEmailOrLabel.takeIf { it.isNotBlank() }
+                    ?: CloudStorageEngine.fetchAccountEmail(session.provider, token)
+                    ?: "${session.provider.displayName} Account"
+                val tokenAlias = credentialVault.storeSecret(null, token)
+                val entity = CloudAccountEntity(
+                    provider = session.provider.name,
+                    accountEmail = resolvedEmail,
+                    displayName = session.provider.displayName,
+                    clientId = session.clientId,
+                    tokenSecretAlias = tokenAlias,
+                    refreshTokenSecretAlias = null,
+                    tokenExpiresAt = System.currentTimeMillis() + 3600_000L
                 )
+                val rowId = dao.upsertCloudAccount(entity)
                 _activePkceSession.value = null
-                showStatus("Connected ${session.provider.displayName}")
+                _activeWebCloudProvider.value = null
+                _activeWebCloudUrl.value = null
+                showStatus("Connected ${session.provider.displayName} ($resolvedEmail)")
+                openCloudDirectory(entity.copy(id = rowId))
                 return@launch
             }
 
             CloudStorageEngine.exchangeAuthorizationCode(session, authorizationCodeOrAccessToken).fold(
                 onSuccess = { tokenResp ->
+                    val resolvedEmail = accountEmailOrLabel.takeIf { it.isNotBlank() }
+                        ?: CloudStorageEngine.fetchAccountEmail(session.provider, tokenResp.accessToken)
+                        ?: "${session.provider.displayName} Account"
                     val accessAlias = credentialVault.storeSecret(null, tokenResp.accessToken)
                     val refreshAlias = tokenResp.refreshToken?.let { credentialVault.storeSecret(null, it) }
-                    dao.upsertCloudAccount(
-                        CloudAccountEntity(
-                            provider = session.provider.name,
-                            accountEmail = accountEmailOrLabel.ifBlank { "${session.provider.displayName} Account" },
-                            displayName = session.provider.displayName,
-                            clientId = session.clientId,
-                            tokenSecretAlias = accessAlias,
-                            refreshTokenSecretAlias = refreshAlias,
-                            tokenExpiresAt = System.currentTimeMillis() + (tokenResp.expiresInSeconds * 1000L)
-                        )
+                    val entity = CloudAccountEntity(
+                        provider = session.provider.name,
+                        accountEmail = resolvedEmail,
+                        displayName = session.provider.displayName,
+                        clientId = session.clientId,
+                        tokenSecretAlias = accessAlias,
+                        refreshTokenSecretAlias = refreshAlias,
+                        tokenExpiresAt = System.currentTimeMillis() + (tokenResp.expiresInSeconds * 1000L)
                     )
+                    val rowId = dao.upsertCloudAccount(entity)
                     _activePkceSession.value = null
-                    showStatus("Connected ${session.provider.displayName} via OAuth 2.0 PKCE")
+                    _activeWebCloudProvider.value = null
+                    _activeWebCloudUrl.value = null
+                    showStatus("Connected ${session.provider.displayName} ($resolvedEmail)")
+                    openCloudDirectory(entity.copy(id = rowId))
                 },
                 onFailure = { err ->
                     showStatus("OAuth token exchange failed: ${err.message}")
@@ -1288,11 +1659,23 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             credentialVault.deleteSecret(account.tokenSecretAlias)
             credentialVault.deleteSecret(account.refreshTokenSecretAlias)
             dao.deleteCloudAccount(account.id)
+            if (_activeWebCloudProvider.value?.name == account.provider) {
+                _activeWebCloudProvider.value = null
+                _activeWebCloudUrl.value = null
+            }
             showStatus("Disconnected ${account.displayName} (${account.accountEmail})")
         }
     }
 
     fun openCloudDirectory(account: CloudAccountEntity, folderIdOrPath: String = "root") {
+        val providerKind = runCatching { CloudProviderKind.valueOf(account.provider) }.getOrNull()
+        if (account.clientId == CloudStorageEngine.WEB_SESSION_CLIENT_MARKER && providerKind != null) {
+            _currentDestination.value = OpenFileDestination.CLOUD_STORAGE
+            _activeWebCloudProvider.value = providerKind
+            _activeWebCloudUrl.value = providerKind.webPortalUrl
+            return
+        }
+
         viewModelScope.launch {
             _browserState.value = _browserState.value.copy(
                 isLoading = true,
@@ -1301,12 +1684,31 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 activeRemoteProfile = null
             )
             var accessToken = credentialVault.retrieveSecret(account.tokenSecretAlias).orEmpty()
+            // On-device Google accounts have no refresh token: silently re-authorize via Play services.
+            if (account.clientId == com.example.core.cloud.GoogleDriveOnDeviceAuth.ON_DEVICE_CLIENT_MARKER &&
+                System.currentTimeMillis() > account.tokenExpiresAt - 60_000L
+            ) {
+                runCatching {
+                    com.example.core.cloud.GoogleDriveOnDeviceAuth.authorize(getApplication(), account.accountEmail)
+                }.onSuccess { result ->
+                    val fresh = result.accessToken
+                    if (!result.hasResolution() && !fresh.isNullOrBlank()) {
+                        accessToken = fresh
+                        credentialVault.storeSecret(account.tokenSecretAlias, fresh)
+                        dao.upsertCloudAccount(account.copy(tokenExpiresAt = System.currentTimeMillis() + 55 * 60_000L))
+                    } else {
+                        showStatus("Google Drive needs to be re-connected (tap Connect on the Cloud screen).")
+                    }
+                }.onFailure {
+                    showStatus("Could not renew Google Drive access: ${it.message}")
+                }
+            }
             // Auto-refresh if expired and refresh token exists
             if (System.currentTimeMillis() > account.tokenExpiresAt && account.refreshTokenSecretAlias != null) {
                 val refreshTok = credentialVault.retrieveSecret(account.refreshTokenSecretAlias)
                 if (!refreshTok.isNullOrBlank()) {
-                    val providerKind = CloudProviderKind.valueOf(account.provider)
-                    CloudStorageEngine.refreshAccessToken(providerKind, account.clientId, refreshTok).onSuccess { refreshed ->
+                    val pk = CloudProviderKind.valueOf(account.provider)
+                    CloudStorageEngine.refreshAccessToken(pk, account.clientId, refreshTok).onSuccess { refreshed ->
                         accessToken = refreshed.accessToken
                         credentialVault.storeSecret(account.tokenSecretAlias, refreshed.accessToken)
                         dao.upsertCloudAccount(
@@ -1318,9 +1720,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
             CloudStorageEngine.listCloudDirectory(account, accessToken, folderIdOrPath).fold(
                 onSuccess = { items ->
-                    val providerKind = CloudProviderKind.valueOf(account.provider)
+                    val pk = CloudProviderKind.valueOf(account.provider)
                     val dirRef = FileReference(
-                        providerType = providerKind.providerType,
+                        providerType = pk.providerType,
                         uriOrPath = folderIdOrPath,
                         displayName = "${account.displayName} ($folderIdOrPath)",
                         parentUriOrPath = "root",

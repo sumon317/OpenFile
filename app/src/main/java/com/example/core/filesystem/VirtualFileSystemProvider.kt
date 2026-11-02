@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.StatFs
+import android.os.storage.StorageManager
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
@@ -51,26 +52,43 @@ interface VirtualFileSystemProvider {
 class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemProvider {
 
     override val providerType: ProviderType = ProviderType.LOCAL
+    @Volatile
+    private var workspaceInitialized: Boolean = false
+
+    @Volatile
+    private var cachedPrimaryRoot: File? = null
 
     /**
      * Returns the primary accessible internal root directory.
-     * If shared external storage is readable/writable, returns `/storage/emulated/0`;
+     * If shared external storage is readable and populated, returns `/storage/emulated/0`;
      * otherwise provides a seeded accessible workspace inside externalFilesDir/filesDir so
      * local file management always works out of the box even before runtime permissions.
      */
     fun getPrimaryRootDirectory(): File {
+        cachedPrimaryRoot?.let { if (it.exists()) return it }
         val externalRoot = Environment.getExternalStorageDirectory()
-        if (externalRoot != null && externalRoot.exists() && externalRoot.canRead() && !externalRoot.list().isNullOrEmpty()) {
-            return externalRoot
+        if (externalRoot != null && externalRoot.exists() && externalRoot.canRead()) {
+            val hasStandardFolder = File(externalRoot, "Download").exists() ||
+                File(externalRoot, "Android").exists() ||
+                File(externalRoot, "DCIM").exists() ||
+                !externalRoot.list().isNullOrEmpty()
+            if (hasStandardFolder) {
+                cachedPrimaryRoot = externalRoot
+                return externalRoot
+            }
         }
         val workspaceRoot = File(context.getExternalFilesDir(null) ?: context.filesDir, "InternalStorage")
         ensureInitialWorkspaceStructure(workspaceRoot)
+        cachedPrimaryRoot = workspaceRoot
         return workspaceRoot
     }
 
     fun getAppWorkspaceDirectory(): File {
         val workspaceRoot = File(context.getExternalFilesDir(null) ?: context.filesDir, "OpenFileWorkspace")
-        ensureInitialWorkspaceStructure(workspaceRoot)
+        if (!workspaceInitialized) {
+            ensureInitialWorkspaceStructure(workspaceRoot)
+            workspaceInitialized = true
+        }
         return workspaceRoot
     }
 
@@ -325,6 +343,7 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
         val avail = statFs?.availableBytes ?: (32L * 1024 * 1024 * 1024)
         val used = (total - avail).coerceAtLeast(0L)
 
+        // 1. Primary Internal Storage (always present)
         volumes.add(
             StorageVolumeInfo(
                 id = "internal_primary",
@@ -338,60 +357,108 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
             )
         )
 
-        val appWorkspace = getAppWorkspaceDirectory()
-        if (appWorkspace.absolutePath != primaryRoot.absolutePath) {
-            volumes.add(
-                StorageVolumeInfo(
-                    id = "app_workspace",
-                    title = "OpenFile Sandbox Workspace",
-                    subtitle = "Always-accessible local storage",
-                    rootReference = toFileReference(appWorkspace),
-                    totalBytes = total,
-                    usedBytes = used,
-                    availableBytes = avail,
-                    isRemovable = false
+        // 2. Discover real physical & removable volumes (SD card, USB OTG)
+        val storageManager = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
+        val addedPaths = mutableSetOf(primaryRoot.absolutePath)
+
+        val smVolumes = runCatching { storageManager?.storageVolumes }.getOrNull().orEmpty()
+        for (sv in smVolumes) {
+            if (sv.isPrimary) continue
+            val state = runCatching { sv.state }.getOrNull()
+            if (state != null && state != Environment.MEDIA_MOUNTED && state != Environment.MEDIA_MOUNTED_READ_ONLY) {
+                continue
+            }
+            val dir = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                runCatching { sv.directory }.getOrNull()
+            } else null
+
+            val rootFile = dir ?: run {
+                context.getExternalFilesDirs(null).filterNotNull().firstOrNull { f ->
+                    val path = f.absolutePath
+                    val uuid = sv.uuid
+                    if (uuid != null) path.contains(uuid) else (!path.startsWith("/storage/emulated/0") && !path.startsWith("/data"))
+                }?.let { f ->
+                    val path = f.absolutePath
+                    val rootPath = path.substringBefore("/Android")
+                    File(rootPath)
+                }
+            }
+
+            if (rootFile != null && addedPaths.add(rootFile.absolutePath)) {
+                val stat = runCatching { StatFs(rootFile.absolutePath) }.getOrNull()
+                val extTotal = stat?.totalBytes ?: 0L
+                val extAvail = stat?.availableBytes ?: 0L
+                val desc = runCatching { sv.getDescription(context) }.getOrNull()?.takeIf { it.isNotBlank() }
+                    ?: "SD Card"
+                volumes.add(
+                    StorageVolumeInfo(
+                        id = "storage_vol_${sv.uuid ?: rootFile.name}",
+                        title = desc,
+                        subtitle = rootFile.absolutePath,
+                        rootReference = toFileReference(rootFile),
+                        totalBytes = extTotal,
+                        usedBytes = (extTotal - extAvail).coerceAtLeast(0L),
+                        availableBytes = extAvail,
+                        isRemovable = true
+                    )
                 )
-            )
+            }
         }
 
-        // Check removable SD / USB volumes via getExternalFilesDirs
-        val extDirs = context.getExternalFilesDirs(null)
-        extDirs.drop(1).filterNotNull().forEachIndexed { index, extDir ->
-            val stat = runCatching { StatFs(extDir.absolutePath) }.getOrNull()
-            val extTotal = stat?.totalBytes ?: 0L
-            val extAvail = stat?.availableBytes ?: 0L
-            volumes.add(
-                StorageVolumeInfo(
-                    id = "external_vol_$index",
-                    title = "External Media / SD Card #${index + 1}",
-                    subtitle = extDir.absolutePath,
-                    rootReference = toFileReference(extDir),
-                    totalBytes = extTotal,
-                    usedBytes = (extTotal - extAvail).coerceAtLeast(0L),
-                    availableBytes = extAvail,
-                    isRemovable = true
-                )
-            )
+        // Fallback for older devices if StorageManager returned no secondary volumes
+        if (volumes.size == 1) {
+            val extDirs = context.getExternalFilesDirs(null)
+            extDirs.drop(1).filterNotNull().forEachIndexed { index, extDir ->
+                val rootPath = extDir.absolutePath.substringBefore("/Android")
+                val rootFile = File(rootPath)
+                if (addedPaths.add(rootFile.absolutePath)) {
+                    val stat = runCatching { StatFs(rootFile.absolutePath) }.getOrNull()
+                    val extTotal = stat?.totalBytes ?: 0L
+                    val extAvail = stat?.availableBytes ?: 0L
+                    volumes.add(
+                        StorageVolumeInfo(
+                            id = "external_vol_$index",
+                            title = "External SD Card",
+                            subtitle = rootFile.absolutePath,
+                            rootReference = toFileReference(rootFile),
+                            totalBytes = extTotal,
+                            usedBytes = (extTotal - extAvail).coerceAtLeast(0L),
+                            availableBytes = extAvail,
+                            isRemovable = true
+                        )
+                    )
+                }
+            }
         }
 
-        // Include SAF persisted DocumentTree grants (including revoked detection)
+        // Only include SAF grants if they represent a separate external root drive not already covered
         for ((uriStr, label) in persistedGrantUris) {
-            val uri = Uri.parse(uriStr)
-            val valid = safProvider.isUriPermissionValid(uri)
-            val ref = safProvider.fromTreeUri(uri, label)
-            volumes.add(
-                StorageVolumeInfo(
-                    id = "saf_$uriStr",
-                    title = label,
-                    subtitle = if (valid) "SAF Document Tree" else "SAF Permission Revoked — Tap to Re-grant",
-                    rootReference = ref,
-                    totalBytes = total,
-                    usedBytes = used,
-                    availableBytes = avail,
-                    isRemovable = true,
-                    isSafGrantRevoked = !valid
+            val decoded = Uri.decode(uriStr)
+            if (decoded.contains("primary:") || decoded.contains("emulated")) continue
+            val isAlreadyCovered = volumes.any { vol ->
+                val segment = vol.subtitle.substringAfterLast('/').takeIf { it.isNotBlank() }
+                segment != null && decoded.contains(segment)
+            }
+            if (isAlreadyCovered) continue
+            val isDriveRoot = decoded.endsWith(":") || decoded.contains("tree/[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}".toRegex())
+            if (isDriveRoot && addedPaths.add(uriStr)) {
+                val uri = Uri.parse(uriStr)
+                val valid = safProvider.isUriPermissionValid(uri)
+                val ref = safProvider.fromTreeUri(uri, label)
+                volumes.add(
+                    StorageVolumeInfo(
+                        id = "saf_$uriStr",
+                        title = label,
+                        subtitle = if (valid) "SAF Removable Volume" else "SAF Permission Revoked",
+                        rootReference = ref,
+                        totalBytes = total,
+                        usedBytes = used,
+                        availableBytes = avail,
+                        isRemovable = true,
+                        isSafGrantRevoked = !valid
+                    )
                 )
-            )
+            }
         }
         return volumes
     }
@@ -407,27 +474,54 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
         }
 
         fun guessMimeType(ext: String): String = when (ext.lowercase()) {
-            "txt", "md", "log", "ini", "conf", "kt", "java", "py", "js", "ts", "sh", "yaml", "yml" -> "text/plain"
+            "txt", "md", "log", "ini", "conf", "kt", "java", "py", "js", "sh", "yaml", "yml", "c", "cpp", "h", "hpp", "rs", "go", "rb", "php", "sql", "gradle", "properties", "toml" -> "text/plain"
             "json" -> "application/json"
             "xml" -> "application/xml"
             "html", "htm" -> "text/html"
             "csv" -> "text/csv"
             "pdf" -> "application/pdf"
+            "doc" -> "application/msword"
+            "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            "xls" -> "application/vnd.ms-excel"
+            "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            "ppt" -> "application/vnd.ms-powerpoint"
+            "pptx" -> "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            "odt" -> "application/vnd.oasis.opendocument.text"
+            "ods" -> "application/vnd.oasis.opendocument.spreadsheet"
+            "odp" -> "application/vnd.oasis.opendocument.presentation"
+            "rtf" -> "application/rtf"
+            "epub" -> "application/epub+zip"
             "zip" -> "application/zip"
+            "rar" -> "application/vnd.rar"
             "tar" -> "application/x-tar"
             "gz", "tgz" -> "application/gzip"
+            "bz2", "tbz2" -> "application/x-bzip2"
             "xz", "txz" -> "application/x-xz"
             "7z" -> "application/x-7z-compressed"
-            "apk" -> "application/vnd.android.package-archive"
+            "apk", "apks", "xapk" -> "application/vnd.android.package-archive"
             "jpg", "jpeg" -> "image/jpeg"
             "png" -> "image/png"
             "webp" -> "image/webp"
             "gif" -> "image/gif"
-            "mp4" -> "video/mp4"
+            "bmp" -> "image/bmp"
+            "svg" -> "image/svg+xml"
+            "heic", "heif" -> "image/heic"
+            "mp4", "m4v" -> "video/mp4"
             "mkv" -> "video/x-matroska"
+            "webm" -> "video/webm"
+            "avi" -> "video/x-msvideo"
+            "mov" -> "video/quicktime"
+            "3gp" -> "video/3gpp"
+            "flv" -> "video/x-flv"
+            "ts" -> "video/mp2t"
+            "wmv" -> "video/x-ms-wmv"
             "mp3" -> "audio/mpeg"
             "flac" -> "audio/flac"
             "wav" -> "audio/wav"
+            "ogg", "oga" -> "audio/ogg"
+            "m4a" -> "audio/mp4"
+            "aac" -> "audio/aac"
+            "opus" -> "audio/opus"
             else -> "application/octet-stream"
         }
     }
@@ -619,7 +713,8 @@ class SafDocumentProvider(private val context: Context) : VirtualFileSystemProvi
 
 /**
  * Queries Android's MediaStore content resolver for fast category indexing
- * (Images, Videos, Audio) and blends results with accessible local directories.
+ * (Images, Videos, Audio, Documents, Archives, Large Files, Recent Files)
+ * and blends results with accessible local directories.
  */
 class MediaStoreProvider(
     private val context: Context,
@@ -632,60 +727,101 @@ class MediaStoreProvider(
     ): List<FileReference> = withContext(Dispatchers.IO) {
         val results = LinkedHashMap<String, FileReference>()
 
-        // 1. Query MediaStore for Images, Videos, Audio when permissions allow
+        // 1. Query Android MediaStore content index for all categories
         runCatching {
             when (category) {
-                FileCategory.IMAGES -> queryMediaCollection(
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                    results
-                )
-                FileCategory.VIDEOS -> queryMediaCollection(
-                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                    results
-                )
-                FileCategory.AUDIO -> queryMediaCollection(
-                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                    results
-                )
-                else -> {}
+                FileCategory.IMAGES -> {
+                    queryMediaCollection(
+                        collectionUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        sink = results
+                    )
+                }
+                FileCategory.VIDEOS -> {
+                    queryMediaCollection(
+                        collectionUri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                        sink = results
+                    )
+                }
+                FileCategory.AUDIO -> {
+                    queryMediaCollection(
+                        collectionUri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                        sink = results
+                    )
+                }
+                FileCategory.DOCUMENTS -> {
+                    val docExtensions = FileCategory.DOCUMENTS.extensions
+                    val extClauses = docExtensions.joinToString(" OR ") { "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.$it'" }
+                    val selection = "($extClauses) OR ${MediaStore.MediaColumns.MIME_TYPE} LIKE 'application/pdf' OR ${MediaStore.MediaColumns.MIME_TYPE} LIKE 'text/%' OR ${MediaStore.MediaColumns.MIME_TYPE} LIKE 'application/msword' OR ${MediaStore.MediaColumns.MIME_TYPE} LIKE 'application/vnd.%'"
+                    queryMediaCollection(
+                        collectionUri = MediaStore.Files.getContentUri("external"),
+                        selection = selection,
+                        sink = results
+                    )
+                }
+                FileCategory.ARCHIVES -> {
+                    val archiveExtensions = FileCategory.ARCHIVES.extensions + setOf("rar")
+                    val extClauses = archiveExtensions.joinToString(" OR ") { "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.$it'" }
+                    val selection = "($extClauses) OR ${MediaStore.MediaColumns.MIME_TYPE} LIKE 'application/zip' OR ${MediaStore.MediaColumns.MIME_TYPE} LIKE 'application/x-%'"
+                    queryMediaCollection(
+                        collectionUri = MediaStore.Files.getContentUri("external"),
+                        selection = selection,
+                        sink = results
+                    )
+                }
+                FileCategory.LARGE_FILES -> {
+                    val selection = "${MediaStore.MediaColumns.SIZE} >= ?"
+                    val selectionArgs = arrayOf(largeFileThresholdBytes.toString())
+                    queryMediaCollection(
+                        collectionUri = MediaStore.Files.getContentUri("external"),
+                        selection = selection,
+                        selectionArgs = selectionArgs,
+                        sink = results
+                    )
+                }
+                FileCategory.RECENT_FILES -> {
+                    val fourteenDaysAgoSec = (System.currentTimeMillis() - 14L * 24 * 3600 * 1000) / 1000L
+                    val selection = "${MediaStore.MediaColumns.DATE_MODIFIED} >= ?"
+                    val selectionArgs = arrayOf(fourteenDaysAgoSec.toString())
+                    queryMediaCollection(
+                        collectionUri = MediaStore.Files.getContentUri("external"),
+                        selection = selection,
+                        selectionArgs = selectionArgs,
+                        sink = results
+                    )
+                }
+                FileCategory.APPLICATIONS -> {
+                    val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.apk' OR ${MediaStore.MediaColumns.MIME_TYPE} = 'application/vnd.android.package-archive'"
+                    queryMediaCollection(
+                        collectionUri = MediaStore.Files.getContentUri("external"),
+                        selection = selection,
+                        sink = results
+                    )
+                }
+                FileCategory.DOWNLOADS -> {}
             }
         }
 
-        // 2. Also scan accessible local roots so files inside the local workspace/storage are always included
-        val roots = listOfNotNull(
-            localProvider.getPrimaryRootDirectory(),
-            localProvider.getAppWorkspaceDirectory()
-        ).distinctBy { it.absolutePath }
-
-        for (root in roots) {
-            if (category == FileCategory.DOWNLOADS) {
-                val dl = File(root, "Download")
-                if (dl.exists()) {
-                    dl.listFiles()?.forEach { f ->
-                        val ref = localProvider.toFileReference(f)
-                        results[ref.uriOrPath] = ref
-                    }
-                }
-                continue
+        // 2. Also inspect standard accessible directories (Download, Documents, DCIM, etc.) if directly readable
+        runCatching {
+            val primaryRoot = localProvider.getPrimaryRootDirectory()
+            val foldersToInspect = when (category) {
+                FileCategory.DOWNLOADS -> listOf(File(primaryRoot, "Download"))
+                FileCategory.DOCUMENTS -> listOf(File(primaryRoot, "Documents"), File(primaryRoot, "Download"))
+                FileCategory.IMAGES -> listOf(File(primaryRoot, "DCIM"), File(primaryRoot, "Pictures"))
+                FileCategory.VIDEOS -> listOf(File(primaryRoot, "Movies"), File(primaryRoot, "DCIM"))
+                FileCategory.AUDIO -> listOf(File(primaryRoot, "Music"), File(primaryRoot, "Audio"), File(primaryRoot, "Recordings"))
+                FileCategory.ARCHIVES -> listOf(File(primaryRoot, "Download"), File(primaryRoot, "Documents"))
+                FileCategory.APPLICATIONS -> listOf(File(primaryRoot, "Download"))
+                else -> emptyList()
             }
-            val stack = ArrayDeque<File>()
-            stack.add(root)
-            var visited = 0
-            while (stack.isNotEmpty() && visited < 5000) {
-                val curr = stack.removeLast()
-                val children = curr.listFiles() ?: continue
-                for (child in children) {
-                    visited++
-                    if (child.isDirectory) {
-                        if (!child.name.startsWith(".")) stack.add(child)
-                    } else {
-                        val ref = localProvider.toFileReference(child)
-                        val matches = when (category) {
-                            FileCategory.LARGE_FILES -> ref.sizeBytes >= largeFileThresholdBytes
-                            FileCategory.RECENT_FILES -> (System.currentTimeMillis() - ref.lastModifiedEpochMs) <= 14L * 24 * 3600 * 1000
-                            else -> ref.extension in category.extensions
-                        }
+            for (folder in foldersToInspect) {
+                if (!folder.exists() || !folder.canRead()) continue
+                folder.listFiles()?.forEach { file ->
+                    if (!file.isDirectory && !file.name.startsWith(".")) {
+                        val ext = file.name.substringAfterLast('.', "").lowercase()
+                        val matches = ext in category.extensions
                         if (matches) {
+                            val ref = localProvider.toFileReference(file)
                             results[ref.uriOrPath] = ref
                         }
                     }
@@ -700,7 +836,12 @@ class MediaStoreProvider(
         }
     }
 
-    private fun queryMediaCollection(collectionUri: Uri, sink: MutableMap<String, FileReference>) {
+    private fun queryMediaCollection(
+        collectionUri: Uri,
+        selection: String? = null,
+        selectionArgs: Array<String>? = null,
+        sink: MutableMap<String, FileReference>
+    ) {
         val projection = arrayOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DISPLAY_NAME,
@@ -710,7 +851,7 @@ class MediaStoreProvider(
             MediaStore.MediaColumns.DATA
         )
         val sortOrder = "${MediaStore.MediaColumns.DATE_MODIFIED} DESC"
-        context.contentResolver.query(collectionUri, projection, null, null, sortOrder)?.use { cursor ->
+        context.contentResolver.query(collectionUri, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
             val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
             val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
@@ -719,7 +860,7 @@ class MediaStoreProvider(
             val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
 
             var count = 0
-            while (cursor.moveToNext() && count < 500) {
+            while (cursor.moveToNext() && count < 1000) {
                 count++
                 val id = cursor.getLong(idCol)
                 val name = cursor.getString(nameCol) ?: "Media_$id"
@@ -749,6 +890,68 @@ class MediaStoreProvider(
                 }
             }
         }
+    }
+
+    suspend fun queryCategoryCounts(
+        largeFileThresholdBytes: Long = 25L * 1024 * 1024
+    ): Map<FileCategory, Int> = withContext(Dispatchers.IO) {
+        val counts = mutableMapOf<FileCategory, Int>()
+        runCatching {
+            val downloadDir = File(localProvider.getPrimaryRootDirectory(), "Download")
+            counts[FileCategory.DOWNLOADS] = downloadDir.list()?.count { !it.startsWith(".") } ?: 0
+        }
+        runCatching {
+            counts[FileCategory.IMAGES] = countCursor(MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+            counts[FileCategory.VIDEOS] = countCursor(MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+            counts[FileCategory.AUDIO] = countCursor(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI)
+
+            val docExtensions = FileCategory.DOCUMENTS.extensions
+            val extClauses = docExtensions.joinToString(" OR ") { "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.$it'" }
+            val docSelection = "($extClauses) OR ${MediaStore.MediaColumns.MIME_TYPE} LIKE 'application/pdf' OR ${MediaStore.MediaColumns.MIME_TYPE} LIKE 'text/%' OR ${MediaStore.MediaColumns.MIME_TYPE} LIKE 'application/msword' OR ${MediaStore.MediaColumns.MIME_TYPE} LIKE 'application/vnd.%'"
+            counts[FileCategory.DOCUMENTS] = countCursor(MediaStore.Files.getContentUri("external"), docSelection)
+
+            val archiveExtensions = FileCategory.ARCHIVES.extensions + setOf("rar")
+            val archClauses = archiveExtensions.joinToString(" OR ") { "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.$it'" }
+            val archSelection = "($archClauses) OR ${MediaStore.MediaColumns.MIME_TYPE} LIKE 'application/zip' OR ${MediaStore.MediaColumns.MIME_TYPE} LIKE 'application/x-%'"
+            counts[FileCategory.ARCHIVES] = countCursor(MediaStore.Files.getContentUri("external"), archSelection)
+
+            counts[FileCategory.LARGE_FILES] = countCursor(
+                MediaStore.Files.getContentUri("external"),
+                "${MediaStore.MediaColumns.SIZE} >= ?",
+                arrayOf(largeFileThresholdBytes.toString())
+            )
+
+            val fourteenDaysAgoSec = (System.currentTimeMillis() - 14L * 24 * 3600 * 1000) / 1000L
+            counts[FileCategory.RECENT_FILES] = countCursor(
+                MediaStore.Files.getContentUri("external"),
+                "${MediaStore.MediaColumns.DATE_MODIFIED} >= ?",
+                arrayOf(fourteenDaysAgoSec.toString())
+            )
+        }
+        runCatching {
+            val userApps = context.packageManager.getInstalledApplications(0).count {
+                (it.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) == 0 ||
+                    (it.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+            }
+            counts[FileCategory.APPLICATIONS] = userApps
+        }
+        counts
+    }
+
+    private fun countCursor(
+        uri: Uri,
+        selection: String? = null,
+        selectionArgs: Array<String>? = null
+    ): Int {
+        return runCatching {
+            context.contentResolver.query(
+                uri,
+                arrayOf(MediaStore.MediaColumns._ID),
+                selection,
+                selectionArgs,
+                null
+            )?.use { it.count } ?: 0
+        }.getOrDefault(0)
     }
 }
 

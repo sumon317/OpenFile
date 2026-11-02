@@ -53,11 +53,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -65,6 +67,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.example.core.database.BookmarkEntity
 import com.example.core.database.TrashItemEntity
 import com.example.core.model.FileReference
@@ -217,33 +221,41 @@ private fun StorageOverviewTab(report: StorageAnalysisReport) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(20.dp)
                 ) {
-                    // Custom Canvas Multi-Segment Ring Chart
+                    // Custom Canvas Multi-Segment Ring Chart cached across recompositions
                     Box(
                         modifier = Modifier.size(120.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Canvas(modifier = Modifier.size(110.dp)) {
-                            val strokeWidth = 18.dp.toPx()
-                            drawArc(
-                                color = Color.Gray.copy(alpha = 0.2f),
-                                startAngle = 0f,
-                                sweepAngle = 360f,
-                                useCenter = false,
-                                style = Stroke(width = strokeWidth)
-                            )
-                            var currentStartAngle = -90f
-                            report.categoryBuckets.forEach { bucket ->
-                                val sweep = (bucket.fractionOfTotal * 360f).coerceAtLeast(2f)
-                                drawArc(
-                                    color = Color(bucket.colorHex),
-                                    startAngle = currentStartAngle,
-                                    sweepAngle = sweep,
-                                    useCenter = false,
-                                    style = Stroke(width = strokeWidth, cap = StrokeCap.Butt)
-                                )
-                                currentStartAngle += sweep
-                            }
-                        }
+                        Spacer(
+                            modifier = Modifier
+                                .size(110.dp)
+                                .drawWithCache {
+                                    val strokeWidth = 18.dp.toPx()
+                                    val baseStroke = Stroke(width = strokeWidth)
+                                    val arcStroke = Stroke(width = strokeWidth, cap = StrokeCap.Butt)
+                                    onDrawBehind {
+                                        drawArc(
+                                            color = Color.Gray.copy(alpha = 0.2f),
+                                            startAngle = 0f,
+                                            sweepAngle = 360f,
+                                            useCenter = false,
+                                            style = baseStroke
+                                        )
+                                        var currentStartAngle = -90f
+                                        report.categoryBuckets.forEach { bucket ->
+                                            val sweep = (bucket.fractionOfTotal * 360f).coerceAtLeast(2f)
+                                            drawArc(
+                                                color = Color(bucket.colorHex),
+                                                startAngle = currentStartAngle,
+                                                sweepAngle = sweep,
+                                                useCenter = false,
+                                                style = arcStroke
+                                            )
+                                            currentStartAngle += sweep
+                                        }
+                                    }
+                                }
+                        )
                         val pct = if (report.totalBytes > 0) {
                             ((report.usedBytes.toDouble() / report.totalBytes.toDouble()) * 100).toInt()
                         } else 0
@@ -275,7 +287,11 @@ private fun StorageOverviewTab(report: StorageAnalysisReport) {
             Text("Usage by Category", style = MaterialTheme.typography.titleMedium)
         }
 
-        items(report.categoryBuckets, key = { it.categoryName }) { bucket ->
+        items(
+            items = report.categoryBuckets,
+            key = { it.categoryName },
+            contentType = { "category_bucket" }
+        ) { bucket ->
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -310,7 +326,11 @@ private fun StorageOverviewTab(report: StorageAnalysisReport) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("Top File Extensions", style = MaterialTheme.typography.titleMedium)
             }
-            items(report.extensionDistribution, key = { it.first }) { (ext, count, bytes) ->
+            items(
+                items = report.extensionDistribution,
+                key = { it.first },
+                contentType = { "ext_dist" }
+            ) { (ext, count, bytes) ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -513,11 +533,16 @@ fun ApplicationsScreen(
     onShareApk: (File) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
-    val filtered = remember(apps, searchQuery) {
-        if (searchQuery.isBlank()) apps
-        else apps.filter {
-            it.appName.contains(searchQuery, ignoreCase = true) ||
-                it.packageName.contains(searchQuery, ignoreCase = true)
+    val filtered by produceState(initialValue = apps, apps, searchQuery) {
+        value = if (searchQuery.isBlank()) {
+            apps
+        } else {
+            withContext(Dispatchers.Default) {
+                apps.filter {
+                    it.appName.contains(searchQuery, ignoreCase = true) ||
+                        it.packageName.contains(searchQuery, ignoreCase = true)
+                }
+            }
         }
     }
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()) }
@@ -560,7 +585,11 @@ fun ApplicationsScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                items(filtered, key = { it.packageName }) { app ->
+                items(
+                    items = filtered,
+                    key = { it.packageName },
+                    contentType = { "app_card" }
+                ) { app ->
                     Card(
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.surfaceContainerLow
@@ -620,7 +649,7 @@ fun ApplicationsScreen(
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text("App Info")
                                 }
-                                if (app.apkPath.isNotEmpty() && File(app.apkPath).canRead()) {
+                                if (app.canShareApk) {
                                     TextButton(onClick = { onShareApk(File(app.apkPath)) }) {
                                         Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(16.dp))
                                         Spacer(modifier = Modifier.width(4.dp))

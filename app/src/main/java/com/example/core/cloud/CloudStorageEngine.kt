@@ -28,7 +28,9 @@ enum class CloudProviderKind(
     val authEndpoint: String,
     val tokenEndpoint: String,
     val defaultScope: String,
-    val redirectUri: String
+    val redirectUri: String,
+    val loginUrl: String,
+    val webPortalUrl: String
 ) {
     GOOGLE_DRIVE(
         id = "GOOGLE_DRIVE",
@@ -37,7 +39,9 @@ enum class CloudProviderKind(
         authEndpoint = "https://accounts.google.com/o/oauth2/v2/auth",
         tokenEndpoint = "https://oauth2.googleapis.com/token",
         defaultScope = "https://www.googleapis.com/auth/drive",
-        redirectUri = "com.openfile.manager:/oauth2redirect"
+        redirectUri = "com.openfile.manager:/oauth2redirect",
+        loginUrl = "https://accounts.google.com/ServiceLogin?service=wise&passive=true&continue=https%3A%2F%2Fdrive.google.com%2Fdrive%2Fmy-drive",
+        webPortalUrl = "https://drive.google.com/drive/my-drive"
     ),
     ONEDRIVE(
         id = "ONEDRIVE",
@@ -46,7 +50,9 @@ enum class CloudProviderKind(
         authEndpoint = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
         tokenEndpoint = "https://login.microsoftonline.com/common/oauth2/v2.0/token",
         defaultScope = "Files.ReadWrite.All offline_access User.Read",
-        redirectUri = "com.openfile.manager://oauth2redirect"
+        redirectUri = "com.openfile.manager://oauth2redirect",
+        loginUrl = "https://onedrive.live.com/login/",
+        webPortalUrl = "https://onedrive.live.com/"
     ),
     DROPBOX(
         id = "DROPBOX",
@@ -55,7 +61,9 @@ enum class CloudProviderKind(
         authEndpoint = "https://www.dropbox.com/oauth2/authorize",
         tokenEndpoint = "https://api.dropboxapi.com/oauth2/token",
         defaultScope = "files.metadata.read files.content.read files.content.write",
-        redirectUri = "com.openfile.manager://oauth2redirect"
+        redirectUri = "com.openfile.manager://oauth2redirect",
+        loginUrl = "https://www.dropbox.com/login",
+        webPortalUrl = "https://www.dropbox.com/home"
     );
 
     fun defaultClientIdFromBuildConfig(): String {
@@ -64,7 +72,26 @@ enum class CloudProviderKind(
             ONEDRIVE -> runCatching { BuildConfig.ONEDRIVE_CLIENT_ID }.getOrDefault("")
             DROPBOX -> runCatching { BuildConfig.DROPBOX_APP_KEY }.getOrDefault("")
         }
-        return if (raw.startsWith("YOUR_")) "" else raw
+        val value = raw.trim()
+        return if (value.startsWith("YOUR_") || value.equals("placeholder", ignoreCase = true)) "" else value
+    }
+
+    /**
+     * Returns true once the user has completed web sign-in and landed on their cloud storage drive page.
+     */
+    fun isAuthenticatedPortalUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return when (this) {
+            GOOGLE_DRIVE -> (lower.startsWith("https://drive.google.com/drive") || lower.startsWith("https://drive.google.com/u/")) &&
+                !lower.contains("accounts.google.com") && !lower.contains("servicelogin")
+            ONEDRIVE -> ((lower.contains("onedrive.live.com") && !lower.contains("/login") && !lower.contains("about")) ||
+                lower.contains("-my.sharepoint.com")) &&
+                !lower.contains("login.live.com") && !lower.contains("login.microsoftonline.com")
+            DROPBOX -> (lower.startsWith("https://www.dropbox.com/home") ||
+                lower.startsWith("https://www.dropbox.com/work") ||
+                lower.startsWith("https://www.dropbox.com/scl/")) &&
+                !lower.contains("/login")
+        }
     }
 }
 
@@ -85,9 +112,11 @@ data class OAuthTokenResponse(
 
 /**
  * Modular, official REST + OAuth 2.0 PKCE engine for Google Drive v3, Microsoft Graph OneDrive,
- * and Dropbox API v2.
+ * and Dropbox API v2, plus authenticated Web Session Portal & Download Bridge.
  */
 object CloudStorageEngine {
+
+    const val WEB_SESSION_CLIENT_MARKER = "WEB_SESSION_PORTAL"
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -526,6 +555,95 @@ object CloudStorageEngine {
                 )
             }
             return list
+        }
+    }
+
+    /**
+     * Fetches the authenticated user's email address or display name from the cloud provider's API.
+     */
+    suspend fun fetchAccountEmail(
+        provider: CloudProviderKind,
+        accessToken: String
+    ): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            when (provider) {
+                CloudProviderKind.GOOGLE_DRIVE -> {
+                    val req = Request.Builder()
+                        .url("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName)")
+                        .addHeader("Authorization", "Bearer $accessToken")
+                        .get()
+                        .build()
+                    httpClient.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) return@runCatching null
+                        val user = JSONObject(resp.body?.string().orEmpty()).optJSONObject("user")
+                        user?.optString("emailAddress")?.takeIf { it.isNotBlank() }
+                            ?: user?.optString("displayName")?.takeIf { it.isNotBlank() }
+                    }
+                }
+                CloudProviderKind.ONEDRIVE -> {
+                    val req = Request.Builder()
+                        .url("https://graph.microsoft.com/v1.0/me")
+                        .addHeader("Authorization", "Bearer $accessToken")
+                        .get()
+                        .build()
+                    httpClient.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) return@runCatching null
+                        val json = JSONObject(resp.body?.string().orEmpty())
+                        json.optString("mail").takeIf { it.isNotBlank() }
+                            ?: json.optString("userPrincipalName").takeIf { it.isNotBlank() }
+                            ?: json.optString("displayName").takeIf { it.isNotBlank() }
+                    }
+                }
+                CloudProviderKind.DROPBOX -> {
+                    val req = Request.Builder()
+                        .url("https://api.dropboxapi.com/2/users/get_current_account")
+                        .addHeader("Authorization", "Bearer $accessToken")
+                        .post("null".toRequestBody("application/json".toMediaType()))
+                        .build()
+                    httpClient.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) return@runCatching null
+                        val json = JSONObject(resp.body?.string().orEmpty())
+                        json.optString("email").takeIf { it.isNotBlank() }
+                    }
+                }
+            }
+        }.getOrNull()
+    }
+
+    /**
+     * Downloads a file initiated from the authenticated in-app Cloud Web Portal using the session's cookies.
+     */
+    suspend fun downloadFromWebSession(
+        url: String,
+        cookies: String?,
+        userAgent: String?,
+        contentDisposition: String?,
+        mimeType: String?,
+        destDir: File
+    ): Result<File> = withContext(Dispatchers.IO) {
+        runCatching {
+            val reqBuilder = Request.Builder().url(url).get()
+            if (!cookies.isNullOrBlank()) reqBuilder.addHeader("Cookie", cookies)
+            if (!userAgent.isNullOrBlank()) reqBuilder.addHeader("User-Agent", userAgent)
+
+            httpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    throw IllegalStateException("Cloud download failed (HTTP ${resp.code})")
+                }
+                val body = resp.body ?: throw IllegalStateException("Empty download response")
+                val rawName = android.webkit.URLUtil.guessFileName(
+                    url,
+                    contentDisposition ?: resp.header("Content-Disposition"),
+                    mimeType ?: resp.header("Content-Type")
+                ).ifBlank { "cloud_download_${System.currentTimeMillis()}" }
+
+                if (!destDir.exists()) destDir.mkdirs()
+                val destFile = File(destDir, rawName)
+                body.byteStream().use { input ->
+                    destFile.outputStream().buffered().use { out -> input.copyTo(out) }
+                }
+                destFile
+            }
         }
     }
 }

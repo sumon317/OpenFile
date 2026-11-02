@@ -3,6 +3,7 @@ package com.example.ui.components
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.media.MediaPlayer
+import android.net.Uri
 import android.os.ParcelFileDescriptor
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -97,6 +98,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -105,6 +107,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.core.database.TransferJobEntity
 import com.example.core.filesystem.ConflictPromptRequest
 import com.example.core.filesystem.FileChecksums
@@ -156,8 +159,16 @@ fun FileIconBadge(
 
     val ext = file.extension.lowercase()
     if (showThumbnails && !file.isDirectory && file.providerType == ProviderType.LOCAL && ext in FileCategory.IMAGES.extensions) {
+        val context = LocalContext.current
+        val imageRequest = remember(file.uriOrPath) {
+            ImageRequest.Builder(context)
+                .data(File(file.uriOrPath))
+                .size(128)
+                .crossfade(false)
+                .build()
+        }
         AsyncImage(
-            model = File(file.uriOrPath),
+            model = imageRequest,
             contentDescription = file.displayName,
             contentScale = ContentScale.Crop,
             modifier = modifier
@@ -276,7 +287,9 @@ fun FileItemRow(
     onToggleBookmark: () -> Unit,
     onShare: () -> Unit,
     onProperties: () -> Unit,
-    onDownloadRemote: (() -> Unit)? = null
+    onDownloadRemote: (() -> Unit)? = null,
+    onOpenWith: (() -> Unit)? = null,
+    onQuickPreview: (() -> Unit)? = null
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val dateStr = remember(file.lastModifiedEpochMs) {
@@ -364,6 +377,26 @@ fun FileItemRow(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false }
                 ) {
+                    if (onOpenWith != null && !file.isDirectory) {
+                        DropdownMenuItem(
+                            text = { Text("Open With...") },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onOpenWith()
+                            }
+                        )
+                    }
+                    if (onQuickPreview != null && !file.isDirectory) {
+                        DropdownMenuItem(
+                            text = { Text("Quick Preview") },
+                            leadingIcon = { Icon(Icons.Filled.Description, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onQuickPreview()
+                            }
+                        )
+                    }
                     if (onDownloadRemote != null && !file.isDirectory) {
                         DropdownMenuItem(
                             text = { Text("Download to Local") },
@@ -505,7 +538,9 @@ fun FileItemGridCard(
                 Text(
                     text = file.formattedSize,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1
                 )
                 IconButton(
                     onClick = onProperties,
@@ -514,7 +549,8 @@ fun FileItemGridCard(
                     Icon(
                         imageVector = Icons.Filled.Info,
                         contentDescription = "Info",
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -809,14 +845,18 @@ fun FilePreviewDialog(
                         .padding(12.dp)
                 ) {
                     when {
-                        ext in FileCategory.IMAGES.extensions && file.providerType == ProviderType.LOCAL -> {
-                            ZoomableImagePreview(File(file.uriOrPath))
+                        ext in FileCategory.IMAGES.extensions -> {
+                            val imgModel = if (file.providerType == ProviderType.LOCAL) File(file.uriOrPath) else file.uriOrPath
+                            ZoomableImagePreview(imgModel, file.displayName)
                         }
-                        ext == "pdf" && file.providerType == ProviderType.LOCAL -> {
-                            PdfDocumentPreview(File(file.uriOrPath))
+                        ext == "pdf" -> {
+                            PdfDocumentPreview(file)
                         }
-                        ext in FileCategory.AUDIO.extensions && file.providerType == ProviderType.LOCAL -> {
-                            AudioPlayerPreview(File(file.uriOrPath), file.displayName)
+                        ext in FileCategory.AUDIO.extensions -> {
+                            AudioPlayerPreview(file, file.displayName)
+                        }
+                        ext in FileCategory.VIDEOS.extensions || file.mimeType.startsWith("video/") -> {
+                            VideoPreviewPlaceholder(file = file, onOpenExternal = { onOpenExternal(file) })
                         }
                         else -> {
                             TextAndCodePreview(file)
@@ -829,7 +869,58 @@ fun FilePreviewDialog(
 }
 
 @Composable
-private fun ZoomableImagePreview(imageFile: File) {
+private fun VideoPreviewPlaceholder(
+    file: FileReference,
+    onOpenExternal: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier.size(96.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = "Play Video",
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(48.dp)
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = file.displayName,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "${file.mimeType} • ${file.formattedSize}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+        Button(
+            onClick = onOpenExternal
+        ) {
+            Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Open in Video Player")
+        }
+    }
+}
+
+@Composable
+private fun ZoomableImagePreview(imageModel: Any, title: String) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
@@ -852,8 +943,8 @@ private fun ZoomableImagePreview(imageFile: File) {
         contentAlignment = Alignment.Center
     ) {
         AsyncImage(
-            model = imageFile,
-            contentDescription = imageFile.name,
+            model = imageModel,
+            contentDescription = title,
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer(
@@ -867,17 +958,23 @@ private fun ZoomableImagePreview(imageFile: File) {
 }
 
 @Composable
-private fun PdfDocumentPreview(pdfFile: File) {
+private fun PdfDocumentPreview(file: FileReference) {
+    val context = LocalContext.current
     var pageCount by remember { mutableIntStateOf(0) }
     var currentPageIndex by remember { mutableIntStateOf(0) }
     var pageBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(pdfFile, currentPageIndex) {
+    LaunchedEffect(file, currentPageIndex) {
         withContext(Dispatchers.IO) {
             runCatching {
-                ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-                    PdfRenderer(pfd).use { renderer ->
+                val pfd = if (file.providerType == ProviderType.LOCAL) {
+                    ParcelFileDescriptor.open(File(file.uriOrPath), ParcelFileDescriptor.MODE_READ_ONLY)
+                } else {
+                    context.contentResolver.openFileDescriptor(Uri.parse(file.uriOrPath), "r")
+                } ?: throw IllegalStateException("Cannot open file descriptor for PDF")
+                pfd.use { descriptor ->
+                    PdfRenderer(descriptor).use { renderer ->
                         pageCount = renderer.pageCount
                         if (renderer.pageCount > 0) {
                             val idx = currentPageIndex.coerceIn(0, renderer.pageCount - 1)
@@ -939,26 +1036,45 @@ private fun PdfDocumentPreview(pdfFile: File) {
 }
 
 @Composable
-private fun AudioPlayerPreview(audioFile: File, title: String) {
+private fun AudioPlayerPreview(file: FileReference, title: String) {
+    val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(false) }
+    var isPrepared by remember { mutableStateOf(false) }
     var playerError by remember { mutableStateOf<String?>(null) }
-    val mediaPlayer = remember(audioFile) {
-        runCatching {
-            MediaPlayer().apply {
-                setDataSource(audioFile.absolutePath)
-                prepare()
-                setOnCompletionListener { isPlaying = false }
+    var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+
+    LaunchedEffect(file) {
+        isPrepared = false
+        isPlaying = false
+        playerError = null
+        val prepared = withContext(Dispatchers.IO) {
+            runCatching {
+                MediaPlayer().apply {
+                    if (file.providerType == ProviderType.LOCAL) {
+                        setDataSource(File(file.uriOrPath).absolutePath)
+                    } else {
+                        setDataSource(context, Uri.parse(file.uriOrPath))
+                    }
+                    prepare()
+                    setOnCompletionListener { isPlaying = false }
+                }
             }
+        }
+        prepared.onSuccess {
+            mediaPlayer = it
+            isPrepared = true
         }.onFailure {
-            playerError = it.message
-        }.getOrNull()
+            playerError = it.message ?: "Unable to prepare audio"
+        }
     }
 
-    DisposableEffect(mediaPlayer) {
+    DisposableEffect(file) {
         onDispose {
+            val mp = mediaPlayer
+            mediaPlayer = null
             runCatching {
-                mediaPlayer?.stop()
-                mediaPlayer?.release()
+                mp?.stop()
+                mp?.release()
             }
         }
     }
@@ -1020,18 +1136,26 @@ private fun TextAndCodePreview(file: FileReference) {
         withContext(Dispatchers.IO) {
             runCatching {
                 if (file.providerType == ProviderType.LOCAL) {
-                    val raw = File(file.uriOrPath).inputStream().bufferedReader().use { reader ->
-                        val lines = mutableListOf<String>()
-                        var count = 0
-                        var line = reader.readLine()
-                        while (line != null && count < 400) {
-                            lines.add(line)
-                            count++
-                            line = reader.readLine()
+                    val targetFile = File(file.uriOrPath)
+                    val sampleBuffer = ByteArray(4096)
+                    val bytesRead = targetFile.inputStream().use { it.read(sampleBuffer) }
+                    val isBinary = bytesRead > 0 && sampleBuffer.take(bytesRead).any { it == 0.toByte() }
+                    if (isBinary) {
+                        contentLines = listOf("Binary file: Cannot preview as text. Use 'Open With' above to open with an external application.")
+                    } else {
+                        val raw = targetFile.inputStream().bufferedReader().use { reader ->
+                            val lines = mutableListOf<String>()
+                            var count = 0
+                            var line = reader.readLine()
+                            while (line != null && count < 400) {
+                                lines.add(line)
+                                count++
+                                line = reader.readLine()
+                            }
+                            lines
                         }
-                        lines
+                        contentLines = raw.ifEmpty { listOf("(Empty file)") }
                     }
-                    contentLines = raw.ifEmpty { listOf("(Empty file)") }
                 } else {
                     contentLines = listOf("Remote file preview: Download to local storage to inspect full contents.")
                 }

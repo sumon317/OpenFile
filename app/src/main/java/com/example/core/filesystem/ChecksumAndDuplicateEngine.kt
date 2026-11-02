@@ -3,7 +3,12 @@ package com.example.core.filesystem
 import com.example.core.model.DuplicateFileGroup
 import com.example.core.model.FileReference
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
@@ -23,6 +28,7 @@ object ChecksumAndDuplicateEngine {
 
     private const val STREAM_BUFFER_SIZE = 64 * 1024
     private const val PARTIAL_HASH_BYTES = 16 * 1024L
+    private const val MAX_CONCURRENT_HASH_WORKERS = 4
 
     /**
      * Computes both MD5 and SHA-256 in a single streaming pass over [inputStream].
@@ -63,8 +69,8 @@ object ChecksumAndDuplicateEngine {
     /**
      * Detects duplicate files inside [candidateFiles] without hashing unique-sized files:
      * 1. Group by exact byte size (> 0 bytes).
-     * 2. For size-collision groups, compute a fast 16 KB head + 16 KB tail fingerprint.
-     * 3. For head/tail matches, compute full streaming SHA-256 to guarantee zero false positives.
+     * 2. For size-collision groups, compute a fast 16 KB head + 16 KB tail fingerprint in parallel.
+     * 3. For head/tail matches, compute full streaming SHA-256 in parallel to guarantee zero false positives.
      */
     suspend fun findDuplicates(
         candidateFiles: List<FileReference>,
@@ -75,32 +81,53 @@ object ChecksumAndDuplicateEngine {
             .groupBy { it.sizeBytes }
             .filterValues { it.size > 1 }
 
+        if (sizeGroups.isEmpty()) return@withContext emptyList()
+
+        val semaphore = Semaphore(MAX_CONCURRENT_HASH_WORKERS)
         val duplicates = mutableListOf<DuplicateFileGroup>()
 
         for ((sizeBytes, group) in sizeGroups) {
             coroutineContext.ensureActive()
-            // Stage 1: Fast partial fingerprint for local files
-            val partialGroups = group.groupBy { ref ->
-                val file = File(ref.uriOrPath)
-                if (file.exists() && file.canRead()) {
-                    computeHeadTailFingerprint(file)
-                } else {
-                    "full_required"
-                }
-            }.filterValues { it.size > 1 }
-
-            // Stage 2: Full SHA-256 verification
-            for ((_, subGroup) in partialGroups) {
-                val fullHashGroups = mutableMapOf<String, MutableList<FileReference>>()
-                for (ref in subGroup) {
-                    coroutineContext.ensureActive()
-                    val sha = runCatching {
-                        localProvider.openInputStream(ref).getOrThrow().use { stream ->
-                            computeChecksums(stream).sha256Hex
+            // Stage 1: Fast partial fingerprint for local files (parallelized across worker permits)
+            val fingerprintedPairs = coroutineScope {
+                group.map { ref ->
+                    async {
+                        semaphore.withPermit {
+                            coroutineContext.ensureActive()
+                            val file = File(ref.uriOrPath)
+                            val fp = if (file.exists() && file.canRead()) {
+                                runCatching { computeHeadTailFingerprint(file) }.getOrDefault("full_required")
+                            } else {
+                                "full_required"
+                            }
+                            fp to ref
                         }
-                    }.getOrNull() ?: continue
-                    fullHashGroups.getOrPut(sha) { mutableListOf() }.add(ref)
+                    }
+                }.awaitAll()
+            }
+
+            val partialGroups = fingerprintedPairs
+                .groupBy({ it.first }, { it.second })
+                .filterValues { it.size > 1 }
+
+            // Stage 2: Full SHA-256 verification (parallelized across worker permits)
+            for ((_, subGroup) in partialGroups) {
+                val fullHashPairs = coroutineScope {
+                    subGroup.map { ref ->
+                        async {
+                            semaphore.withPermit {
+                                coroutineContext.ensureActive()
+                                val sha = runCatching {
+                                    localProvider.openInputStream(ref).getOrThrow().use { stream ->
+                                        computeChecksums(stream).sha256Hex
+                                    }
+                                }.getOrNull()
+                                if (sha != null) sha to ref else null
+                            }
+                        }
+                    }.awaitAll().filterNotNull()
                 }
+                val fullHashGroups = fullHashPairs.groupBy({ it.first }, { it.second })
                 for ((sha, matchedRefs) in fullHashGroups) {
                     if (matchedRefs.size > 1) {
                         duplicates.add(

@@ -2,9 +2,16 @@ package com.example.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import com.example.core.cloud.GoogleDriveOnDeviceAuth
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -21,15 +28,26 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Radar
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Surface
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -50,8 +68,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -96,9 +117,10 @@ fun NetworkScreen(
     onConnectProfile: (NetworkProfileEntity) -> Unit,
     onScanLan: () -> Unit,
     onTrustSshHostKey: (SshHostKeyPrompt) -> Unit,
-    onDismissSshPrompt: () -> Unit
+    onDismissSshPrompt: () -> Unit,
+    initialTab: Int = 0
 ) {
-    var selectedTab by remember { mutableIntStateOf(0) }
+    var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab) }
     var showAddProfileDialog by remember { mutableStateOf(false) }
 
     Column(
@@ -218,7 +240,14 @@ private fun FtpServerControlTab(
     onStopFtpServer: () -> Unit,
     onUpdateFtpConfig: (Int, Int, Int, String, Boolean, Boolean, Boolean, Int, String) -> Unit
 ) {
-    val resolvedLanIp = remember(ftpState.isRunning) { FtpServerEngine.resolveLocalLanIpAddress() }
+    val resolvedLanIp by produceState(
+        initialValue = ftpState.boundIpAddress.ifBlank { "127.0.0.1" },
+        ftpState.isRunning
+    ) {
+        value = withContext(Dispatchers.IO) {
+            FtpServerEngine.resolveLocalLanIpAddress()
+        }
+    }
     var portText by remember(settings.ftpPort) { mutableStateOf(settings.ftpPort.toString()) }
     var pasvStartText by remember(settings.ftpPassivePortStart) { mutableStateOf(settings.ftpPassivePortStart.toString()) }
     var pasvEndText by remember(settings.ftpPassivePortEnd) { mutableStateOf(settings.ftpPassivePortEnd.toString()) }
@@ -493,40 +522,118 @@ private fun RemoteClientsTab(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Saved Server Profiles", style = MaterialTheme.typography.titleMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = onScanLan,
-                        enabled = !isScanningLan,
-                        modifier = Modifier.testTag("network_scan_lan_button")
-                    ) {
-                        if (isScanningLan) {
-                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Filled.Radar, contentDescription = null, modifier = Modifier.size(16.dp))
-                        }
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Scan LAN")
+                Text(
+                    text = if (profiles.isNotEmpty()) "Saved Servers (${profiles.size})" else "Saved Servers",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                OutlinedButton(
+                    onClick = onScanLan,
+                    enabled = !isScanningLan,
+                    modifier = Modifier.testTag("network_scan_lan_button")
+                ) {
+                    if (isScanningLan) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Filled.Radar, contentDescription = null, modifier = Modifier.size(16.dp))
                     }
-                    Button(
-                        onClick = onAddProfileClick,
-                        modifier = Modifier.testTag("network_add_profile_button")
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Scan LAN")
+                }
+            }
+        }
+
+        item {
+            Card(
+                onClick = onAddProfileClick,
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                ),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("network_add_profile_button")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.primary),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Add Server")
+                        Icon(
+                            imageVector = Icons.Filled.Add,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(24.dp)
+                        )
                     }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Add Server Connection",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                        Text(
+                            text = "FTP, FTPS, SFTP (SSH), or SMB2/3 network share",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
                 }
             }
         }
 
         if (profiles.isEmpty()) {
             item {
-                Text(
-                    text = "No saved servers yet. Add an FTP, FTPS, SFTP (SSH), or SMB2/3 connection profile.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Lan,
+                            contentDescription = null,
+                            modifier = Modifier.size(32.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "No saved servers yet",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Tap 'Add Server Connection' above or scan your local network to discover open shares.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
             }
         } else {
             items(profiles, key = { it.id }) { profile ->
@@ -726,7 +833,7 @@ private fun AddNetworkProfileDialog(
 
 /**
  * Extensible Cloud Storage Integration Screen (Google Drive, Microsoft OneDrive, Dropbox)
- * with OAuth 2.0 PKCE authorization and encrypted Keystore token management.
+ * with 1-tap direct webpage login & storage view (File Manager + style) and OAuth 2.0 PKCE support.
  */
 @Composable
 fun CloudStorageScreen(
@@ -736,10 +843,72 @@ fun CloudStorageScreen(
     onCompleteOAuth: (String, String, Boolean) -> Unit,
     onOpenCloudAccount: (CloudAccountEntity) -> Unit,
     onDisconnectAccount: (CloudAccountEntity) -> Unit,
-    onShowMessage: (String) -> Unit
+    onShowMessage: (String) -> Unit,
+    onGoogleDriveAuthorized: (String, String?) -> Unit = { _, _ -> },
+    activeWebCloudProvider: CloudProviderKind? = null,
+    activeWebCloudUrl: String? = null,
+    onConnectProviderDirect: (CloudProviderKind) -> Unit = {},
+    onWebCloudAuthenticated: (CloudProviderKind, String?) -> Unit = { _, _ -> },
+    onOAuthRedirectUri: (Uri) -> Unit = {},
+    onDownloadCloudWebFile: (String, String?, String?, String?, String?) -> Unit = { _, _, _, _, _ -> },
+    onCloseWebCloudPortal: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var configuringProvider by remember { mutableStateOf<CloudProviderKind?>(null) }
+
+    val googleConsentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { activityResult ->
+        runCatching { GoogleDriveOnDeviceAuth.resultFromConsentIntent(context, activityResult.data) }
+            .onSuccess { r ->
+                val token = r.accessToken
+                if (token.isNullOrBlank()) {
+                    onConnectProviderDirect(CloudProviderKind.GOOGLE_DRIVE)
+                } else {
+                    onGoogleDriveAuthorized(token, r.toGoogleSignInAccount()?.email)
+                }
+            }
+            .onFailure {
+                onConnectProviderDirect(CloudProviderKind.GOOGLE_DRIVE)
+            }
+    }
+
+    // One-tap Google Drive connect: tries Play Services on-device auth first; if not configured in Cloud Console,
+    // immediately opens the Google Drive login webpage inside the app and shows the storage!
+    val connectGoogleDrive: () -> Unit = {
+        scope.launch {
+            runCatching { GoogleDriveOnDeviceAuth.authorize(context) }
+                .onSuccess { r ->
+                    val pending = r.pendingIntent
+                    val token = r.accessToken
+                    if (r.hasResolution() && pending != null) {
+                        googleConsentLauncher.launch(IntentSenderRequest.Builder(pending.intentSender).build())
+                    } else if (!token.isNullOrBlank()) {
+                        onGoogleDriveAuthorized(token, r.toGoogleSignInAccount()?.email)
+                    } else {
+                        onConnectProviderDirect(CloudProviderKind.GOOGLE_DRIVE)
+                    }
+                }
+                .onFailure {
+                    onConnectProviderDirect(CloudProviderKind.GOOGLE_DRIVE)
+                }
+        }
+    }
+
+    // If the user tapped Connect or opened a connected cloud account, display the full-screen
+    // in-app Cloud Login & Storage View right inside the app!
+    if (activeWebCloudProvider != null && !activeWebCloudUrl.isNullOrBlank()) {
+        CloudWebPortalView(
+            provider = activeWebCloudProvider,
+            initialUrl = activeWebCloudUrl,
+            onWebCloudAuthenticated = onWebCloudAuthenticated,
+            onOAuthRedirectUri = onOAuthRedirectUri,
+            onDownloadCloudWebFile = onDownloadCloudWebFile,
+            onClose = onCloseWebCloudPortal
+        )
+        return
+    }
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -751,43 +920,10 @@ fun CloudStorageScreen(
         item {
             Text("Cloud Storage Providers", style = MaterialTheme.typography.titleLarge)
             Text(
-                text = "Connect Google Drive, Microsoft OneDrive, or Dropbox using official OAuth 2.0 PKCE flows. Tokens are encrypted with AES-256-GCM inside Android Keystore.",
+                text = "Tap Connect on any cloud provider to sign in directly on its login page and browse, upload, or download your cloud files right inside OpenFile.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-        }
-
-        // Provider Connector Cards
-        items(CloudProviderKind.entries) { provider ->
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                ),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Cloud, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(provider.displayName, style = MaterialTheme.typography.titleSmall)
-                            Text("Official REST API + OAuth 2.0 PKCE", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                    Button(
-                        onClick = { configuringProvider = provider },
-                        modifier = Modifier.testTag("connect_${provider.id}")
-                    ) {
-                        Text("Connect")
-                    }
-                }
-            }
         }
 
         if (accounts.isNotEmpty()) {
@@ -801,7 +937,9 @@ fun CloudStorageScreen(
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
                     ),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("cloud_account_card_${acc.provider}")
                 ) {
                     Row(
                         modifier = Modifier
@@ -810,12 +948,97 @@ fun CloudStorageScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(acc.displayName, style = MaterialTheme.typography.titleSmall)
-                            Text(acc.accountEmail, style = MaterialTheme.typography.bodySmall)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Cloud,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(acc.displayName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Text(acc.accountEmail, style = MaterialTheme.typography.bodySmall)
+                            }
                         }
-                        IconButton(onClick = { onDisconnectAccount(acc) }) {
-                            Icon(Icons.Filled.Delete, contentDescription = "Disconnect account", tint = MaterialTheme.colorScheme.error)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = "Open cloud storage",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            IconButton(onClick = { onDisconnectAccount(acc) }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "Disconnect account", tint = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
+            }
+            item {
+                HorizontalDivider()
+            }
+        }
+
+        // Provider Connector Cards
+        items(CloudProviderKind.entries) { provider ->
+            val isConnected = accounts.any { it.provider == provider.name }
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Filled.Cloud, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(provider.displayName, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                text = if (isConnected) "Connected • Tap above or Connect to open storage" else "Direct Web Login + OAuth 2.0",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (isConnected) ApkGreen else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        IconButton(
+                            onClick = { configuringProvider = provider },
+                            modifier = Modifier.testTag("configure_oauth_${provider.id}")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Key,
+                                contentDescription = "Custom OAuth API Key for ${provider.displayName}",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                if (provider == CloudProviderKind.GOOGLE_DRIVE &&
+                                    provider.defaultClientIdFromBuildConfig().isBlank()
+                                ) {
+                                    connectGoogleDrive()
+                                } else {
+                                    onConnectProviderDirect(provider)
+                                }
+                            },
+                            modifier = Modifier.testTag("connect_${provider.id}")
+                        ) {
+                            Text("Connect")
                         }
                     }
                 }
@@ -832,7 +1055,7 @@ fun CloudStorageScreen(
 
         AlertDialog(
             onDismissRequest = { configuringProvider = null },
-            title = { Text("Connect ${provider.displayName}") },
+            title = { Text("Custom OAuth Key: ${provider.displayName}") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
@@ -857,6 +1080,9 @@ fun CloudStorageScreen(
                                                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                             }
                                         )
+                                        configuringProvider = null
+                                    }.onFailure {
+                                        onShowMessage("No browser available to sign in: ${it.message}")
                                     }
                                 },
                                 onFailure = { onShowMessage(it.message ?: "Invalid Client ID") }
@@ -897,6 +1123,254 @@ fun CloudStorageScreen(
             },
             dismissButton = {
                 TextButton(onClick = { configuringProvider = null }) { Text("Cancel") }
+            }
+        )
+    }
+}
+
+/**
+ * In-App Cloud Login & Storage View (File Manager + style).
+ * Takes the user directly to the Google Drive / OneDrive / Dropbox login webpage,
+ * persists authenticated cookies, detects when the user lands on their cloud storage,
+ * and bridges file uploads & downloads directly with the device storage.
+ */
+@android.annotation.SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun CloudWebPortalView(
+    provider: CloudProviderKind,
+    initialUrl: String,
+    onWebCloudAuthenticated: (CloudProviderKind, String?) -> Unit,
+    onOAuthRedirectUri: (Uri) -> Unit,
+    onDownloadCloudWebFile: (String, String?, String?, String?, String?) -> Unit,
+    onClose: () -> Unit
+) {
+    val context = LocalContext.current
+    var webViewRef by remember { mutableStateOf<android.webkit.WebView?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    var loadProgress by remember { mutableIntStateOf(10) }
+    var currentUrl by remember { mutableStateOf(initialUrl) }
+    var isAuthenticated by remember { mutableStateOf(provider.isAuthenticatedPortalUrl(initialUrl)) }
+    var pendingFileChooserCallback by remember {
+        mutableStateOf<android.webkit.ValueCallback<Array<Uri>>?>(null)
+    }
+
+    val fileUploadLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        pendingFileChooserCallback?.onReceiveValue(uris.toTypedArray())
+        pendingFileChooserCallback = null
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("cloud_web_portal_view")
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 4.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    IconButton(
+                        onClick = {
+                            val wv = webViewRef
+                            if (wv != null && wv.canGoBack()) {
+                                wv.goBack()
+                            } else {
+                                onClose()
+                            }
+                        }
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = provider.displayName,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (isAuthenticated) {
+                                "Connected • Downloads save to /Download"
+                            } else {
+                                "Sign in to access your ${provider.displayName}"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isAuthenticated) ApkGreen else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { webViewRef?.reload() }) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "Reload cloud page")
+                    }
+                    IconButton(
+                        onClick = {
+                            runCatching {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(currentUrl)).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                )
+                            }
+                        }
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = "Open in external browser")
+                    }
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier.testTag("cloud_web_portal_close")
+                    ) {
+                        Icon(Icons.Filled.Close, contentDescription = "Close cloud portal")
+                    }
+                }
+            }
+        }
+
+        if (isLoading) {
+            LinearProgressIndicator(
+                progress = { (loadProgress / 100f).coerceIn(0.05f, 1f) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+            )
+        }
+
+        AndroidView(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            factory = { ctx ->
+                android.webkit.WebView(ctx).apply {
+                    webViewRef = this
+                    val cookieManager = android.webkit.CookieManager.getInstance()
+                    cookieManager.setAcceptCookie(true)
+                    cookieManager.setAcceptThirdPartyCookies(this, true)
+
+                    settings.apply {
+                        javaScriptEnabled = true
+                        domStorageEnabled = true
+                        databaseEnabled = true
+                        loadsImagesAutomatically = true
+                        useWideViewPort = true
+                        loadWithOverviewMode = true
+                        builtInZoomControls = true
+                        displayZoomControls = false
+                        setSupportMultipleWindows(false)
+                        // Strip '; wv' from WebView User-Agent so Google Drive, OneDrive, and Dropbox
+                        // allow standard web sign-in without blocking embedded WebViews.
+                        val defaultUa = userAgentString ?: ""
+                        userAgentString = defaultUa
+                            .replace("; wv", "")
+                            .replace(Regex("Version/\\d+\\.\\d+\\s*"), "")
+                            .ifBlank {
+                                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+                            }
+                    }
+
+                    webViewClient = object : android.webkit.WebViewClient() {
+                        override fun shouldOverrideUrlLoading(
+                            view: android.webkit.WebView?,
+                            request: android.webkit.WebResourceRequest?
+                        ): Boolean {
+                            val reqUri = request?.url ?: return false
+                            val scheme = reqUri.scheme?.lowercase().orEmpty()
+                            if (scheme == "com.openfile.manager") {
+                                onOAuthRedirectUri(reqUri)
+                                return true
+                            }
+                            if (scheme != "http" && scheme != "https") {
+                                runCatching {
+                                    ctx.startActivity(Intent(Intent.ACTION_VIEW, reqUri).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    })
+                                }
+                                return true
+                            }
+                            return false
+                        }
+
+                        override fun onPageStarted(
+                            view: android.webkit.WebView?,
+                            url: String?,
+                            favicon: android.graphics.Bitmap?
+                        ) {
+                            super.onPageStarted(view, url, favicon)
+                            isLoading = true
+                            if (!url.isNullOrBlank()) {
+                                currentUrl = url
+                            }
+                        }
+
+                        override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
+                            super.onPageFinished(view, url)
+                            isLoading = false
+                            android.webkit.CookieManager.getInstance().flush()
+                            val loadedUrl = url ?: return
+                            currentUrl = loadedUrl
+                            if (provider.isAuthenticatedPortalUrl(loadedUrl)) {
+                                isAuthenticated = true
+                                val pageTitle = view?.title
+                                    ?.replace(" - Google Drive", "")
+                                    ?.replace(" - OneDrive", "")
+                                    ?.replace(" - Dropbox", "")
+                                    ?.trim()
+                                    ?.takeIf { it.isNotBlank() }
+                                onWebCloudAuthenticated(
+                                    provider,
+                                    pageTitle ?: "${provider.displayName} (Web Session)"
+                                )
+                            }
+                        }
+                    }
+
+                    webChromeClient = object : android.webkit.WebChromeClient() {
+                        override fun onProgressChanged(view: android.webkit.WebView?, newProgress: Int) {
+                            loadProgress = newProgress
+                            if (newProgress >= 100) isLoading = false
+                        }
+
+                        override fun onShowFileChooser(
+                            webView: android.webkit.WebView?,
+                            filePathCallback: android.webkit.ValueCallback<Array<Uri>>?,
+                            fileChooserParams: FileChooserParams?
+                        ): Boolean {
+                            pendingFileChooserCallback?.onReceiveValue(null)
+                            pendingFileChooserCallback = filePathCallback
+                            return runCatching {
+                                fileUploadLauncher.launch("*/*")
+                                true
+                            }.getOrElse {
+                                pendingFileChooserCallback = null
+                                false
+                            }
+                        }
+                    }
+
+                    setDownloadListener { downloadUrl, userAgent, contentDisposition, mimeType, _ ->
+                        val cookies = android.webkit.CookieManager.getInstance().getCookie(downloadUrl)
+                        onDownloadCloudWebFile(
+                            downloadUrl,
+                            cookies,
+                            userAgent,
+                            contentDisposition,
+                            mimeType
+                        )
+                    }
+
+                    loadUrl(initialUrl)
+                }
             }
         )
     }
