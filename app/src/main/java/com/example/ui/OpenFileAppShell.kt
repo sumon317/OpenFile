@@ -5,6 +5,7 @@ import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -18,12 +19,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.Contrast
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.FolderOpen
@@ -165,6 +170,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
 
     LaunchedEffect(statusMessage) {
         val msg = statusMessage ?: return@LaunchedEffect
+        snackbarHostState.currentSnackbarData?.dismiss()
         snackbarHostState.showSnackbar(msg)
         viewModel.clearStatusMessage()
     }
@@ -213,6 +219,13 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
             ThemeMode.AMOLED -> ThemeMode.SYSTEM
         }
         viewModel.setThemeMode(nextMode)
+        val modeLabel = when (nextMode) {
+            ThemeMode.SYSTEM -> "System Default"
+            ThemeMode.LIGHT -> "Light Theme"
+            ThemeMode.DARK -> "Dark Theme"
+            ThemeMode.AMOLED -> "Pure Black (AMOLED)"
+        }
+        viewModel.showStatus("Theme: $modeLabel")
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -302,24 +315,57 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                 drawerState = drawerState,
                 drawerContent = {
                     ModalDrawerSheet(
+                        drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
                         modifier = Modifier
-                            .width(300.dp)
+                            .width(305.dp)
                             .verticalScroll(rememberScrollState())
                             .testTag("navigation_drawer_sheet")
                     ) {
-                        Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
-                            Text(
-                                text = "OpenFile",
-                                style = MaterialTheme.typography.headlineMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = "Capability-Aware File Manager",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                            shape = RoundedCornerShape(18.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.primary,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.size(42.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Filled.FolderOpen,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onPrimary,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        text = "OpenFile",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "Capability-Aware File Manager",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
                         }
-                        HorizontalDivider()
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        )
 
                         DrawerSection.entries.forEach { section ->
                             Text(
@@ -481,109 +527,128 @@ private fun MainScaffoldContent(
 
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
+        containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ),
-                navigationIcon = {
-                    Row {
-                        if (!isExpandedTablet) {
-                            IconButton(
-                                onClick = onOpenDrawer,
-                                modifier = Modifier.testTag("top_bar_drawer_button")
-                            ) {
-                                Icon(Icons.Filled.Menu, contentDescription = "Open navigation menu")
-                            }
-                        }
-                        if (currentDest != OpenFileDestination.HOME) {
-                            IconButton(
-                                onClick = onNavigateUp,
-                                modifier = Modifier.testTag("top_bar_back_button")
-                            ) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Navigate back")
-                            }
-                        }
-                    }
-                },
-                title = {
-                    Text(
-                        text = if (currentDest == OpenFileDestination.HOME) "OpenFile" else currentDest.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                },
-                actions = {
-                    // Quick Theme Mode Cycle Button (SYSTEM -> LIGHT -> DARK -> AMOLED)
-                    IconButton(
-                        onClick = onCycleThemeMode,
-                        modifier = Modifier.testTag("top_bar_theme_button")
-                    ) {
-                        val themeIcon = when (currentThemeMode) {
-                            ThemeMode.LIGHT -> Icons.Filled.LightMode
-                            ThemeMode.DARK -> Icons.Filled.DarkMode
-                            ThemeMode.AMOLED -> Icons.Filled.Contrast
-                            ThemeMode.SYSTEM -> Icons.Filled.Contrast
-                        }
-                        Icon(
-                            imageVector = themeIcon,
-                            contentDescription = "Cycle Theme (${currentThemeMode.name})"
-                        )
-                    }
-                    // Transfer Queue Button with Badge
-                    IconButton(
-                        onClick = onOpenTransferQueue,
-                        modifier = Modifier.testTag("top_bar_transfer_queue_button")
-                    ) {
-                        BadgedBox(
-                            badge = {
-                                if (activeTransferCount > 0) {
-                                    Badge { Text(activeTransferCount.toString()) }
+            Column {
+                TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface,
+                        navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
+                        actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    ),
+                    navigationIcon = {
+                        Row {
+                            if (!isExpandedTablet) {
+                                IconButton(
+                                    onClick = onOpenDrawer,
+                                    modifier = Modifier.testTag("top_bar_drawer_button")
+                                ) {
+                                    Icon(Icons.Filled.Menu, contentDescription = "Open navigation menu")
                                 }
                             }
-                        ) {
-                            Icon(Icons.Filled.SwapVert, contentDescription = "Transfer Queue")
+                            if (currentDest != OpenFileDestination.HOME) {
+                                IconButton(
+                                    onClick = onNavigateUp,
+                                    modifier = Modifier.testTag("top_bar_back_button")
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Navigate back")
+                                }
+                            }
                         }
-                    }
-                    // Refresh
-                    IconButton(
-                        onClick = onRefresh,
-                        modifier = Modifier.testTag("top_bar_refresh_button")
-                    ) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Refresh directory")
-                    }
-                    // Overflow Menu (Mount SAF Folder, etc.)
-                    Box {
+                    },
+                    title = {
+                        Text(
+                            text = if (currentDest == OpenFileDestination.HOME) "OpenFile" else currentDest.title,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    actions = {
+                        // Quick Theme Mode Cycle Button (SYSTEM -> LIGHT -> DARK -> AMOLED) with Material 3 Tonal Container
                         IconButton(
-                            onClick = { showOverflowMenu = true },
-                            modifier = Modifier.testTag("top_bar_overflow_button")
+                            onClick = onCycleThemeMode,
+                            modifier = Modifier.testTag("top_bar_theme_button")
                         ) {
-                            Icon(Icons.Filled.MoreVert, contentDescription = "More options")
-                        }
-                        DropdownMenu(
-                            expanded = showOverflowMenu,
-                            onDismissRequest = { showOverflowMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Mount SAF Folder") },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    onRequestSaf()
-                                },
-                                leadingIcon = {
+                            val themeIcon = when (currentThemeMode) {
+                                ThemeMode.LIGHT -> Icons.Filled.LightMode
+                                ThemeMode.DARK -> Icons.Filled.DarkMode
+                                ThemeMode.AMOLED -> Icons.Filled.Contrast
+                                ThemeMode.SYSTEM -> Icons.Filled.BrightnessAuto
+                            }
+                            Surface(
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                shape = CircleShape,
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
                                     Icon(
-                                        Icons.Filled.FolderOpen,
-                                        contentDescription = null
+                                        imageVector = themeIcon,
+                                        contentDescription = "Theme: ${currentThemeMode.name}",
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
-                            )
+                            }
+                        }
+                        // Transfer Queue Button with Badge
+                        IconButton(
+                            onClick = onOpenTransferQueue,
+                            modifier = Modifier.testTag("top_bar_transfer_queue_button")
+                        ) {
+                            BadgedBox(
+                                badge = {
+                                    if (activeTransferCount > 0) {
+                                        Badge { Text(activeTransferCount.toString()) }
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.Filled.SwapVert, contentDescription = "Transfer Queue")
+                            }
+                        }
+                        // Refresh
+                        IconButton(
+                            onClick = onRefresh,
+                            modifier = Modifier.testTag("top_bar_refresh_button")
+                        ) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "Refresh directory")
+                        }
+                        // Overflow Menu (Mount SAF Folder, etc.)
+                        Box {
+                            IconButton(
+                                onClick = { showOverflowMenu = true },
+                                modifier = Modifier.testTag("top_bar_overflow_button")
+                            ) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "More options")
+                            }
+                            DropdownMenu(
+                                expanded = showOverflowMenu,
+                                onDismissRequest = { showOverflowMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Mount SAF Folder") },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        onRequestSaf()
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Filled.FolderOpen,
+                                            contentDescription = null
+                                        )
+                                    }
+                                )
+                            }
                         }
                     }
-                }
-            )
+                )
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                )
+            }
         },
         bottomBar = {
             if (undoActionDescription != null) {
@@ -838,7 +903,8 @@ private fun DestinationRouter(
                 onScanLan = { viewModel.scanLanForServers() },
                 onTrustSshHostKey = { viewModel.trustAndPinSshHostKey(it) },
                 onDismissSshPrompt = { viewModel.dismissSshHostKeyPrompt() },
-                initialTab = selectedNetworkTab
+                initialTab = selectedNetworkTab,
+                savedFtpPassword = remember(settings.ftpSecretAlias) { viewModel.getSavedFtpPassword() }
             )
         }
 
@@ -880,7 +946,16 @@ private fun DestinationRouter(
             SettingsScreen(
                 settings = settings,
                 storedVaultSecretsCount = vaultCount,
-                onThemeModeChange = { viewModel.setThemeMode(it) },
+                onThemeModeChange = { mode ->
+                    viewModel.setThemeMode(mode)
+                    val modeLabel = when (mode) {
+                        ThemeMode.SYSTEM -> "System Default"
+                        ThemeMode.LIGHT -> "Light Theme"
+                        ThemeMode.DARK -> "Dark Theme"
+                        ThemeMode.AMOLED -> "Pure Black (AMOLED)"
+                    }
+                    viewModel.showStatus("Theme: $modeLabel")
+                },
                 onDynamicColorChange = { viewModel.setDynamicColor(it) },
                 onViewModeChange = { viewModel.setViewMode(it) },
                 onShowThumbnailsChange = { viewModel.setShowThumbnails(it) },

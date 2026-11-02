@@ -20,6 +20,7 @@ import com.example.core.network.RemoteNetworkClients
 import com.example.core.security.KeystoreCredentialVault
 import com.example.core.storage.StorageAnalyzerEngine
 import com.example.ui.OpenFileDestination
+import com.example.ui.theme.ThemeMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -387,13 +388,25 @@ class ExampleRobolectricTest {
     fun `UI CUJ tests theme cycling view mode toggle and directory status footer`() {
         composeTestRule.waitForIdle()
 
+        val vm = composeTestRule.activity.viewModel
+        assertEquals(ThemeMode.SYSTEM, vm.settings.value.themeMode)
+
         // Cycle theme modes via TopAppBar button (SYSTEM -> LIGHT -> DARK -> AMOLED -> SYSTEM)
         composeTestRule.onNodeWithTag("top_bar_theme_button").assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
+        assertEquals(ThemeMode.LIGHT, vm.settings.value.themeMode)
+
         composeTestRule.onNodeWithTag("top_bar_theme_button").performClick()
         composeTestRule.waitForIdle()
+        assertEquals(ThemeMode.DARK, vm.settings.value.themeMode)
+
         composeTestRule.onNodeWithTag("top_bar_theme_button").performClick()
         composeTestRule.waitForIdle()
+        assertEquals(ThemeMode.AMOLED, vm.settings.value.themeMode)
+
+        composeTestRule.onNodeWithTag("top_bar_theme_button").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(ThemeMode.SYSTEM, vm.settings.value.themeMode)
 
         // Navigate to Internal Storage Browser
         composeTestRule.onNodeWithTag("top_bar_drawer_button").performClick()
@@ -564,12 +577,18 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("network_screen").assertIsDisplayed()
         composeTestRule.onNodeWithTag("network_add_profile_button").assertIsDisplayed()
 
-        // 3. Verify 'Access from PC' opens NetworkScreen on tab 0 (Wi-Fi FTP Server)
+        // 3. Verify 'Access from PC' opens NetworkScreen on tab 0 (Wi-Fi FTP Server) with collapsed security notice and eye password toggle
         composeTestRule.runOnUiThread {
             viewModel.openNetworkTab(0)
         }
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("network_tab_ftp_server").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("ftp_security_notice_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("ftp_security_notice_toggle").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("ftp_security_notice_toggle").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("ftp_password_toggle").assertExists()
 
         // 4. Navigate to Internal Storage workspace, select 1 item, and verify Bottom Selection Bar (Copy, Move, Rename, Delete, Share, Compress)
         val workspaceRef = viewModel.localProvider.toFileReference(viewModel.localProvider.getAppWorkspaceDirectory())

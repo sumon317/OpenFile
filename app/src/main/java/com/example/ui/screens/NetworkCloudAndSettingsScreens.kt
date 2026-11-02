@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -35,6 +36,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Lock
@@ -42,6 +45,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
@@ -79,6 +84,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.core.cloud.CloudProviderKind
 import com.example.core.cloud.PkceSession
@@ -118,7 +124,8 @@ fun NetworkScreen(
     onScanLan: () -> Unit,
     onTrustSshHostKey: (SshHostKeyPrompt) -> Unit,
     onDismissSshPrompt: () -> Unit,
-    initialTab: Int = 0
+    initialTab: Int = 0,
+    savedFtpPassword: String = "openfile123"
 ) {
     var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab) }
     var showAddProfileDialog by remember { mutableStateOf(false) }
@@ -154,6 +161,7 @@ fun NetworkScreen(
             FtpServerControlTab(
                 ftpState = ftpState,
                 settings = settings,
+                initialPassword = savedFtpPassword,
                 onStartFtpServer = onStartFtpServer,
                 onStopFtpServer = onStopFtpServer,
                 onUpdateFtpConfig = onUpdateFtpConfig
@@ -236,6 +244,7 @@ fun NetworkScreen(
 private fun FtpServerControlTab(
     ftpState: FtpServerRuntimeState,
     settings: AppSettingsState,
+    initialPassword: String = "openfile123",
     onStartFtpServer: (String) -> Unit,
     onStopFtpServer: () -> Unit,
     onUpdateFtpConfig: (Int, Int, Int, String, Boolean, Boolean, Boolean, Int, String) -> Unit
@@ -252,34 +261,81 @@ private fun FtpServerControlTab(
     var pasvStartText by remember(settings.ftpPassivePortStart) { mutableStateOf(settings.ftpPassivePortStart.toString()) }
     var pasvEndText by remember(settings.ftpPassivePortEnd) { mutableStateOf(settings.ftpPassivePortEnd.toString()) }
     var username by remember(settings.ftpUsername) { mutableStateOf(settings.ftpUsername) }
-    var password by remember { mutableStateOf("openfile123") }
+    var password by remember(initialPassword) { mutableStateOf(initialPassword) }
+    var passwordVisible by remember { mutableStateOf(false) }
     var allowAnonymous by remember(settings.ftpAnonymousAllowed) { mutableStateOf(settings.ftpAnonymousAllowed) }
     var allowWrite by remember(settings.ftpAllowWrite) { mutableStateOf(settings.ftpAllowWrite) }
     var timeoutMinText by remember(settings.ftpIdleTimeoutMinutes) { mutableStateOf(settings.ftpIdleTimeoutMinutes.toString()) }
+    var isNoticeExpanded by remember { mutableStateOf(false) }
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier.fillMaxSize()
     ) {
-        // Unencrypted FTP Security Warning Banner
+        // Collapsible Unencrypted FTP Security Warning Banner (collapsed by default)
         item {
             Card(
+                onClick = { isNoticeExpanded = !isNoticeExpanded },
                 colors = CardDefaults.cardColors(
-                    containerColor = FolderAmber.copy(alpha = 0.16f)
+                    containerColor = FolderAmber.copy(alpha = 0.14f)
                 ),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("ftp_security_notice_card")
             ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
-                    Icon(Icons.Filled.Warning, contentDescription = null, tint = FolderAmber)
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "Security Notice: Standard FTP transmits credentials and files unencrypted over local Wi-Fi. Bound strictly to local LAN interface ($resolvedLanIp). Never expose to untrusted public networks.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Warning,
+                                contentDescription = null,
+                                tint = FolderAmber,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = "Security Notice",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = FolderAmber
+                            )
+                        }
+                        IconButton(
+                            onClick = { isNoticeExpanded = !isNoticeExpanded },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("ftp_security_notice_toggle")
+                        ) {
+                            Icon(
+                                imageVector = if (isNoticeExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                                contentDescription = if (isNoticeExpanded) "Collapse security notice" else "Expand security notice",
+                                tint = FolderAmber
+                            )
+                        }
+                    }
+
+                    AnimatedVisibility(visible = isNoticeExpanded) {
+                        Column {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Standard FTP transmits credentials and files unencrypted over local Wi-Fi. Bound strictly to local LAN interface ($resolvedLanIp). Never expose to untrusted public networks.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -360,6 +416,44 @@ private fun FtpServerControlTab(
 
                     if (ftpState.isRunning) {
                         HorizontalDivider()
+                        if (!allowAnonymous) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        text = "Username: $username",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = "Password: " + if (passwordVisible) password else "••••••••",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        IconButton(
+                                            onClick = { passwordVisible = !passwordVisible },
+                                            modifier = Modifier.testTag("ftp_running_password_toggle")
+                                        ) {
+                                            Icon(
+                                                imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                                contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            Text(
+                                text = "Anonymous Login Allowed (No password required)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         Text(
                             text = "Active sessions: ${ftpState.activeClientsCount} • Transferred: ${formatByteSize(ftpState.bytesTransferred)} • PASV Range: ${ftpState.passivePortRange}",
                             style = MaterialTheme.typography.labelSmall
@@ -425,10 +519,24 @@ private fun FtpServerControlTab(
                             value = password,
                             onValueChange = { password = it },
                             label = { Text("Password (Keystore)") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            enabled = !ftpState.isRunning && !allowAnonymous,
+                            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = { passwordVisible = !passwordVisible },
+                                    modifier = Modifier.testTag("ftp_password_toggle")
+                                ) {
+                                    Icon(
+                                        imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                        contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                                    )
+                                }
+                            },
+                            readOnly = ftpState.isRunning,
+                            enabled = !allowAnonymous,
                             singleLine = true,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("ftp_password_input")
                         )
                     }
 
@@ -777,6 +885,7 @@ private fun AddNetworkProfileDialog(
                     Text("Anonymous / Guest Login", style = MaterialTheme.typography.bodySmall)
                 }
                 if (!isAnonymous) {
+                    var secretVisible by remember { mutableStateOf(false) }
                     OutlinedTextField(
                         value = username,
                         onValueChange = { username = it },
@@ -791,7 +900,18 @@ private fun AddNetworkProfileDialog(
                                 if (protocol == "SFTP") "Password or PEM Private Key" else "Password (Encrypted in Keystore)"
                             )
                         },
-                        visualTransformation = PasswordVisualTransformation(),
+                        visualTransformation = if (secretVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(
+                                onClick = { secretVisible = !secretVisible },
+                                modifier = Modifier.testTag("remote_password_toggle")
+                            ) {
+                                Icon(
+                                    imageVector = if (secretVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                    contentDescription = if (secretVisible) "Hide password" else "Show password"
+                                )
+                            }
+                        },
                         singleLine = true
                     )
                 }

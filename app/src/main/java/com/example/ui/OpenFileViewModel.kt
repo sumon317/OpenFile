@@ -1217,6 +1217,15 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     // Network Suite: Local FTP Server & Remote FTP/FTPS/SFTP/SMB Clients
     // ---------------------------------------------------------------------------------------------
 
+    fun getSavedFtpPassword(): String {
+        val alias = settings.value.ftpSecretAlias
+        return if (alias.isNotBlank()) {
+            credentialVault.retrieveSecret(alias).orEmpty().ifBlank { "openfile123" }
+        } else {
+            "openfile123"
+        }
+    }
+
     fun startLocalFtpServer(passwordPlain: String) {
         viewModelScope.launch {
             val cfg = settings.first()

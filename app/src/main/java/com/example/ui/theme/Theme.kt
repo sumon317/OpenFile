@@ -2,8 +2,13 @@ package com.example.ui.theme
 
 import android.app.Activity
 import android.os.Build
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -13,6 +18,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 
 enum class ThemeMode {
@@ -21,6 +27,14 @@ enum class ThemeMode {
     DARK,
     AMOLED
 }
+
+val OpenFileShapes = Shapes(
+    extraSmall = RoundedCornerShape(8.dp),
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(20.dp),
+    extraLarge = RoundedCornerShape(28.dp)
+)
 
 private val LightColorScheme = lightColorScheme(
     primary = CobaltPrimaryLight,
@@ -35,6 +49,10 @@ private val LightColorScheme = lightColorScheme(
     onTertiary = OnAmberTertiaryLight,
     tertiaryContainer = AmberContainerLight,
     onTertiaryContainer = OnAmberTertiaryContainerLight,
+    error = ErrorLight,
+    onError = OnErrorLight,
+    errorContainer = ErrorContainerLight,
+    onErrorContainer = OnErrorContainerLight,
     background = SurfaceLight,
     onBackground = OnSurfaceLight,
     surface = SurfaceLight,
@@ -47,7 +65,10 @@ private val LightColorScheme = lightColorScheme(
     surfaceVariant = SurfaceVariantLight,
     onSurfaceVariant = OnSurfaceVariantLight,
     outline = OutlineLight,
-    outlineVariant = OutlineVariantLight
+    outlineVariant = OutlineVariantLight,
+    inverseSurface = InverseSurfaceLight,
+    inverseOnSurface = InverseOnSurfaceLight,
+    inversePrimary = InversePrimaryLight
 )
 
 private val DarkColorScheme = darkColorScheme(
@@ -63,6 +84,10 @@ private val DarkColorScheme = darkColorScheme(
     onTertiary = OnAmberTertiaryDark,
     tertiaryContainer = AmberContainerDark,
     onTertiaryContainer = OnAmberContainerDark,
+    error = ErrorDark,
+    onError = OnErrorDark,
+    errorContainer = ErrorContainerDark,
+    onErrorContainer = OnErrorContainerDark,
     background = SurfaceDark,
     onBackground = OnSurfaceDark,
     surface = SurfaceDark,
@@ -75,7 +100,10 @@ private val DarkColorScheme = darkColorScheme(
     surfaceVariant = SurfaceVariantDark,
     onSurfaceVariant = OnSurfaceVariantDark,
     outline = OutlineDark,
-    outlineVariant = OutlineVariantDark
+    outlineVariant = OutlineVariantDark,
+    inverseSurface = InverseSurfaceDark,
+    inverseOnSurface = InverseOnSurfaceDark,
+    inversePrimary = InversePrimaryDark
 )
 
 private val AmoledColorScheme = DarkColorScheme.copy(
@@ -85,8 +113,46 @@ private val AmoledColorScheme = DarkColorScheme.copy(
     surfaceContainerLow = SurfaceContainerLowAmoled,
     surfaceContainer = SurfaceContainerAmoled,
     surfaceContainerHigh = SurfaceContainerHighAmoled,
+    surfaceContainerHighest = SurfaceContainerHighestAmoled,
     surfaceVariant = SurfaceVariantAmoled,
     outlineVariant = OutlineVariantAmoled
+)
+
+@Composable
+private fun animateColor(targetValue: Color): Color =
+    animateColorAsState(
+        targetValue = targetValue,
+        animationSpec = tween(durationMillis = 280),
+        label = "m3_color_transition"
+    ).value
+
+@Composable
+private fun ColorScheme.animated(): ColorScheme = copy(
+    primary = animateColor(primary),
+    onPrimary = animateColor(onPrimary),
+    primaryContainer = animateColor(primaryContainer),
+    onPrimaryContainer = animateColor(onPrimaryContainer),
+    secondary = animateColor(secondary),
+    onSecondary = animateColor(onSecondary),
+    secondaryContainer = animateColor(secondaryContainer),
+    onSecondaryContainer = animateColor(onSecondaryContainer),
+    tertiary = animateColor(tertiary),
+    onTertiary = animateColor(onTertiary),
+    tertiaryContainer = animateColor(tertiaryContainer),
+    onTertiaryContainer = animateColor(onTertiaryContainer),
+    background = animateColor(background),
+    onBackground = animateColor(onBackground),
+    surface = animateColor(surface),
+    onSurface = animateColor(onSurface),
+    surfaceVariant = animateColor(surfaceVariant),
+    onSurfaceVariant = animateColor(onSurfaceVariant),
+    surfaceContainerLowest = animateColor(surfaceContainerLowest),
+    surfaceContainerLow = animateColor(surfaceContainerLow),
+    surfaceContainer = animateColor(surfaceContainer),
+    surfaceContainerHigh = animateColor(surfaceContainerHigh),
+    surfaceContainerHighest = animateColor(surfaceContainerHighest),
+    outline = animateColor(outline),
+    outlineVariant = animateColor(outlineVariant)
 )
 
 @Composable
@@ -103,7 +169,7 @@ fun OpenFileTheme(
     }
 
     val baseScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+        dynamicColor && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) -> {
             val context = LocalContext.current
             if (useDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
@@ -112,7 +178,7 @@ fun OpenFileTheme(
         else -> LightColorScheme
     }
 
-    val finalScheme = if (themeMode == ThemeMode.AMOLED && dynamicColor) {
+    val targetScheme = if (themeMode == ThemeMode.AMOLED && dynamicColor) {
         baseScheme.copy(
             background = Color.Black,
             surface = Color.Black,
@@ -120,11 +186,15 @@ fun OpenFileTheme(
             surfaceContainerLow = SurfaceContainerLowAmoled,
             surfaceContainer = SurfaceContainerAmoled,
             surfaceContainerHigh = SurfaceContainerHighAmoled,
+            surfaceContainerHighest = SurfaceContainerHighestAmoled,
+            surfaceVariant = SurfaceVariantAmoled,
             outlineVariant = OutlineVariantAmoled
         )
     } else {
         baseScheme
     }
+
+    val animatedScheme = targetScheme.animated()
 
     val view = LocalView.current
     if (!view.isInEditMode) {
@@ -139,21 +209,9 @@ fun OpenFileTheme(
     }
 
     MaterialTheme(
-        colorScheme = finalScheme,
+        colorScheme = animatedScheme,
+        shapes = OpenFileShapes,
         typography = Typography,
-        content = content
-    )
-}
-
-@Composable
-fun MyApplicationTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = false,
-    content: @Composable () -> Unit
-) {
-    OpenFileTheme(
-        themeMode = if (darkTheme) ThemeMode.DARK else ThemeMode.LIGHT,
-        dynamicColor = dynamicColor,
         content = content
     )
 }
