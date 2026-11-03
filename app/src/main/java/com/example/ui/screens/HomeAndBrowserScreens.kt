@@ -124,6 +124,8 @@ import com.example.ui.theme.FolderAmber
 import com.example.ui.theme.StorageDangerCrimson
 import com.example.ui.theme.StorageWarningOrange
 
+import com.example.core.database.CloudAccountEntity
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun HomeScreen(
@@ -139,6 +141,8 @@ fun HomeScreen(
     categoryCounts: Map<FileCategory, Int> = emptyMap(),
     cloudAccountsCount: Int = 0,
     remoteProfilesCount: Int = 0,
+    cloudAccounts: List<CloudAccountEntity> = emptyList(),
+    onOpenCloudAccount: (CloudAccountEntity) -> Unit = {},
     onOpenAccessFromPc: () -> Unit = { onNavigateDestination(OpenFileDestination.NETWORK) },
     onOpenRemoteConnections: () -> Unit = { onNavigateDestination(OpenFileDestination.NETWORK) }
 ) {
@@ -315,6 +319,80 @@ fun HomeScreen(
                             text = "${formatByteSize(vol.availableBytes)} free",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+
+        // Connected Cloud Drives mounted directly under Storage Devices (File Manager + style)
+        items(
+            items = cloudAccounts,
+            key = { "home_cloud_${it.id}" },
+            contentType = { "cloud_volume_card" }
+        ) { account ->
+            Card(
+                onClick = { onOpenCloudAccount(account) },
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("home_cloud_volume_${account.provider}")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background( Color(0xFF5C6BC0).copy(alpha = 0.16f) ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Cloud,
+                                contentDescription = null,
+                                tint = Color(0xFF5C6BC0),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = account.displayName,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "${account.accountEmail} • Native In-App Drive",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    Surface(
+                        color = ApkGreen.copy(alpha = 0.14f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "Mounted",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = ApkGreen,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
                     }
                 }
@@ -729,7 +807,13 @@ fun FileBrowserScreen(
     onCloseArchiveInspector: () -> Unit,
     onDownloadRemoteItem: (FileReference) -> Unit,
     onOpenWithExternal: ((FileReference) -> Unit)? = null,
-    onQuickPreview: ((FileReference) -> Unit)? = null
+    onQuickPreview: ((FileReference) -> Unit)? = null,
+    cloudAccounts: List<CloudAccountEntity> = emptyList(),
+    onOpenLocalRoot: (() -> Unit)? = null,
+    onOpenCloudAccount: ((CloudAccountEntity) -> Unit)? = null,
+    onReauthCloudAccount: ((CloudAccountEntity) -> Unit)? = null,
+    onOpenDriveFilePicker: (() -> Unit)? = null,
+    onOpenCloudSection: ((CloudAccountEntity, String) -> Unit)? = null
 ) {
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var showNewFileDialog by remember { mutableStateOf(false) }
@@ -902,6 +986,97 @@ fun FileBrowserScreen(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            }
+        }
+
+        // Quick Storage Location Switcher (Internal Storage <-> Google Drive / Cloud) for 1-tap cross-storage Cut & Copy
+        if ((cloudAccounts.isNotEmpty() || browserState.activeCloudAccount != null || clipboard.isNotEmpty) &&
+            onOpenLocalRoot != null && onOpenCloudAccount != null
+        ) {
+            val isCloudActive = browserState.activeCloudAccount != null
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = !isCloudActive && browserState.activeRemoteProfile == null,
+                    onClick = onOpenLocalRoot,
+                    leadingIcon = {
+                        Icon(Icons.Filled.Storage, contentDescription = null, modifier = Modifier.size(16.dp))
+                    },
+                    label = { Text("Internal Storage") },
+                    modifier = Modifier.testTag("quick_switch_internal_storage")
+                )
+                cloudAccounts.forEach { acc ->
+                    val selected = browserState.activeCloudAccount?.id == acc.id
+                    FilterChip(
+                        selected = selected,
+                        onClick = { onOpenCloudAccount(acc) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Cloud, contentDescription = null, modifier = Modifier.size(16.dp))
+                        },
+                        label = {
+                            Text(
+                                text = "${acc.displayName} (${acc.accountEmail})",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
+                        modifier = Modifier.testTag("quick_switch_cloud_${acc.provider}")
+                    )
+                }
+                if (onOpenDriveFilePicker != null) {
+                    AssistChip(
+                        onClick = onOpenDriveFilePicker,
+                        leadingIcon = {
+                            Icon(Icons.Filled.Cloud, contentDescription = null, modifier = Modifier.size(16.dp))
+                        },
+                        label = { Text("Drive FilePicker") },
+                        modifier = Modifier.testTag("browser_open_drive_picker_button")
+                    )
+                }
+                if (isCloudActive && onReauthCloudAccount != null) {
+                    Spacer(modifier = Modifier.weight(1f))
+                    TextButton(
+                        onClick = { browserState.activeCloudAccount?.let(onReauthCloudAccount) },
+                        modifier = Modifier.testTag("browser_reauth_cloud_button")
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Browser Auth", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+            if (isCloudActive &&
+                browserState.activeCloudAccount?.provider == "GOOGLE_DRIVE" &&
+                onOpenCloudSection != null
+            ) {
+                val activeAcc = browserState.activeCloudAccount!!
+                val currentFolderId = browserState.currentDirectory?.uriOrPath ?: "root"
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    listOf(
+                        "root" to "My Drive",
+                        "sharedWithMe" to "Shared with me",
+                        "starred" to "Starred",
+                        "recent" to "Recent"
+                    ).forEach { (secId, secTitle) ->
+                        FilterChip(
+                            selected = currentFolderId == secId,
+                            onClick = { onOpenCloudSection(activeAcc, secId) },
+                            label = { Text(secTitle) },
+                            modifier = Modifier.testTag("browser_drive_section_$secId")
+                        )
+                    }
                 }
             }
         }
@@ -1169,7 +1344,7 @@ fun FileBrowserScreen(
                                         onShare = { onShareItem(item) },
                                         onProperties = { onOpenProperties(item) },
                                         onDownloadRemote = if (isRemote) ({ onDownloadRemoteItem(item) }) else null,
-                                        onOpenWith = if (!isRemote && onOpenWithExternal != null) ({ onOpenWithExternal(item) }) else null,
+                                        onOpenWith = if (onOpenWithExternal != null && (browserState.activeRemoteProfile == null)) ({ onOpenWithExternal(item) }) else null,
                                         onQuickPreview = if (onQuickPreview != null) ({ onQuickPreview(item) }) else null
                                     )
                                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))

@@ -88,15 +88,20 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.core.cloud.CloudProviderKind
 import com.example.core.cloud.PkceSession
+import com.example.core.database.BookmarkEntity
 import com.example.core.database.CloudAccountEntity
 import com.example.core.database.NetworkProfileEntity
 import com.example.core.datastore.AppSettingsState
+import com.example.core.filesystem.ClipboardMode
+import com.example.core.filesystem.ClipboardState
+import com.example.core.model.FileReference
 import com.example.core.model.ViewMode
 import com.example.core.model.formatByteSize
 import com.example.core.network.DiscoveredLanHost
 import com.example.core.network.FtpServerEngine
 import com.example.core.network.FtpServerRuntimeState
 import com.example.ui.SshHostKeyPrompt
+import com.example.ui.components.GoogleDriveFilePicker
 import com.example.ui.theme.ApkGreen
 import com.example.ui.theme.FolderAmber
 import com.example.ui.theme.JetBrainsMonoFamily
@@ -968,13 +973,50 @@ fun CloudStorageScreen(
     activeWebCloudProvider: CloudProviderKind? = null,
     activeWebCloudUrl: String? = null,
     onConnectProviderDirect: (CloudProviderKind) -> Unit = {},
+    onReauthenticateProviderInBrowser: (CloudProviderKind) -> Unit = {},
     onWebCloudAuthenticated: (CloudProviderKind, String?) -> Unit = { _, _ -> },
     onOAuthRedirectUri: (Uri) -> Unit = {},
     onDownloadCloudWebFile: (String, String?, String?, String?, String?) -> Unit = { _, _, _, _, _ -> },
-    onCloseWebCloudPortal: () -> Unit = {}
+    onCloseWebCloudPortal: () -> Unit = {},
+    settings: AppSettingsState = AppSettingsState(),
+    bookmarks: List<BookmarkEntity> = emptyList(),
+    clipboard: ClipboardState = ClipboardState(),
+    onRetrieveOAuthToken: (CloudAccountEntity) -> String = { "" },
+    onOpenDriveFilePickerModal: () -> Unit = {},
+    onOpenCloudFolderInBrowser: (CloudAccountEntity, String) -> Unit = { acc, _ -> onOpenCloudAccount(acc) },
+    onPreviewOrEditFile: (FileReference) -> Unit = {},
+    onCopyItems: (List<FileReference>, ClipboardMode) -> Unit = { _, _ -> },
+    onPasteToDriveFolder: (CloudAccountEntity, String) -> Unit = { _, _ -> },
+    onClearClipboard: () -> Unit = {},
+    onDownloadToLocal: (FileReference) -> Unit = {},
+    onShareItem: (FileReference) -> Unit = {},
+    onOpenProperties: (FileReference) -> Unit = {},
+    onToggleBookmark: (FileReference) -> Unit = {},
+    onImportPickedDriveFiles: (List<FileReference>) -> Unit = {}
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var configuringProvider by remember { mutableStateOf<CloudProviderKind?>(null) }
+
+    val driveAuthIntentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val data = result.data ?: return@rememberLauncherForActivityResult
+        runCatching {
+            GoogleDriveOnDeviceAuth.resultFromConsentIntent(context, data)
+        }.onSuccess { authResult ->
+            val token = authResult.accessToken
+            if (!token.isNullOrBlank()) {
+                onGoogleDriveAuthorized(token, "container6767@gmail.com")
+            }
+        }.onFailure { err ->
+            onShowMessage("Google Drive authorization failed: ${err.message}")
+        }
+    }
+
+    val googleDriveAccount = remember(accounts) {
+        accounts.firstOrNull { it.provider == CloudProviderKind.GOOGLE_DRIVE.name }
+    }
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -984,12 +1026,29 @@ fun CloudStorageScreen(
             .testTag("cloud_storage_screen")
     ) {
         item {
-            Text("Cloud Storage Providers", style = MaterialTheme.typography.titleLarge)
-            Text(
-                text = "Tap Connect on any cloud provider to sign in using your default browser and access your cloud storage.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Cloud Storage & Google Drive FilePicker", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        text = "Authenticate via Google OAuth2 / default browser, then browse, select, cut/move, copy, and edit your Google Drive files natively inside OpenFile.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(
+                    onClick = onOpenDriveFilePickerModal,
+                    modifier = Modifier.testTag("open_drive_file_picker_button")
+                ) {
+                    Icon(Icons.Filled.Cloud, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Drive FilePicker")
+                }
+            }
         }
 
         if (activeWebCloudProvider != null && !activeWebCloudUrl.isNullOrBlank()) {
@@ -1021,12 +1080,12 @@ fun CloudStorageScreen(
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "${activeWebCloudProvider.displayName} • Default Browser Sign-In",
+                                    text = "${activeWebCloudProvider.displayName} • Browser Authentication",
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
-                                    text = "Launched in your default browser. Complete sign-in there to access your cloud files.",
+                                    text = "Authenticated via browser. Your ${activeWebCloudProvider.displayName} files & folders are mounted natively inside OpenFile.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1044,7 +1103,7 @@ fun CloudStorageScreen(
                                     }
                                 }
                             ) {
-                                Text("Re-open")
+                                Text("Re-auth")
                             }
                             IconButton(
                                 onClick = onCloseWebCloudPortal,
@@ -1061,7 +1120,7 @@ fun CloudStorageScreen(
         if (accounts.isNotEmpty()) {
             item {
                 HorizontalDivider()
-                Text("Connected Accounts", style = MaterialTheme.typography.titleMedium)
+                Text("Mounted Cloud Drives (Tap to Open Natively)", style = MaterialTheme.typography.titleMedium)
             }
             items(accounts, key = { it.id }) { acc ->
                 Card(
@@ -1092,7 +1151,11 @@ fun CloudStorageScreen(
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(acc.displayName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                                Text(acc.accountEmail, style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    text = "${acc.accountEmail} • Native In-App Drive (Cut/Copy/Edit)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1113,9 +1176,43 @@ fun CloudStorageScreen(
             }
         }
 
+        // Embedded Native Google Drive FilePicker when Google Drive is connected
+        if (googleDriveAccount != null) {
+            item {
+                val activeToken = remember(googleDriveAccount) {
+                    onRetrieveOAuthToken(googleDriveAccount)
+                }
+                GoogleDriveFilePicker(
+                    account = googleDriveAccount,
+                    oauthAccessToken = activeToken,
+                    settings = settings,
+                    bookmarks = bookmarks,
+                    clipboard = clipboard,
+                    onPreviewOrEditFile = onPreviewOrEditFile,
+                    onCopyItems = onCopyItems,
+                    onPasteToDriveFolder = onPasteToDriveFolder,
+                    onClearClipboard = onClearClipboard,
+                    onDownloadToLocal = onDownloadToLocal,
+                    onShareItem = onShareItem,
+                    onOpenProperties = onOpenProperties,
+                    onToggleBookmark = onToggleBookmark,
+                    onOpenFullBrowserAtFolder = onOpenCloudFolderInBrowser,
+                    onReauthenticateOAuth = {
+                        onReauthenticateProviderInBrowser(CloudProviderKind.GOOGLE_DRIVE)
+                    },
+                    onFilesPicked = onImportPickedDriveFiles,
+                    onStatusMessage = onShowMessage,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(520.dp)
+                )
+            }
+        }
+
         // Provider Connector Cards
         items(CloudProviderKind.entries) { provider ->
-            val isConnected = accounts.any { it.provider == provider.name }
+            val connectedAccount = accounts.firstOrNull { it.provider == provider.name }
+            val isConnected = connectedAccount != null
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow
@@ -1138,7 +1235,7 @@ fun CloudStorageScreen(
                         Column {
                             Text(provider.displayName, style = MaterialTheme.typography.titleSmall)
                             Text(
-                                text = if (isConnected) "Connected • Tap above or Connect to open" else "Default Browser Login + OAuth 2.0",
+                                text = if (isConnected) "Mounted Natively (${connectedAccount?.accountEmail})" else "Browser Sign-In + Native In-App Access",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (isConnected) ApkGreen else MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1158,11 +1255,48 @@ fun CloudStorageScreen(
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                        if (isConnected) {
+                            OutlinedButton(
+                                onClick = { onReauthenticateProviderInBrowser(provider) },
+                                modifier = Modifier.testTag("reauth_${provider.id}")
+                            ) {
+                                Text("Browser Auth")
+                            }
+                        }
                         Button(
-                            onClick = { onConnectProviderDirect(provider) },
+                            onClick = {
+                                if (connectedAccount != null) {
+                                    onOpenCloudAccount(connectedAccount)
+                                } else if (provider == CloudProviderKind.GOOGLE_DRIVE) {
+                                    coroutineScope.launch {
+                                        runCatching {
+                                            GoogleDriveOnDeviceAuth.authorize(context, "container6767@gmail.com")
+                                        }.fold(
+                                            onSuccess = { authResult ->
+                                                val token = authResult.accessToken
+                                                if (!authResult.hasResolution() && !token.isNullOrBlank()) {
+                                                    onGoogleDriveAuthorized(token, "container6767@gmail.com")
+                                                } else if (authResult.hasResolution() && authResult.pendingIntent != null) {
+                                                    driveAuthIntentLauncher.launch(
+                                                        IntentSenderRequest.Builder(authResult.pendingIntent!!.intentSender).build()
+                                                    )
+                                                } else {
+                                                    onConnectProviderDirect(provider)
+                                                }
+                                            },
+                                            onFailure = {
+                                                // Fallback to browser sign-in + native Drive mount
+                                                onConnectProviderDirect(provider)
+                                            }
+                                        )
+                                    }
+                                } else {
+                                    onConnectProviderDirect(provider)
+                                }
+                            },
                             modifier = Modifier.testTag("connect_${provider.id}")
                         ) {
-                            Text("Connect")
+                            Text(if (isConnected) "Open in App" else "Connect")
                         }
                     }
                 }

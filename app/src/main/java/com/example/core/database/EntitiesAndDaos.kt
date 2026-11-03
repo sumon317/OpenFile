@@ -164,6 +164,9 @@ interface OpenFileDao {
     @Query("SELECT * FROM cloud_accounts ORDER BY connectedAt DESC")
     fun observeCloudAccounts(): Flow<List<CloudAccountEntity>>
 
+    @Query("SELECT * FROM cloud_accounts ORDER BY connectedAt DESC")
+    suspend fun getAllCloudAccounts(): List<CloudAccountEntity>
+
     @Query("SELECT * FROM cloud_accounts WHERE id = :id LIMIT 1")
     suspend fun getCloudAccountById(id: Long): CloudAccountEntity?
 

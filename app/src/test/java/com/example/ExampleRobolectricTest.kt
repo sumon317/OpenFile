@@ -8,6 +8,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import androidx.test.core.app.ApplicationProvider
 import com.example.core.database.NetworkProfileEntity
 import com.example.core.database.OpenFileDatabase
@@ -622,14 +624,23 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("bottom_clipboard_bar").assertIsDisplayed()
         composeTestRule.onNodeWithTag("browser_paste_button").assertIsDisplayed()
 
-        // 6. Navigate to Cloud Storage -> tap Connect on Google Drive -> verify default browser ACTION_VIEW intent is launched
+        // 6. Navigate to Cloud Storage -> tap Connect on Google Drive -> verify browser auth URL is launched AND Drive opens natively in-app
         composeTestRule.runOnUiThread {
             viewModel.navigateToDestination(OpenFileDestination.CLOUD_STORAGE)
         }
         composeTestRule.waitForIdle()
 
         composeTestRule.runOnUiThread {
-            viewModel.connectCloudProviderDirect(com.example.core.cloud.CloudProviderKind.GOOGLE_DRIVE)
+            viewModel.connectCloudProviderDirect(
+                provider = com.example.core.cloud.CloudProviderKind.GOOGLE_DRIVE,
+                forceBrowserAuth = true
+            )
+        }
+        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            viewModel.browserState.value.activeCloudAccount?.provider == "GOOGLE_DRIVE" &&
+                !viewModel.browserState.value.isLoading &&
+                viewModel.browserState.value.items.isNotEmpty()
         }
         composeTestRule.waitForIdle()
 
@@ -640,23 +651,263 @@ class ExampleRobolectricTest {
             activeUrl?.contains("container6767%40gmail.com") == true ||
                 activeUrl?.contains("container6767@gmail.com") == true
         )
+        // Verify we are inside the native in-app FileBrowserScreen showing Google Drive files
+        assertEquals(OpenFileDestination.INTERNAL_STORAGE, viewModel.currentDestination.value)
+        assertTrue(
+            "Expected Google Drive root items to be loaded natively in app",
+            viewModel.browserState.value.items.any { it.displayName == "Documents" }
+        )
 
-        composeTestRule.onNodeWithTag("cloud_web_portal_view").assertIsDisplayed()
-
-        // Verify account is persisted under Connected Accounts
+        // Navigate back to CLOUD_STORAGE screen to verify Mounted Cloud Drives list
         composeTestRule.runOnUiThread {
-            viewModel.onWebCloudAuthenticated(com.example.core.cloud.CloudProviderKind.ONEDRIVE, "user@outlook.com")
+            viewModel.navigateToDestination(OpenFileDestination.CLOUD_STORAGE)
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("cloud_web_portal_view").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("cloud_web_portal_close").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Mounted Cloud Drives (Tap to Open Natively)").assertExists()
+        composeTestRule.onNodeWithTag("cloud_account_card_GOOGLE_DRIVE").assertExists()
+    }
+
+    @Test
+    fun `native Google Drive in-app access supports create edit rename delete and bidirectional Cut and Copy with Local Storage`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+
+        // 1. Connect Google Drive and open it natively inside the app
+        composeTestRule.runOnUiThread {
+            viewModel.connectCloudProviderDirect(com.example.core.cloud.CloudProviderKind.GOOGLE_DRIVE)
         }
         composeTestRule.waitUntil(timeoutMillis = 5_000L) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            viewModel.cloudAccounts.value.any { it.provider == "ONEDRIVE" }
+            viewModel.browserState.value.activeCloudAccount?.provider == "GOOGLE_DRIVE" &&
+                !viewModel.browserState.value.isLoading &&
+                viewModel.browserState.value.items.isNotEmpty()
         }
-        composeTestRule.onNodeWithTag("cloud_web_portal_close").performClick()
+        val driveAccount = viewModel.browserState.value.activeCloudAccount!!
+        assertEquals("GOOGLE_DRIVE", driveAccount.provider)
+
+        // 2. Create a new folder directly in Google Drive
+        composeTestRule.runOnUiThread {
+            viewModel.createNewFolder("NativeDriveFolder")
+        }
+        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            viewModel.browserState.value.items.any { it.displayName == "NativeDriveFolder" && it.isDirectory }
+        }
+
+        // 3. Create a new text file directly in Google Drive, edit its content, and rename it
+        composeTestRule.runOnUiThread {
+            viewModel.createNewTextFile("drive_note.txt", "Initial Drive text")
+        }
+        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            viewModel.browserState.value.items.any { it.displayName == "drive_note.txt" }
+        }
+        val createdDriveNote = viewModel.browserState.value.items.first { it.displayName == "drive_note.txt" }
+
+        composeTestRule.runOnUiThread {
+            viewModel.saveEditedTextFile(createdDriveNote, "Updated Drive text natively from OpenFile")
+        }
+        delay(200)
+        composeTestRule.runOnUiThread {
+            viewModel.renameItem(createdDriveNote, "drive_note_renamed.txt")
+        }
+        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            viewModel.browserState.value.items.any { it.displayName == "drive_note_renamed.txt" }
+        }
+        val renamedDriveNote = viewModel.browserState.value.items.first { it.displayName == "drive_note_renamed.txt" }
+
+        // 4. Bi-directional Transfer A: CUT (Move) 'drive_note_renamed.txt' from Google Drive -> Local Storage
+        val localTempDir = Files.createTempDirectory("local_drive_sync_test").toFile()
+        try {
+            val localDirRef = viewModel.localProvider.toFileReference(localTempDir)
+
+            var cutToLocalDone = false
+            viewModel.transferEngine.copyToClipboard(listOf(renamedDriveNote), ClipboardMode.CUT)
+            viewModel.transferEngine.enqueuePasteFromClipboard(
+                destinationDir = localDirRef,
+                verifyChecksum = true,
+                onComplete = { cutToLocalDone = true }
+            )
+            var attempts = 0
+            while (!cutToLocalDone && attempts < 60) {
+                delay(50)
+                attempts++
+            }
+            val movedLocalFile = File(localTempDir, "drive_note_renamed.txt")
+            assertTrue("File cut from Google Drive must exist in Local Storage", movedLocalFile.exists())
+            assertEquals("Updated Drive text natively from OpenFile", movedLocalFile.readText())
+
+            // Refresh Drive directory and verify the cut file was removed from Google Drive
+            composeTestRule.runOnUiThread {
+                viewModel.openCloudDirectory(driveAccount, "root")
+            }
+            composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                !viewModel.browserState.value.isLoading &&
+                    viewModel.browserState.value.items.none { it.displayName == "drive_note_renamed.txt" }
+            }
+
+            // 5. Bi-directional Transfer B: COPY a file from Local Storage -> Google Drive ('NativeDriveFolder')
+            val localSourceFile = File(localTempDir, "from_local_to_drive.txt").apply {
+                writeText("Copied from Local Storage directly into Google Drive folder!")
+            }
+            val localSourceRef = viewModel.localProvider.toFileReference(localSourceFile)
+            val driveSubfolderRef = viewModel.browserState.value.items.first { it.displayName == "NativeDriveFolder" }
+
+            var copyToDriveDone = false
+            viewModel.transferEngine.copyToClipboard(listOf(localSourceRef), ClipboardMode.COPY)
+            viewModel.transferEngine.enqueuePasteFromClipboard(
+                destinationDir = driveSubfolderRef,
+                verifyChecksum = true,
+                onComplete = { copyToDriveDone = true }
+            )
+            attempts = 0
+            while (!copyToDriveDone && attempts < 60) {
+                delay(50)
+                attempts++
+            }
+
+            // Navigate into 'NativeDriveFolder' in Google Drive and verify 'from_local_to_drive.txt' is there
+            composeTestRule.runOnUiThread {
+                viewModel.onFileItemClicked(driveSubfolderRef)
+            }
+            composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                !viewModel.browserState.value.isLoading &&
+                    viewModel.browserState.value.items.any { it.displayName == "from_local_to_drive.txt" }
+            }
+            assertTrue(
+                "Breadcrumb bar should show Google Drive > NativeDriveFolder",
+                viewModel.browserState.value.breadcrumbs.any { it.displayName == "NativeDriveFolder" }
+            )
+        } finally {
+            localTempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `native GoogleDriveFilePicker mimics local browser using OAuth2 token from existing auth flow and imports selected files`() = runBlocking {
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithText("Connected Accounts").assertExists()
-        composeTestRule.onNodeWithTag("cloud_account_card_ONEDRIVE").assertExists()
+        val viewModel = composeTestRule.activity.viewModel
+
+        // 1. Authenticate via existing OAuth2 flow (onGoogleDriveAuthorized stores OAuth2 token in Keystore)
+        val oauthToken = "ya29.oauth2_test_token_drive_picker_987654"
+        composeTestRule.runOnUiThread {
+            viewModel.onGoogleDriveAuthorized(
+                accessToken = oauthToken,
+                email = "container6767@gmail.com"
+            )
+        }
+        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            viewModel.browserState.value.activeCloudAccount?.provider == "GOOGLE_DRIVE" &&
+                !viewModel.browserState.value.isLoading
+        }
+
+        val driveAccount = viewModel.browserState.value.activeCloudAccount!!
+        val retrievedToken = viewModel.retrieveCloudAccessToken(driveAccount)
+        assertEquals("OAuth2 token retrieved from Keystore must match authorized token", oauthToken, retrievedToken)
+
+        // 2. Open a local directory and launch the native GoogleDriveFilePicker modal
+        val localDestDir = Files.createTempDirectory("drive_picker_import_target").toFile()
+        try {
+            val localDestRef = viewModel.localProvider.toFileReference(localDestDir)
+            composeTestRule.runOnUiThread {
+                viewModel.openDirectory(localDestRef)
+                viewModel.openDriveFilePickerModal()
+            }
+            composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                viewModel.showDriveFilePickerModal.value &&
+                    viewModel.browserState.value.currentDirectory?.uriOrPath == localDestRef.uriOrPath &&
+                    !viewModel.browserState.value.isLoading
+            }
+            composeTestRule.waitForIdle()
+
+            // Verify GoogleDriveFilePickerDialog & OAuth2 badge are displayed
+            composeTestRule.onNodeWithTag("google_drive_file_picker_dialog").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("drive_picker_oauth_badge").assertIsDisplayed()
+
+            // 3. Switch Google Drive sections (Shared with me -> Starred -> My Drive)
+            composeTestRule.onNodeWithTag("drive_picker_section_sharedWithMe").performClick()
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("drive_picker_section_starred").performClick()
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("drive_picker_section_root").performClick()
+            composeTestRule.waitForIdle()
+
+            // 4. Toggle List / Grid view inside GoogleDriveFilePicker
+            composeTestRule.onNodeWithTag("drive_picker_view_toggle").performClick()
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("drive_picker_grid").assertExists()
+            composeTestRule.onNodeWithTag("drive_picker_view_toggle").performClick()
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("drive_picker_list").assertExists()
+
+            // 5. Create a new text file directly inside GoogleDriveFilePicker using the OAuth2 token
+            composeTestRule.onNodeWithTag("drive_picker_new_file_button").performClick()
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("drive_picker_new_file_name_input").performTextReplacement("picked_from_drive.txt")
+            composeTestRule.onNodeWithTag("drive_picker_new_file_content_input").performTextInput("Picked via Native GoogleDriveFilePicker with OAuth2 token")
+            composeTestRule.onNodeWithTag("drive_picker_create_file_confirm").performClick()
+            composeTestRule.waitForIdle()
+
+            var pickedFileRef: com.example.core.model.FileReference? = null
+            var createAttempts = 0
+            while (pickedFileRef == null && createAttempts < 60) {
+                delay(50)
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                val itemsInRoot = com.example.core.cloud.CloudStorageEngine.listCloudDirectory(
+                    account = driveAccount,
+                    accessToken = retrievedToken,
+                    folderIdOrPath = "root",
+                    context = composeTestRule.activity,
+                    showHidden = true
+                ).getOrDefault(emptyList())
+                pickedFileRef = itemsInRoot.firstOrNull { it.displayName == "picked_from_drive.txt" }
+                createAttempts++
+            }
+            assertNotNull("Created file 'picked_from_drive.txt' should exist in Google Drive", pickedFileRef)
+
+            // 6. Filter for 'picked_from_drive.txt', select it, and import into local directory
+            composeTestRule.onNodeWithTag("drive_picker_search_input").performTextInput("picked_from_drive.txt")
+            composeTestRule.waitForIdle()
+
+            var importResult: Result<String>? = null
+            viewModel.importPickedDriveFilesToCurrentDirectory(
+                pickedItems = listOf(pickedFileRef!!),
+                explicitTargetDir = localDestRef,
+                onComplete = { res -> importResult = res }
+            )
+            composeTestRule.runOnUiThread {
+                viewModel.closeDriveFilePickerModal()
+            }
+            composeTestRule.waitForIdle()
+
+            var importAttempts = 0
+            while (importResult == null && importAttempts < 60) {
+                delay(50)
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                importAttempts++
+            }
+            assertNotNull("Drive import callback should complete", importResult)
+            assertTrue(
+                "Drive import should succeed (${importResult?.exceptionOrNull()?.message})",
+                importResult!!.isSuccess
+            )
+
+            val importedLocalFile = File(localDestDir, "picked_from_drive.txt")
+            assertTrue("Picked Drive file should be imported into local target directory", importedLocalFile.exists())
+            assertEquals(
+                "Picked via Native GoogleDriveFilePicker with OAuth2 token",
+                importedLocalFile.readText()
+            )
+        } finally {
+            localDestDir.deleteRecursively()
+        }
     }
 }
-
-
-

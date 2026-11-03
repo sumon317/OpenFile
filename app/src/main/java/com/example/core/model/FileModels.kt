@@ -136,11 +136,14 @@ data class FileReference(
                     add(ProviderCapability.STREAM_READ)
                     add(ProviderCapability.STREAM_WRITE)
                     add(ProviderCapability.ATOMIC_RENAME)
+                    add(ProviderCapability.INTRA_PROVIDER_MOVE)
                     add(ProviderCapability.DELETE)
                     add(ProviderCapability.REMOTE_TRASH)
+                    add(ProviderCapability.CHECKSUM_CALCULATION)
                     if (isDirectory) {
                         add(ProviderCapability.LIST_CHILDREN)
                         add(ProviderCapability.CREATE_DIR)
+                        add(ProviderCapability.CREATE_FILE)
                     }
                 }
             }

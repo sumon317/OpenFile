@@ -83,6 +83,7 @@ import com.example.core.model.ProviderType
 import com.example.ui.components.ConflictResolutionDialog
 import com.example.ui.components.FilePreviewDialog
 import com.example.ui.components.FilePropertiesModalSheet
+import com.example.ui.components.GoogleDriveFilePickerDialog
 import com.example.ui.components.TransferQueueBottomSheet
 import com.example.ui.screens.ApplicationsScreen
 import com.example.ui.screens.BookmarksScreen
@@ -129,6 +130,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
     val sshHostKeyPrompt by viewModel.sshHostKeyPrompt.collectAsStateWithLifecycle()
     val activePkceSession by viewModel.activePkceSession.collectAsStateWithLifecycle()
     val activeWebCloudProvider by viewModel.activeWebCloudProvider.collectAsStateWithLifecycle()
+    val showDriveFilePickerModal by viewModel.showDriveFilePickerModal.collectAsStateWithLifecycle()
+    val activeDrivePickerAccount by viewModel.activeDrivePickerAccount.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
     val categoryCounts by viewModel.categoryCounts.collectAsStateWithLifecycle()
     val selectedNetworkTab by viewModel.selectedNetworkTab.collectAsStateWithLifecycle()
@@ -261,6 +264,13 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                     MainScaffoldContent(
                         isExpandedTablet = true,
                         currentDest = currentDest,
+                        customTitleOverride = when {
+                            currentDest == OpenFileDestination.INTERNAL_STORAGE && browserState.activeCloudAccount != null ->
+                                "${browserState.activeCloudAccount!!.displayName} (${browserState.activeCloudAccount!!.accountEmail})"
+                            currentDest == OpenFileDestination.INTERNAL_STORAGE && browserState.activeRemoteProfile != null ->
+                                browserState.activeRemoteProfile!!.displayName
+                            else -> null
+                        },
                         currentThemeMode = settings.themeMode,
                         activeTransferCount = activeTransferCount,
                         undoActionDescription = undoAction?.description,
@@ -405,6 +415,13 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                 MainScaffoldContent(
                     isExpandedTablet = false,
                     currentDest = currentDest,
+                    customTitleOverride = when {
+                        currentDest == OpenFileDestination.INTERNAL_STORAGE && browserState.activeCloudAccount != null ->
+                            "${browserState.activeCloudAccount!!.displayName} (${browserState.activeCloudAccount!!.accountEmail})"
+                        currentDest == OpenFileDestination.INTERNAL_STORAGE && browserState.activeRemoteProfile != null ->
+                            browserState.activeRemoteProfile!!.displayName
+                        else -> null
+                    },
                     currentThemeMode = settings.themeMode,
                     activeTransferCount = activeTransferCount,
                     undoActionDescription = undoAction?.description,
@@ -471,7 +488,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
         FilePreviewDialog(
             file = previewFile!!,
             onDismiss = { viewModel.closePreviewDialog() },
-            onOpenExternal = { viewModel.openWithExternalApp(it, forceChooser = true) }
+            onOpenExternal = { viewModel.openWithExternalApp(it, forceChooser = true) },
+            onSaveTextContent = { item, newText -> viewModel.saveEditedTextFile(item, newText) }
         )
     }
 
@@ -503,6 +521,52 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
             onDismiss = { showTransferQueueSheet = false }
         )
     }
+
+    // Native Google Drive FilePicker Modal Dialog
+    if (showDriveFilePickerModal) {
+        val googleAccount = activeDrivePickerAccount
+            ?: browserState.activeCloudAccount?.takeIf {
+                it.provider == com.example.core.cloud.CloudProviderKind.GOOGLE_DRIVE.name
+            }
+            ?: cloudAccounts.lastOrNull {
+                it.provider == com.example.core.cloud.CloudProviderKind.GOOGLE_DRIVE.name
+            }
+        if (googleAccount != null) {
+            val activeToken = remember(googleAccount) {
+                viewModel.retrieveCloudAccessToken(googleAccount)
+            }
+            GoogleDriveFilePickerDialog(
+                account = googleAccount,
+                oauthAccessToken = activeToken,
+                settings = settings,
+                bookmarks = bookmarks,
+                clipboard = clipboard,
+                onPreviewOrEditFile = { viewModel.openBuiltInPreview(it) },
+                onCopyItems = { items, mode ->
+                    viewModel.transferEngine.copyToClipboard(items, mode)
+                    viewModel.showStatus("${items.size} Drive item(s) added to clipboard")
+                },
+                onPasteToDriveFolder = { acc, folder -> viewModel.pasteClipboardIntoCloudFolder(acc, folder) },
+                onClearClipboard = { viewModel.transferEngine.clearClipboard() },
+                onDownloadToLocal = { viewModel.downloadRemoteItemToDownloads(it) },
+                onShareItem = { viewModel.shareFileItem(it) },
+                onOpenProperties = { viewModel.openPropertiesSheet(it) },
+                onToggleBookmark = { viewModel.toggleBookmark(it) },
+                onOpenFullBrowserAtFolder = { acc, folder -> viewModel.openCloudDirectory(acc, folder) },
+                onReauthenticateOAuth = {
+                    viewModel.reauthenticateCloudProviderInBrowser(
+                        com.example.core.cloud.CloudProviderKind.GOOGLE_DRIVE,
+                        googleAccount.accountEmail
+                    )
+                },
+                onFilesPicked = { picked ->
+                    viewModel.importPickedDriveFilesToCurrentDirectory(picked)
+                },
+                onDismiss = { viewModel.closeDriveFilePickerModal() },
+                onStatusMessage = { viewModel.showStatus(it) }
+            )
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -510,6 +574,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
 private fun MainScaffoldContent(
     isExpandedTablet: Boolean,
     currentDest: OpenFileDestination,
+    customTitleOverride: String? = null,
     currentThemeMode: ThemeMode,
     activeTransferCount: Int,
     undoActionDescription: String?,
@@ -561,7 +626,7 @@ private fun MainScaffoldContent(
                     },
                     title = {
                         Text(
-                            text = if (currentDest == OpenFileDestination.HOME) "OpenFile" else currentDest.title,
+                            text = customTitleOverride ?: if (currentDest == OpenFileDestination.HOME) "OpenFile" else currentDest.title,
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -733,6 +798,8 @@ private fun DestinationRouter(
                 categoryCounts = categoryCounts,
                 cloudAccountsCount = cloudAccounts.size,
                 remoteProfilesCount = networkProfiles.size,
+                cloudAccounts = cloudAccounts,
+                onOpenCloudAccount = { acc -> viewModel.openCloudDirectory(acc, "root") },
                 onVolumeClick = { vol ->
                     viewModel.openVolumeInBrowser(vol.rootReference)
                 },
@@ -786,7 +853,17 @@ private fun DestinationRouter(
                 onCloseArchiveInspector = { viewModel.navigateUpInBrowser() },
                 onDownloadRemoteItem = { viewModel.downloadRemoteItemToDownloads(it) },
                 onOpenWithExternal = { viewModel.openWithExternalApp(it, forceChooser = true) },
-                onQuickPreview = { viewModel.openBuiltInPreview(it) }
+                onQuickPreview = { viewModel.openBuiltInPreview(it) },
+                cloudAccounts = cloudAccounts,
+                onOpenLocalRoot = { viewModel.navigateToDestination(OpenFileDestination.INTERNAL_STORAGE) },
+                onOpenCloudAccount = { acc -> viewModel.openCloudDirectory(acc, "root") },
+                onReauthCloudAccount = { acc ->
+                    runCatching { com.example.core.cloud.CloudProviderKind.valueOf(acc.provider) }
+                        .getOrNull()
+                        ?.let { viewModel.reauthenticateCloudProviderInBrowser(it, acc.accountEmail) }
+                },
+                onOpenDriveFilePicker = { viewModel.openDriveFilePickerModal() },
+                onOpenCloudSection = { acc, secId -> viewModel.openCloudDirectory(acc, secId) }
             )
         }
 
@@ -924,12 +1001,31 @@ private fun DestinationRouter(
                 activeWebCloudProvider = activeWebProvider,
                 activeWebCloudUrl = activeWebUrl,
                 onConnectProviderDirect = { provider -> viewModel.connectCloudProviderDirect(provider) },
+                onReauthenticateProviderInBrowser = { provider -> viewModel.reauthenticateCloudProviderInBrowser(provider) },
                 onWebCloudAuthenticated = { provider, label -> viewModel.onWebCloudAuthenticated(provider, label) },
                 onOAuthRedirectUri = { uri -> viewModel.handleOAuthRedirect(uri) },
                 onDownloadCloudWebFile = { url, cookies, ua, cd, mime ->
                     viewModel.downloadFromCloudWebSession(url, cookies, ua, cd, mime)
                 },
-                onCloseWebCloudPortal = { viewModel.closeWebCloudPortal() }
+                onCloseWebCloudPortal = { viewModel.closeWebCloudPortal() },
+                settings = settings,
+                bookmarks = bookmarks,
+                clipboard = clipboard,
+                onRetrieveOAuthToken = { acc -> viewModel.retrieveCloudAccessToken(acc) },
+                onOpenDriveFilePickerModal = { viewModel.openDriveFilePickerModal() },
+                onOpenCloudFolderInBrowser = { acc, folder -> viewModel.openCloudDirectory(acc, folder) },
+                onPreviewOrEditFile = { viewModel.openBuiltInPreview(it) },
+                onCopyItems = { items, mode ->
+                    viewModel.transferEngine.copyToClipboard(items, mode)
+                    viewModel.showStatus("${items.size} Drive item(s) added to clipboard")
+                },
+                onPasteToDriveFolder = { acc, folder -> viewModel.pasteClipboardIntoCloudFolder(acc, folder) },
+                onClearClipboard = { viewModel.transferEngine.clearClipboard() },
+                onDownloadToLocal = { viewModel.downloadRemoteItemToDownloads(it) },
+                onShareItem = { viewModel.shareFileItem(it) },
+                onOpenProperties = { viewModel.openPropertiesSheet(it) },
+                onToggleBookmark = { viewModel.toggleBookmark(it) },
+                onImportPickedDriveFiles = { picked -> viewModel.importPickedDriveFilesToCurrentDirectory(picked) }
             )
         }
 

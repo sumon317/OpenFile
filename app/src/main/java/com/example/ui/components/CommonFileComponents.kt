@@ -59,6 +59,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -77,6 +78,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -132,6 +134,17 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+private fun resolveLocalBackingFile(file: FileReference): File? {
+    file.metadata["localBackingPath"]?.takeIf { it.isNotBlank() }?.let { path ->
+        val f = File(path)
+        if (f.exists()) return f
+    }
+    if (file.providerType == ProviderType.LOCAL) {
+        return File(file.uriOrPath)
+    }
+    return null
+}
+
 @Composable
 fun FileIconBadge(
     file: FileReference,
@@ -158,11 +171,12 @@ fun FileIconBadge(
     }
 
     val ext = file.extension.lowercase()
-    if (showThumbnails && !file.isDirectory && file.providerType == ProviderType.LOCAL && ext in FileCategory.IMAGES.extensions) {
+    val localBacking = resolveLocalBackingFile(file)
+    if (showThumbnails && !file.isDirectory && localBacking != null && ext in FileCategory.IMAGES.extensions) {
         val context = LocalContext.current
-        val imageRequest = remember(file.uriOrPath) {
+        val imageRequest = remember(localBacking.absolutePath) {
             ImageRequest.Builder(context)
-                .data(File(file.uriOrPath))
+                .data(localBacking)
                 .size(128)
                 .crossfade(false)
                 .build()
@@ -688,7 +702,7 @@ fun FilePropertiesModalSheet(
                 PropertyKeyValueRow("Version", "${apkInfo.versionName} (${apkInfo.versionCode})")
                 PropertyKeyValueRow("SDK Target", "minSdk ${apkInfo.minSdk} • targetSdk ${apkInfo.targetSdk}")
                 Button(
-                    onClick = { onInstallApk(File(file.uriOrPath)) },
+                    onClick = { onInstallApk(resolveLocalBackingFile(file) ?: File(file.uriOrPath)) },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(Icons.Filled.Android, contentDescription = null)
@@ -697,7 +711,7 @@ fun FilePropertiesModalSheet(
                 }
             }
 
-            if (!file.isDirectory && file.providerType == ProviderType.LOCAL) {
+            if (!file.isDirectory && resolveLocalBackingFile(file) != null) {
                 HorizontalDivider()
                 Text(
                     text = "Integrity Checksums",
@@ -791,7 +805,8 @@ private fun PropertyKeyValueRow(
 fun FilePreviewDialog(
     file: FileReference,
     onDismiss: () -> Unit,
-    onOpenExternal: (FileReference) -> Unit
+    onOpenExternal: (FileReference) -> Unit,
+    onSaveTextContent: ((FileReference, String) -> Unit)? = null
 ) {
     val ext = file.extension.lowercase()
     Dialog(
@@ -822,7 +837,7 @@ fun FilePreviewDialog(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "${file.mimeType} • ${file.formattedSize}",
+                            text = "${file.providerType.label} • ${file.mimeType} • ${file.formattedSize}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -846,7 +861,7 @@ fun FilePreviewDialog(
                 ) {
                     when {
                         ext in FileCategory.IMAGES.extensions -> {
-                            val imgModel = if (file.providerType == ProviderType.LOCAL) File(file.uriOrPath) else file.uriOrPath
+                            val imgModel = resolveLocalBackingFile(file) ?: file.uriOrPath
                             ZoomableImagePreview(imgModel, file.displayName)
                         }
                         ext == "pdf" -> {
@@ -859,7 +874,7 @@ fun FilePreviewDialog(
                             VideoPreviewPlaceholder(file = file, onOpenExternal = { onOpenExternal(file) })
                         }
                         else -> {
-                            TextAndCodePreview(file)
+                            TextAndCodePreview(file = file, onSaveTextContent = onSaveTextContent)
                         }
                     }
                 }
@@ -968,8 +983,9 @@ private fun PdfDocumentPreview(file: FileReference) {
     LaunchedEffect(file, currentPageIndex) {
         withContext(Dispatchers.IO) {
             runCatching {
-                val pfd = if (file.providerType == ProviderType.LOCAL) {
-                    ParcelFileDescriptor.open(File(file.uriOrPath), ParcelFileDescriptor.MODE_READ_ONLY)
+                val localFile = resolveLocalBackingFile(file)
+                val pfd = if (localFile != null) {
+                    ParcelFileDescriptor.open(localFile, ParcelFileDescriptor.MODE_READ_ONLY)
                 } else {
                     context.contentResolver.openFileDescriptor(Uri.parse(file.uriOrPath), "r")
                 } ?: throw IllegalStateException("Cannot open file descriptor for PDF")
@@ -1050,8 +1066,9 @@ private fun AudioPlayerPreview(file: FileReference, title: String) {
         val prepared = withContext(Dispatchers.IO) {
             runCatching {
                 MediaPlayer().apply {
-                    if (file.providerType == ProviderType.LOCAL) {
-                        setDataSource(File(file.uriOrPath).absolutePath)
+                    val localFile = resolveLocalBackingFile(file)
+                    if (localFile != null) {
+                        setDataSource(localFile.absolutePath)
                     } else {
                         setDataSource(context, Uri.parse(file.uriOrPath))
                     }
@@ -1128,38 +1145,49 @@ private fun AudioPlayerPreview(file: FileReference, title: String) {
 }
 
 @Composable
-private fun TextAndCodePreview(file: FileReference) {
+private fun TextAndCodePreview(
+    file: FileReference,
+    onSaveTextContent: ((FileReference, String) -> Unit)? = null
+) {
     var contentLines by remember { mutableStateOf<List<String>>(emptyList()) }
+    var editableText by remember { mutableStateOf("") }
+    var isEditing by remember { mutableStateOf(false) }
+    var canEditFile by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(true) }
 
     LaunchedEffect(file) {
         withContext(Dispatchers.IO) {
             runCatching {
-                if (file.providerType == ProviderType.LOCAL) {
-                    val targetFile = File(file.uriOrPath)
+                val targetFile = resolveLocalBackingFile(file)
+                if (targetFile != null && targetFile.exists()) {
                     val sampleBuffer = ByteArray(4096)
                     val bytesRead = targetFile.inputStream().use { it.read(sampleBuffer) }
                     val isBinary = bytesRead > 0 && sampleBuffer.take(bytesRead).any { it == 0.toByte() }
                     if (isBinary) {
+                        canEditFile = false
                         contentLines = listOf("Binary file: Cannot preview as text. Use 'Open With' above to open with an external application.")
                     } else {
                         val raw = targetFile.inputStream().bufferedReader().use { reader ->
                             val lines = mutableListOf<String>()
                             var count = 0
                             var line = reader.readLine()
-                            while (line != null && count < 400) {
+                            while (line != null && count < 800) {
                                 lines.add(line)
                                 count++
                                 line = reader.readLine()
                             }
                             lines
                         }
+                        editableText = raw.joinToString("\n")
+                        canEditFile = true
                         contentLines = raw.ifEmpty { listOf("(Empty file)") }
                     }
                 } else {
+                    canEditFile = false
                     contentLines = listOf("Remote file preview: Download to local storage to inspect full contents.")
                 }
             }.onFailure {
+                canEditFile = false
                 contentLines = listOf("Unable to preview file as text: ${it.message}")
             }
             isLoading = false
@@ -1171,27 +1199,84 @@ private fun TextAndCodePreview(file: FileReference) {
             CircularProgressIndicator()
         }
     } else {
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    MaterialTheme.colorScheme.surfaceContainerLowest,
-                    RoundedCornerShape(10.dp)
+        Column(modifier = Modifier.fillMaxSize()) {
+            if (canEditFile && onSaveTextContent != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (isEditing) "Editing ${file.displayName} (${file.providerType.label})" else "Read-only view • Tap Edit to modify",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (isEditing) {
+                            OutlinedButton(onClick = { isEditing = false }) {
+                                Text("Cancel")
+                            }
+                            Button(
+                                onClick = {
+                                    onSaveTextContent(file, editableText)
+                                    contentLines = editableText.lines().ifEmpty { listOf("(Empty file)") }
+                                    isEditing = false
+                                },
+                                modifier = Modifier.testTag("save_text_file_btn")
+                            ) {
+                                Icon(Icons.Filled.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Save to ${file.providerType.label}")
+                            }
+                        } else {
+                            FilledTonalButton(
+                                onClick = { isEditing = true },
+                                modifier = Modifier.testTag("edit_text_file_btn")
+                            ) {
+                                Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Edit File")
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (isEditing) {
+                OutlinedTextField(
+                    value = editableText,
+                    onValueChange = { editableText = it },
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = JetBrainsMonoFamily),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("text_editor_field")
                 )
-                .padding(10.dp)
-        ) {
-            items(contentLines.size) { index ->
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "%4d  ".format(index + 1),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.outline
-                    )
-                    Text(
-                        text = contentLines[index],
-                        style = MaterialTheme.typography.labelMedium,
-                        fontFamily = JetBrainsMonoFamily
-                    )
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            MaterialTheme.colorScheme.surfaceContainerLowest,
+                            RoundedCornerShape(10.dp)
+                        )
+                        .padding(10.dp)
+                ) {
+                    items(contentLines.size) { index ->
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = "%4d  ".format(index + 1),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                            Text(
+                                text = contentLines[index],
+                                style = MaterialTheme.typography.labelMedium,
+                                fontFamily = JetBrainsMonoFamily
+                            )
+                        }
+                    }
                 }
             }
         }

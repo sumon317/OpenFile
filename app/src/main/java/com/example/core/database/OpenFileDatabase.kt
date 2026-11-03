@@ -26,16 +26,32 @@ abstract class OpenFileDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: OpenFileDatabase? = null
 
+        @Volatile
+        private var boundAppContext: Context? = null
+
         fun getInstance(context: Context): OpenFileDatabase {
-            return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: Room.databaseBuilder(
-                    context.applicationContext,
-                    OpenFileDatabase::class.java,
-                    "openfile_metadata.db"
-                )
-                    .fallbackToDestructiveMigration(true)
-                    .build()
-                    .also { INSTANCE = it }
+            val appCtx = context.applicationContext
+            val existing = INSTANCE
+            if (existing != null && boundAppContext === appCtx) {
+                return existing
+            }
+            return synchronized(this) {
+                val current = INSTANCE
+                if (current != null && boundAppContext === appCtx) {
+                    current
+                } else {
+                    Room.databaseBuilder(
+                        appCtx,
+                        OpenFileDatabase::class.java,
+                        "openfile_metadata.db"
+                    )
+                        .fallbackToDestructiveMigration(true)
+                        .build()
+                        .also {
+                            INSTANCE = it
+                            boundAppContext = appCtx
+                        }
+                }
             }
         }
     }

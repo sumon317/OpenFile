@@ -59,7 +59,8 @@ class TransferQueueEngine(
     private val dao: OpenFileDao,
     private val localProvider: LocalFileSystemProvider,
     private val safProvider: SafDocumentProvider,
-    private val appScope: CoroutineScope
+    private val appScope: CoroutineScope,
+    private val credentialVault: com.example.core.security.KeystoreCredentialVault = com.example.core.security.KeystoreCredentialVault(context)
 ) {
     private val _clipboard = MutableStateFlow(ClipboardState())
     val clipboard: StateFlow<ClipboardState> = _clipboard.asStateFlow()
@@ -75,6 +76,18 @@ class TransferQueueEngine(
 
     private val trashRootDir: File by lazy {
         File(context.filesDir, ".openfile_trash").apply { if (!exists()) mkdirs() }
+    }
+
+    private val googleDriveProvider: com.example.core.cloud.CloudFileSystemProvider by lazy {
+        com.example.core.cloud.CloudFileSystemProvider(context, dao, credentialVault, ProviderType.GOOGLE_DRIVE)
+    }
+
+    private val oneDriveProvider: com.example.core.cloud.CloudFileSystemProvider by lazy {
+        com.example.core.cloud.CloudFileSystemProvider(context, dao, credentialVault, ProviderType.ONEDRIVE)
+    }
+
+    private val dropboxProvider: com.example.core.cloud.CloudFileSystemProvider by lazy {
+        com.example.core.cloud.CloudFileSystemProvider(context, dao, credentialVault, ProviderType.DROPBOX)
     }
 
     fun copyToClipboard(items: List<FileReference>, mode: ClipboardMode) {
@@ -114,6 +127,9 @@ class TransferQueueEngine(
 
     private fun providerFor(type: ProviderType): VirtualFileSystemProvider = when (type) {
         ProviderType.SAF -> safProvider
+        ProviderType.GOOGLE_DRIVE -> googleDriveProvider
+        ProviderType.ONEDRIVE -> oneDriveProvider
+        ProviderType.DROPBOX -> dropboxProvider
         else -> localProvider
     }
 
@@ -186,9 +202,8 @@ class TransferQueueEngine(
                 status = "RUNNING",
                 verifyChecksum = verifyChecksum
             )
-            dao.upsertTransferJob(initialEntity)
-
             try {
+                runCatching { dao.upsertTransferJob(initialEntity) }
                 var lastDbUpdateMs = 0L
                 for (sourceItem in clip.items) {
                     coroutineContext.ensureActive()
@@ -245,6 +260,11 @@ class TransferQueueEngine(
                             ConflictResolution.OVERWRITE -> {
                                 if (destinationDir.providerType == ProviderType.LOCAL) {
                                     File(destinationDir.uriOrPath, targetName).deleteRecursively()
+                                } else {
+                                    destProvider.listChildren(destinationDir, showHidden = true)
+                                        .getOrDefault(emptyList())
+                                        .firstOrNull { it.displayName == targetName }
+                                        ?.let { destProvider.delete(it) }
                                 }
                             }
                         }
@@ -385,15 +405,20 @@ class TransferQueueEngine(
         val dstProvider = providerFor(destinationParent.providerType)
 
         // Prevent copying or moving a folder into itself or its own subdirectory
-        if (source.isDirectory &&
-            source.providerType == ProviderType.LOCAL &&
-            destinationParent.providerType == ProviderType.LOCAL
-        ) {
-            val srcCanonical = runCatching { File(source.uriOrPath).canonicalPath }.getOrDefault(source.uriOrPath)
-            val dstCanonical = runCatching { File(destinationParent.uriOrPath, targetName).canonicalPath }
-                .getOrDefault("${destinationParent.uriOrPath}/$targetName")
-            if (dstCanonical == srcCanonical || dstCanonical.startsWith("$srcCanonical${File.separator}")) {
-                throw IllegalArgumentException("Cannot copy or move folder '${source.displayName}' into itself.")
+        if (source.isDirectory && source.providerType == destinationParent.providerType) {
+            if (source.providerType == ProviderType.LOCAL) {
+                val srcCanonical = runCatching { File(source.uriOrPath).canonicalPath }.getOrDefault(source.uriOrPath)
+                val dstCanonical = runCatching { File(destinationParent.uriOrPath, targetName).canonicalPath }
+                    .getOrDefault("${destinationParent.uriOrPath}/$targetName")
+                if (dstCanonical == srcCanonical || dstCanonical.startsWith("$srcCanonical${File.separator}")) {
+                    throw IllegalArgumentException("Cannot copy or move folder '${source.displayName}' into itself.")
+                }
+            } else {
+                val srcNorm = source.uriOrPath.trimEnd('/')
+                val dstNorm = "${destinationParent.uriOrPath.trimEnd('/')}/$targetName"
+                if (dstNorm == srcNorm || dstNorm.startsWith("$srcNorm/")) {
+                    throw IllegalArgumentException("Cannot copy or move folder '${source.displayName}' into itself.")
+                }
             }
         }
 
@@ -414,8 +439,8 @@ class TransferQueueEngine(
         }
 
         if (source.isDirectory) {
-            val createdDir = dstProvider.createDirectory(destinationParent, targetName).getOrThrow()
             val children = srcProvider.listChildren(source, showHidden = true).getOrDefault(emptyList())
+            val createdDir = dstProvider.createDirectory(destinationParent, targetName).getOrThrow()
             for (child in children) {
                 transferItemRecursive(
                     jobId = jobId,

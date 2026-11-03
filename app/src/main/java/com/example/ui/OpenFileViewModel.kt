@@ -106,7 +106,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     val localProvider = LocalFileSystemProvider(context)
     val safProvider = SafDocumentProvider(context)
     val mediaStoreProvider = MediaStoreProvider(context, localProvider)
-    val transferEngine = TransferQueueEngine(context, dao, localProvider, safProvider, viewModelScope)
+    val transferEngine = TransferQueueEngine(context, dao, localProvider, safProvider, viewModelScope, credentialVault)
     val storageAnalyzer = StorageAnalyzerEngine(localProvider)
     val appManager = AppManagerEngine(context, localProvider)
 
@@ -254,6 +254,13 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     private val _activeWebCloudUrl = MutableStateFlow<String?>(null)
     val activeWebCloudUrl: StateFlow<String?> = _activeWebCloudUrl.asStateFlow()
 
+    // Native Google Drive FilePicker Modal state
+    private val _showDriveFilePickerModal = MutableStateFlow(false)
+    val showDriveFilePickerModal: StateFlow<Boolean> = _showDriveFilePickerModal.asStateFlow()
+
+    private val _activeDrivePickerAccount = MutableStateFlow<CloudAccountEntity?>(null)
+    val activeDrivePickerAccount: StateFlow<CloudAccountEntity?> = _activeDrivePickerAccount.asStateFlow()
+
     // File Manager + Home Category Counts & Instant Pre-warmed Category Cache
     private val _categoryCounts = MutableStateFlow<Map<FileCategory, Int>>(emptyMap())
     val categoryCounts: StateFlow<Map<FileCategory, Int>> = _categoryCounts.asStateFlow()
@@ -264,6 +271,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     val selectedNetworkTab: StateFlow<Int> = _selectedNetworkTab.asStateFlow()
 
     init {
+        CloudStorageEngine.initContext(context)
         viewModelScope.launch {
             settingsStore.settingsFlow.collect { persisted ->
                 _settings.value = persisted
@@ -272,7 +280,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch(Dispatchers.IO) {
             // Crash recovery: mark any stale RUNNING transfer jobs from a previous process death as INTERRUPTED
             dao.markRunningJobsAsInterrupted()
-            openPrimaryStorageRoot()
+            if (_browserState.value.currentDirectory == null && browseDirectoryJob == null) {
+                openPrimaryStorageRoot()
+            }
             refreshCategoryCountsAndPrewarm()
         }
     }
@@ -355,6 +365,25 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun openDirectory(directory: FileReference) {
+        if (directory.providerType in setOf(ProviderType.GOOGLE_DRIVE, ProviderType.ONEDRIVE, ProviderType.DROPBOX)) {
+            val activeAcc = _browserState.value.activeCloudAccount
+                ?: directory.metadata["accountId"]?.toLongOrNull()?.let { id ->
+                    cloudAccounts.value.firstOrNull { it.id == id }
+                }
+                ?: cloudAccounts.value.firstOrNull { it.provider == directory.providerType.name }
+            if (activeAcc != null) {
+                openCloudDirectory(activeAcc, directory.uriOrPath)
+                return
+            }
+        }
+        if (directory.providerType in setOf(ProviderType.FTP, ProviderType.FTPS, ProviderType.SFTP, ProviderType.SMB)) {
+            val activeProf = _browserState.value.activeRemoteProfile
+            if (activeProf != null) {
+                openRemoteNetworkDirectory(activeProf, directory.uriOrPath)
+                return
+            }
+        }
+
         browseDirectoryJob?.cancel()
         _browserState.value = _browserState.value.copy(
             currentDirectory = directory,
@@ -458,13 +487,28 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             return true
         }
         val current = state.currentDirectory ?: return false
-        val parentPath = current.parentUriOrPath ?: return false
+        val parentPath = current.parentUriOrPath
 
         if (state.activeRemoteProfile != null) {
-            if (current.uriOrPath == "/" || current.uriOrPath == state.activeRemoteProfile.remoteInitialPath) return false
+            if (current.uriOrPath == "/" || current.uriOrPath == state.activeRemoteProfile.remoteInitialPath || parentPath == null) return false
             openRemoteNetworkDirectory(state.activeRemoteProfile, parentPath)
             return true
         }
+
+        if (state.activeCloudAccount != null) {
+            val parentCrumbs = state.breadcrumbs.dropLast(1)
+            if (parentCrumbs.isNotEmpty()) {
+                openCloudDirectory(state.activeCloudAccount, parentCrumbs.last().uriOrPath)
+                return true
+            }
+            if (current.uriOrPath != "root" && current.uriOrPath != "/" && !parentPath.isNullOrBlank()) {
+                openCloudDirectory(state.activeCloudAccount, parentPath)
+                return true
+            }
+            return false
+        }
+
+        if (parentPath == null) return false
 
         if (current.providerType == ProviderType.LOCAL) {
             val parentCrumbs = state.breadcrumbs.dropLast(1)
@@ -609,7 +653,8 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
 
         // 1. Check if supported archive (ZIP, TAR, GZ, XZ, 7Z) -> open built-in archive inspector
-        if (item.extension.lowercase() in FileCategory.ARCHIVES.extensions && item.providerType == ProviderType.LOCAL) {
+        val isCloudItem = item.providerType in setOf(ProviderType.GOOGLE_DRIVE, ProviderType.ONEDRIVE, ProviderType.DROPBOX)
+        if (item.extension.lowercase() in FileCategory.ARCHIVES.extensions && (item.providerType == ProviderType.LOCAL || isCloudItem)) {
             inspectArchive(item)
             return
         }
@@ -621,23 +666,91 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             return
         }
 
-        // 3. For Remote/Cloud files that aren't local or MediaStore, show built-in preview dialog
+        // 3. For Cloud Drive files, resolve local/cached file and open in built-in previewer or external app
+        if (isCloudItem) {
+            openBuiltInPreview(item)
+            return
+        }
+
+        // 4. For Remote Network files (FTP/SFTP/SMB), show built-in preview dialog
         if (item.providerType != ProviderType.LOCAL && item.providerType != ProviderType.MEDIA_STORE && item.providerType != ProviderType.SAF) {
             _previewFile.value = item
             return
         }
 
-        // 4. Standard File Manager behavior: launch external / system handler (Video player, PDF viewer, Gallery, Music player, Office app, etc.)
+        // 5. Standard File Manager behavior: launch external / system handler (Video player, PDF viewer, Gallery, Music player, Office app, etc.)
         // Falls back to built-in previewer ONLY if no external app is installed for this file type.
         openWithExternalApp(item, forceChooser = false, fallbackToBuiltInPreview = true)
     }
 
     fun openBuiltInPreview(item: FileReference) {
+        if (item.providerType in setOf(ProviderType.GOOGLE_DRIVE, ProviderType.ONEDRIVE, ProviderType.DROPBOX)) {
+            viewModelScope.launch {
+                val acc = resolveCloudAccountForRef(item)
+                if (acc != null) {
+                    val token = credentialVault.retrieveSecret(acc.tokenSecretAlias).orEmpty()
+                    CloudStorageEngine.resolveLocalFileForPreviewOrOpen(acc, token, item, context)
+                        .onSuccess { localFile ->
+                            _previewFile.value = item.copy(
+                                metadata = item.metadata + ("localBackingPath" to localFile.absolutePath)
+                            )
+                        }
+                        .onFailure {
+                            _previewFile.value = item
+                        }
+                } else {
+                    _previewFile.value = item
+                }
+            }
+            return
+        }
         _previewFile.value = item
     }
 
     fun closePreviewDialog() {
         _previewFile.value = null
+    }
+
+    fun saveEditedTextFile(item: FileReference, newContent: String) {
+        viewModelScope.launch {
+            val isCloud = item.providerType in setOf(ProviderType.GOOGLE_DRIVE, ProviderType.ONEDRIVE, ProviderType.DROPBOX)
+            if (isCloud) {
+                val acc = resolveCloudAccountForRef(item)
+                if (acc != null) {
+                    val token = credentialVault.retrieveSecret(acc.tokenSecretAlias).orEmpty()
+                    CloudStorageEngine.writeCloudTextContent(acc, token, item, newContent, context)
+                        .onSuccess { updated ->
+                            _previewFile.value = updated
+                            showStatus("Saved changes to '${item.displayName}' in ${acc.displayName}")
+                            refreshCurrentDirectory()
+                        }
+                        .onFailure { err ->
+                            showStatus("Cloud save failed: ${err.message}")
+                        }
+                }
+                return@launch
+            }
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val backingPath = item.metadata["localBackingPath"] ?: item.uriOrPath
+                    File(backingPath).writeText(newContent)
+                }
+            }.onSuccess {
+                showStatus("Saved '${item.displayName}'")
+                refreshCurrentDirectory()
+            }.onFailure { err ->
+                showStatus("Failed to save file: ${err.message}")
+            }
+        }
+    }
+
+    private suspend fun resolveCloudAccountForRef(item: FileReference): CloudAccountEntity? {
+        _browserState.value.activeCloudAccount?.let { return it }
+        val accountId = item.metadata["accountId"]?.toLongOrNull()
+        if (accountId != null && accountId > 0L) {
+            dao.getCloudAccountById(accountId)?.let { return it }
+        }
+        return dao.getAllCloudAccounts().firstOrNull { it.provider == item.providerType.name }
     }
 
     fun openWithExternalApp(
@@ -647,16 +760,17 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     ) {
         runCatching {
             val resolvedMime = resolveMimeType(item)
-            val uri = if (item.providerType == ProviderType.LOCAL) {
-                val f = File(item.uriOrPath)
+            val localBacking = item.metadata["localBackingPath"]?.let { File(it) }
+                ?: if (item.providerType == ProviderType.LOCAL) File(item.uriOrPath) else null
+            val uri = if (localBacking != null) {
                 try {
                     FileProvider.getUriForFile(
                         context,
                         "${context.packageName}.fileprovider",
-                        f
+                        localBacking
                     )
                 } catch (_: Exception) {
-                    Uri.fromFile(f)
+                    Uri.fromFile(localBacking)
                 }
             } else {
                 Uri.parse(item.uriOrPath)
@@ -734,9 +848,24 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         if (item.providerType == ProviderType.LOCAL) {
             appManager.shareApkOrFile(File(item.uriOrPath), item.mimeType)
                 .onFailure { showStatus("Share failed: ${it.message}") }
-        } else {
-            showStatus("Download remote file to local storage before sharing.")
+            return
         }
+        if (item.providerType in setOf(ProviderType.GOOGLE_DRIVE, ProviderType.ONEDRIVE, ProviderType.DROPBOX)) {
+            viewModelScope.launch {
+                val acc = resolveCloudAccountForRef(item)
+                if (acc != null) {
+                    val token = credentialVault.retrieveSecret(acc.tokenSecretAlias).orEmpty()
+                    CloudStorageEngine.resolveLocalFileForPreviewOrOpen(acc, token, item, context)
+                        .onSuccess { localFile ->
+                            appManager.shareApkOrFile(localFile, item.mimeType)
+                                .onFailure { showStatus("Share failed: ${it.message}") }
+                        }
+                        .onFailure { showStatus("Share failed: ${it.message}") }
+                }
+            }
+            return
+        }
+        showStatus("Download remote file to local storage before sharing.")
     }
 
     fun toggleSelection(item: FileReference) {
@@ -798,9 +927,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             }
             if (cloudAcc != null) {
                 val token = credentialVault.retrieveSecret(cloudAcc.tokenSecretAlias).orEmpty()
-                CloudStorageEngine.createCloudFolder(cloudAcc, token, currentDir.uriOrPath, folderName)
+                CloudStorageEngine.createCloudFolder(cloudAcc, token, currentDir.uriOrPath, folderName, context)
                     .onSuccess {
-                        showStatus("Created cloud folder '$folderName'")
+                        showStatus("Created folder '$folderName' in ${cloudAcc.displayName}")
                         refreshCurrentDirectory()
                     }
                     .onFailure { showStatus("Cloud folder creation failed: ${it.message}") }
@@ -819,7 +948,18 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     fun createNewTextFile(fileName: String, content: String) {
         val currentDir = _browserState.value.currentDirectory ?: return
+        val cloudAcc = _browserState.value.activeCloudAccount
         viewModelScope.launch {
+            if (cloudAcc != null) {
+                val token = credentialVault.retrieveSecret(cloudAcc.tokenSecretAlias).orEmpty()
+                CloudStorageEngine.createCloudTextFile(cloudAcc, token, currentDir.uriOrPath, fileName, content, context)
+                    .onSuccess {
+                        showStatus("Created file '${it.displayName}' in ${cloudAcc.displayName}")
+                        refreshCurrentDirectory()
+                    }
+                    .onFailure { showStatus("Cloud file creation failed: ${it.message}") }
+                return@launch
+            }
             val provider = if (currentDir.providerType == ProviderType.SAF) safProvider else localProvider
             provider.createTextFile(currentDir, fileName, content)
                 .onSuccess {
@@ -832,15 +972,28 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     fun renameItem(target: FileReference, newName: String) {
         val remoteProfile = _browserState.value.activeRemoteProfile
+        val cloudAcc = _browserState.value.activeCloudAccount
         viewModelScope.launch {
             if (remoteProfile != null) {
                 val secret = credentialVault.retrieveSecret(remoteProfile.secretAlias).orEmpty()
                 RemoteNetworkClients.renameRemoteItem(remoteProfile, secret, target, newName)
                     .onSuccess {
                         showStatus("Renamed to '$newName'")
+                        clearSelection()
                         refreshCurrentDirectory()
                     }
                     .onFailure { showStatus("Remote rename failed: ${it.message}") }
+                return@launch
+            }
+            if (cloudAcc != null) {
+                val token = credentialVault.retrieveSecret(cloudAcc.tokenSecretAlias).orEmpty()
+                CloudStorageEngine.renameCloudItem(cloudAcc, token, target, newName, context)
+                    .onSuccess {
+                        showStatus("Renamed to '${it.displayName}' in ${cloudAcc.displayName}")
+                        clearSelection()
+                        refreshCurrentDirectory()
+                    }
+                    .onFailure { showStatus("Cloud rename failed: ${it.message}") }
                 return@launch
             }
 
@@ -904,12 +1057,12 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 val token = credentialVault.retrieveSecret(cloudAcc.tokenSecretAlias).orEmpty()
                 var deleted = 0
                 for (item in items) {
-                    CloudStorageEngine.deleteCloudItem(cloudAcc, token, item)
+                    CloudStorageEngine.deleteCloudItem(cloudAcc, token, item, context)
                         .onSuccess { deleted++ }
                         .onFailure { showStatus("Cloud delete failed: ${it.message}") }
                 }
                 clearSelection()
-                showStatus("Deleted $deleted cloud item(s)")
+                showStatus("Deleted $deleted item(s) from ${cloudAcc.displayName}")
                 refreshCurrentDirectory()
                 return@launch
             }
@@ -968,6 +1121,20 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                         _propertiesChecksums.value = hashes
                     }
                 }
+            } else if (item.providerType in setOf(ProviderType.GOOGLE_DRIVE, ProviderType.ONEDRIVE, ProviderType.DROPBOX)) {
+                val acc = resolveCloudAccountForRef(item) ?: return@launch
+                val token = credentialVault.retrieveSecret(acc.tokenSecretAlias).orEmpty()
+                CloudStorageEngine.resolveLocalFileForPreviewOrOpen(acc, token, item, context).onSuccess { file ->
+                    if (file.isDirectory && file.canRead()) {
+                        val dirSize = localProvider.calculateDirectorySize(file)
+                        _propertiesFile.value = item.copy(sizeBytes = dirSize)
+                    } else if (file.isFile && file.canRead() && file.length() <= 250L * 1024 * 1024) {
+                        val hashes = runCatching {
+                            file.inputStream().use { ChecksumAndDuplicateEngine.computeChecksums(it) }
+                        }.getOrNull()
+                        _propertiesChecksums.value = hashes
+                    }
+                }
             }
         }
     }
@@ -994,6 +1161,30 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                     onFileItemClicked(ref)
                 }
             }
+            ProviderType.GOOGLE_DRIVE.name, ProviderType.ONEDRIVE.name, ProviderType.DROPBOX.name -> {
+                viewModelScope.launch {
+                    val acc = dao.getAllCloudAccounts().firstOrNull { it.provider == bm.providerType }
+                    if (acc != null) {
+                        if (bm.isDirectory) {
+                            openCloudDirectory(acc, bm.uriOrPath)
+                        } else {
+                            openBuiltInPreview(
+                                FileReference(
+                                    providerType = ProviderType.valueOf(bm.providerType),
+                                    uriOrPath = bm.uriOrPath,
+                                    displayName = bm.title,
+                                    parentUriOrPath = "root",
+                                    isDirectory = false,
+                                    mimeType = bm.mimeType,
+                                    metadata = mapOf("accountId" to acc.id.toString())
+                                )
+                            )
+                        }
+                    } else {
+                        showStatus("Connect ${bm.providerType} first to open '${bm.title}'.")
+                    }
+                }
+            }
             else -> {
                 viewModelScope.launch {
                     val ref = withContext(Dispatchers.IO) {
@@ -1017,6 +1208,25 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     fun openRecentFile(recent: RecentFileEntity) {
         viewModelScope.launch {
+            if (recent.providerType in setOf(ProviderType.GOOGLE_DRIVE.name, ProviderType.ONEDRIVE.name, ProviderType.DROPBOX.name)) {
+                val acc = dao.getAllCloudAccounts().firstOrNull { it.provider == recent.providerType }
+                if (acc != null) {
+                    openBuiltInPreview(
+                        FileReference(
+                            providerType = ProviderType.valueOf(recent.providerType),
+                            uriOrPath = recent.uriOrPath,
+                            displayName = recent.displayName,
+                            parentUriOrPath = recent.parentUriOrPath ?: "root",
+                            isDirectory = false,
+                            sizeBytes = recent.sizeBytes,
+                            lastModifiedEpochMs = recent.lastModifiedAt,
+                            mimeType = recent.mimeType,
+                            metadata = mapOf("accountId" to acc.id.toString())
+                        )
+                    )
+                    return@launch
+                }
+            }
             val ref = withContext(Dispatchers.IO) {
                 val file = File(recent.uriOrPath)
                 if (file.exists()) localProvider.toFileReference(file) else null
@@ -1088,7 +1298,20 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     fun inspectArchive(archiveRef: FileReference) {
         viewModelScope.launch {
             _browserState.value = _browserState.value.copy(isLoading = true, errorMessage = null)
-            val file = File(archiveRef.uriOrPath)
+            val file = if (archiveRef.providerType in setOf(ProviderType.GOOGLE_DRIVE, ProviderType.ONEDRIVE, ProviderType.DROPBOX)) {
+                val acc = resolveCloudAccountForRef(archiveRef)
+                val token = acc?.let { credentialVault.retrieveSecret(it.tokenSecretAlias).orEmpty() }.orEmpty()
+                if (acc != null) {
+                    CloudStorageEngine.resolveLocalFileForPreviewOrOpen(acc, token, archiveRef, context).getOrNull()
+                } else null
+            } else {
+                File(archiveRef.uriOrPath)
+            }
+            if (file == null || !file.exists()) {
+                _browserState.value = _browserState.value.copy(isLoading = false)
+                showStatus("Cannot locate archive file: ${archiveRef.displayName}")
+                return@launch
+            }
             ArchiveEngine.listArchiveEntries(file).fold(
                 onSuccess = { entries ->
                     _browserState.value = _browserState.value.copy(
@@ -1110,7 +1333,17 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         selectedEntries: Set<String>? = null
     ) {
         viewModelScope.launch {
-            val archiveFile = File(archiveRef.uriOrPath)
+            val cloudAcc = _browserState.value.activeCloudAccount
+            val archiveFile = if (cloudAcc != null) {
+                val token = credentialVault.retrieveSecret(cloudAcc.tokenSecretAlias).orEmpty()
+                CloudStorageEngine.resolveLocalFileForPreviewOrOpen(cloudAcc, token, archiveRef, context).getOrNull()
+            } else {
+                File(archiveRef.uriOrPath)
+            }
+            if (archiveFile == null || !archiveFile.exists()) {
+                showStatus("Archive file not found")
+                return@launch
+            }
             val baseName = archiveFile.name.substringBeforeLast('.')
             val destDir = File(archiveFile.parentFile ?: localProvider.getPrimaryRootDirectory(), "${baseName}_extracted")
             showStatus("Extracting ${archiveFile.name}...")
@@ -1125,7 +1358,11 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                         inspectArchiveFile = null,
                         archiveEntries = emptyList()
                     )
-                    openDirectory(localProvider.toFileReference(destDir))
+                    if (cloudAcc != null) {
+                        refreshCurrentDirectory()
+                    } else {
+                        openDirectory(localProvider.toFileReference(destDir))
+                    }
                 },
                 onFailure = { err ->
                     showStatus("Extraction blocked or failed: ${err.message}")
@@ -1138,16 +1375,66 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         archiveNameWithoutExt: String,
         format: ArchiveCreationFormat
     ) {
-        val selected = getSelectedFileReferences().filter { it.providerType == ProviderType.LOCAL }
         val currentDir = _browserState.value.currentDirectory ?: return
+        val cloudAcc = _browserState.value.activeCloudAccount
+        val selected = getSelectedFileReferences()
         if (selected.isEmpty()) {
-            showStatus("Select at least one local file or folder to compress.")
+            showStatus("Select at least one file or folder to compress.")
             return
         }
         viewModelScope.launch {
             val cleanBase = archiveNameWithoutExt.trim().ifEmpty { "Archive_${System.currentTimeMillis()}" }
+            if (cloudAcc != null) {
+                val token = credentialVault.retrieveSecret(cloudAcc.tokenSecretAlias).orEmpty()
+                val sources = selected.mapNotNull { item ->
+                    CloudStorageEngine.resolveLocalFileForPreviewOrOpen(cloudAcc, token, item, context).getOrNull()
+                }
+                if (sources.isEmpty()) {
+                    showStatus("Unable to resolve cloud files for compression.")
+                    return@launch
+                }
+                val parentLocalDir = if (!CloudStorageEngine.isLiveOAuthSession(cloudAcc, token)) {
+                    CloudStorageEngine.resolveNativeVfsFile(cloudAcc, currentDir.uriOrPath, context)
+                } else {
+                    context.cacheDir
+                }
+                val outFile = File(parentLocalDir, "$cleanBase.${format.extension}")
+                showStatus("Creating ${outFile.name} in ${cloudAcc.displayName}...")
+                ArchiveEngine.createArchive(
+                    sourceFiles = sources,
+                    outputArchiveFile = outFile,
+                    format = format
+                ).fold(
+                    onSuccess = { created ->
+                        if (CloudStorageEngine.isLiveOAuthSession(cloudAcc, token)) {
+                            CloudStorageEngine.uploadCloudFile(
+                                account = cloudAcc,
+                                accessToken = token,
+                                parentIdOrPath = currentDir.uriOrPath,
+                                localSource = created,
+                                targetFileName = created.name,
+                                context = context
+                            )
+                            created.delete()
+                        }
+                        clearSelection()
+                        showStatus("Created archive ${created.name} in ${cloudAcc.displayName}")
+                        refreshCurrentDirectory()
+                    },
+                    onFailure = { err ->
+                        showStatus("Compression failed: ${err.message}")
+                    }
+                )
+                return@launch
+            }
+
+            val localSelected = selected.filter { it.providerType == ProviderType.LOCAL }
+            if (localSelected.isEmpty()) {
+                showStatus("Select at least one local file or folder to compress.")
+                return@launch
+            }
             val outFile = File(currentDir.uriOrPath, "$cleanBase.${format.extension}")
-            val sources = selected.map { File(it.uriOrPath) }
+            val sources = localSelected.map { File(it.uriOrPath) }
             showStatus("Creating ${outFile.name}...")
             ArchiveEngine.createArchive(
                 sourceFiles = sources,
@@ -1457,68 +1744,100 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     /**
-     * 1-tap Cloud Connect using the user's default browser:
-     * Opens the provider's login / OAuth 2.0 page in the user's default external browser
-     * (pre-selecting `container6767@gmail.com` for Google Drive when no custom hint is given).
+     * 1-tap Cloud Connect & Native Drive Access:
+     * - If the provider is already connected, opens its native in-app Drive browser immediately.
+     * - If not yet connected, launches browser authentication (`Intent.ACTION_VIEW`) and mounts
+     *   the native in-app Drive workspace so the user browses and manages Drive files natively inside OpenFile.
      */
-    fun connectCloudProviderDirect(provider: CloudProviderKind, loginHint: String? = null) {
-        val effectiveHint = loginHint ?: if (provider == CloudProviderKind.GOOGLE_DRIVE) {
-            "container6767@gmail.com"
-        } else {
-            null
+    fun connectCloudProviderDirect(
+        provider: CloudProviderKind,
+        loginHint: String? = null,
+        forceBrowserAuth: Boolean = false
+    ) {
+        val effectiveHint = loginHint?.trim()?.takeIf { it.isNotBlank() }
+            ?: if (provider == CloudProviderKind.GOOGLE_DRIVE) {
+                "container6767@gmail.com"
+            } else {
+                null
+            }
+
+        val existingAccount = cloudAccounts.value.firstOrNull { it.provider == provider.name }
+        if (existingAccount != null && !forceBrowserAuth) {
+            openCloudDirectory(existingAccount, "root")
+            return
         }
+
         val configuredClientId = provider.defaultClientIdFromBuildConfig()
         if (configuredClientId.isNotBlank()) {
             startCloudOAuthFlow(provider, configuredClientId, effectiveHint).onSuccess { authUrl ->
                 _activeWebCloudProvider.value = provider
                 _activeWebCloudUrl.value = authUrl
                 openUrlInDefaultBrowser(authUrl)
-                showStatus("Opening ${provider.displayName} sign-in in your default browser...")
+                showStatus("Authenticate ${provider.displayName} in browser to return to native Drive...")
                 return
             }
         }
+
         val browserUrl = provider.defaultBrowserLoginUrl(effectiveHint)
         _activeWebCloudProvider.value = provider
         _activeWebCloudUrl.value = browserUrl
-        onWebCloudAuthenticated(
-            provider = provider,
-            detectedLabelOrEmail = effectiveHint ?: "${provider.displayName} (Default Browser)"
+        viewModelScope.launch {
+            val connectedAccount = upsertBrowserAuthenticatedCloudAccount(
+                provider = provider,
+                detectedLabelOrEmail = effectiveHint ?: "${provider.displayName} Account"
+            )
+            // Mount and open the native in-app Drive view immediately so returning from browser lands directly in Drive
+            openCloudDirectory(connectedAccount, "root")
+            openUrlInDefaultBrowser(browserUrl)
+            showStatus("Sign in via browser — ${provider.displayName} is now mounted natively in OpenFile")
+        }
+    }
+
+    fun reauthenticateCloudProviderInBrowser(provider: CloudProviderKind, loginHint: String? = null) {
+        connectCloudProviderDirect(provider = provider, loginHint = loginHint, forceBrowserAuth = true)
+    }
+
+    private suspend fun upsertBrowserAuthenticatedCloudAccount(
+        provider: CloudProviderKind,
+        detectedLabelOrEmail: String?
+    ): CloudAccountEntity {
+        val cleanLabel = detectedLabelOrEmail
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: "${provider.displayName} Account"
+        val existing = cloudAccounts.value.firstOrNull {
+            it.provider == provider.name
+        } ?: dao.getAllCloudAccounts().firstOrNull {
+            it.provider == provider.name
+        }
+        val alias = credentialVault.storeSecret(existing?.tokenSecretAlias, "DEFAULT_BROWSER_SESSION")
+        val entity = CloudAccountEntity(
+            id = existing?.id ?: 0L,
+            provider = provider.name,
+            accountEmail = cleanLabel,
+            displayName = provider.displayName,
+            clientId = CloudStorageEngine.WEB_SESSION_CLIENT_MARKER,
+            tokenSecretAlias = alias,
+            refreshTokenSecretAlias = null,
+            tokenExpiresAt = Long.MAX_VALUE
         )
-        openUrlInDefaultBrowser(browserUrl)
-        showStatus("Opening ${provider.displayName} in your default browser...")
+        val rowId = dao.upsertCloudAccount(entity)
+        val saved = entity.copy(id = if (entity.id != 0L) entity.id else rowId)
+        if (provider == CloudProviderKind.GOOGLE_DRIVE) {
+            _activeDrivePickerAccount.value = saved
+        }
+        return saved
     }
 
     /**
-     * Registers or updates a cloud account connected via the user's default browser.
+     * Registers or updates a cloud account connected via the user's default browser
+     * and opens it in the native in-app file browser.
      */
     fun onWebCloudAuthenticated(provider: CloudProviderKind, detectedLabelOrEmail: String?) {
         viewModelScope.launch {
-            val cleanLabel = detectedLabelOrEmail
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
-                ?: "${provider.displayName} Browser Account"
-            val existing = cloudAccounts.value.firstOrNull {
-                it.provider == provider.name &&
-                    it.clientId == CloudStorageEngine.WEB_SESSION_CLIENT_MARKER
-            }
-            if (existing == null || existing.accountEmail != cleanLabel) {
-                val alias = credentialVault.storeSecret(existing?.tokenSecretAlias, "DEFAULT_BROWSER_SESSION")
-                dao.upsertCloudAccount(
-                    CloudAccountEntity(
-                        id = existing?.id ?: 0L,
-                        provider = provider.name,
-                        accountEmail = cleanLabel,
-                        displayName = provider.displayName,
-                        clientId = CloudStorageEngine.WEB_SESSION_CLIENT_MARKER,
-                        tokenSecretAlias = alias,
-                        refreshTokenSecretAlias = null,
-                        tokenExpiresAt = Long.MAX_VALUE
-                    )
-                )
-                if (existing == null) {
-                    showStatus("Connected ${provider.displayName} ($cleanLabel)")
-                }
-            }
+            val account = upsertBrowserAuthenticatedCloudAccount(provider, detectedLabelOrEmail)
+            showStatus("Connected ${provider.displayName} (${account.accountEmail})")
+            openCloudDirectory(account, "root")
         }
     }
 
@@ -1581,8 +1900,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 ?: "Google Drive Account"
             val existing = cloudAccounts.value.firstOrNull {
                 it.provider == CloudProviderKind.GOOGLE_DRIVE.name &&
-                    it.clientId == com.example.core.cloud.GoogleDriveOnDeviceAuth.ON_DEVICE_CLIENT_MARKER &&
-                    it.accountEmail == resolvedEmail
+                    it.accountEmail.equals(resolvedEmail, ignoreCase = true)
+            } ?: dao.getAllCloudAccounts().firstOrNull {
+                it.provider == CloudProviderKind.GOOGLE_DRIVE.name
             }
             val alias = credentialVault.storeSecret(existing?.tokenSecretAlias, accessToken)
             val entity = CloudAccountEntity(
@@ -1596,10 +1916,12 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 tokenExpiresAt = System.currentTimeMillis() + 55 * 60_000L
             )
             val rowId = dao.upsertCloudAccount(entity)
+            val saved = entity.copy(id = if (entity.id != 0L) entity.id else rowId)
+            _activeDrivePickerAccount.value = saved
             _activeWebCloudProvider.value = null
             _activeWebCloudUrl.value = null
             showStatus("Connected Google Drive ($resolvedEmail)")
-            openCloudDirectory(entity.copy(id = if (entity.id != 0L) entity.id else rowId))
+            openCloudDirectory(saved)
         }
     }
 
@@ -1713,25 +2035,125 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun openCloudDirectory(account: CloudAccountEntity, folderIdOrPath: String = "root") {
-        val providerKind = runCatching { CloudProviderKind.valueOf(account.provider) }.getOrNull()
-        if (account.clientId == CloudStorageEngine.WEB_SESSION_CLIENT_MARKER && providerKind != null) {
-            val hint = account.accountEmail.takeIf { it.contains("@") }
-            val url = providerKind.defaultBrowserLoginUrl(hint)
-            _activeWebCloudProvider.value = providerKind
-            _activeWebCloudUrl.value = url
-            openUrlInDefaultBrowser(url)
-            showStatus("Opening ${providerKind.displayName} in your default browser...")
+    /**
+     * Retrieves the active OAuth 2.0 Bearer access token stored in the encrypted Keystore vault
+     * for the given CloudAccountEntity.
+     */
+    fun retrieveCloudAccessToken(account: CloudAccountEntity): String {
+        return credentialVault.retrieveSecret(account.tokenSecretAlias).orEmpty()
+    }
+
+    fun openDriveFilePickerModal() {
+        val immediateAcc = _activeDrivePickerAccount.value
+            ?: _browserState.value.activeCloudAccount?.takeIf { it.provider == CloudProviderKind.GOOGLE_DRIVE.name }
+            ?: cloudAccounts.value.lastOrNull { it.provider == CloudProviderKind.GOOGLE_DRIVE.name }
+        if (immediateAcc != null) {
+            _activeDrivePickerAccount.value = immediateAcc
+            _showDriveFilePickerModal.value = true
             return
         }
-
         viewModelScope.launch {
-            _browserState.value = _browserState.value.copy(
-                isLoading = true,
-                errorMessage = null,
-                activeCloudAccount = account,
-                activeRemoteProfile = null
-            )
+            val currentAccounts = dao.getAllCloudAccounts()
+            val googleAcc = currentAccounts.lastOrNull { it.provider == CloudProviderKind.GOOGLE_DRIVE.name }
+            if (googleAcc != null) {
+                _activeDrivePickerAccount.value = googleAcc
+            } else {
+                val created = upsertBrowserAuthenticatedCloudAccount(
+                    provider = CloudProviderKind.GOOGLE_DRIVE,
+                    detectedLabelOrEmail = "container6767@gmail.com"
+                )
+                _activeDrivePickerAccount.value = created
+            }
+            _showDriveFilePickerModal.value = true
+        }
+    }
+
+    fun closeDriveFilePickerModal() {
+        _showDriveFilePickerModal.value = false
+    }
+
+    /**
+     * Pastes items currently on the clipboard directly into a target folder inside the specified
+     * Cloud account (e.g., Google Drive folder inside GoogleDriveFilePicker).
+     */
+    fun pasteClipboardIntoCloudFolder(account: CloudAccountEntity, targetFolderIdOrPath: String) {
+        val pk = runCatching { CloudProviderKind.valueOf(account.provider) }.getOrDefault(CloudProviderKind.GOOGLE_DRIVE)
+        val normalizedFolder = targetFolderIdOrPath.trim().trim('/').ifEmpty { "root" }
+        val destDir = FileReference(
+            providerType = pk.providerType,
+            uriOrPath = normalizedFolder,
+            displayName = normalizedFolder,
+            parentUriOrPath = "root",
+            isDirectory = true,
+            capabilities = FileReference.defaultCapabilitiesFor(pk.providerType, true),
+            metadata = mapOf("accountId" to account.id.toString())
+        )
+        val verify = settings.value.verifyChecksumAfterTransfer
+        transferEngine.enqueuePasteFromClipboard(
+            destinationDir = destDir,
+            verifyChecksum = verify,
+            onComplete = { result ->
+                result.onSuccess { msg ->
+                    showStatus(msg)
+                    refreshCurrentDirectory()
+                }.onFailure { err ->
+                    showStatus("Drive transfer error: ${err.message}")
+                    refreshCurrentDirectory()
+                }
+            }
+        )
+    }
+
+    /**
+     * Imports files/folders picked inside GoogleDriveFilePicker directly into the active local
+     * directory (or Downloads directory if no local folder is active).
+     */
+    fun importPickedDriveFilesToCurrentDirectory(
+        pickedItems: List<FileReference>,
+        explicitTargetDir: FileReference? = null,
+        onComplete: (Result<String>) -> Unit = {}
+    ) {
+        if (pickedItems.isEmpty()) {
+            onComplete(Result.failure(IllegalArgumentException("No Drive items selected")))
+            return
+        }
+        val currentDir = explicitTargetDir ?: _browserState.value.currentDirectory
+        val destLocalDir = if (currentDir != null && currentDir.providerType == ProviderType.LOCAL) {
+            currentDir
+        } else {
+            val downloadsDir = File(localProvider.getPrimaryRootDirectory(), "Download").apply { mkdirs() }
+            localProvider.toFileReference(downloadsDir)
+        }
+        transferEngine.copyToClipboard(pickedItems, ClipboardMode.COPY)
+        val verify = settings.value.verifyChecksumAfterTransfer
+        transferEngine.enqueuePasteFromClipboard(
+            destinationDir = destLocalDir,
+            verifyChecksum = verify,
+            onComplete = { result ->
+                result.onSuccess {
+                    showStatus("Imported ${pickedItems.size} item(s) from Google Drive to ${destLocalDir.displayName}")
+                    if (_browserState.value.currentDirectory?.providerType == ProviderType.LOCAL) {
+                        refreshCurrentDirectory()
+                    }
+                }.onFailure { err ->
+                    showStatus("Drive import error: ${err.message}")
+                }
+                onComplete(result)
+            }
+        )
+    }
+
+    fun openCloudDirectory(account: CloudAccountEntity, folderIdOrPath: String = "root") {
+        val normalizedFolder = folderIdOrPath.trim().trim('/').ifEmpty { "root" }
+        browseDirectoryJob?.cancel()
+        _browserState.value = _browserState.value.copy(
+            isLoading = true,
+            errorMessage = null,
+            activeCloudAccount = account,
+            activeRemoteProfile = null,
+            selectedUris = emptySet()
+        )
+        browseDirectoryJob = viewModelScope.launch {
             var accessToken = credentialVault.retrieveSecret(account.tokenSecretAlias).orEmpty()
             // On-device Google accounts have no refresh token: silently re-authorize via Play services.
             if (account.clientId == com.example.core.cloud.GoogleDriveOnDeviceAuth.ON_DEVICE_CLIENT_MARKER &&
@@ -1746,10 +2168,10 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                         credentialVault.storeSecret(account.tokenSecretAlias, fresh)
                         dao.upsertCloudAccount(account.copy(tokenExpiresAt = System.currentTimeMillis() + 55 * 60_000L))
                     } else {
-                        showStatus("Google Drive needs to be re-connected (tap Connect on the Cloud screen).")
+                        showStatus("Google Drive token expired; using native Drive workspace until re-connected.")
                     }
                 }.onFailure {
-                    showStatus("Could not renew Google Drive access: ${it.message}")
+                    showStatus("Could not renew Google Drive token: ${it.message}")
                 }
             }
             // Auto-refresh if expired and refresh token exists
@@ -1767,22 +2189,86 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 }
             }
 
-            CloudStorageEngine.listCloudDirectory(account, accessToken, folderIdOrPath).fold(
+            val currentSettings = _settings.value
+            CloudStorageEngine.listCloudDirectory(
+                account = account,
+                accessToken = accessToken,
+                folderIdOrPath = normalizedFolder,
+                context = context,
+                showHidden = currentSettings.showHiddenFiles
+            ).fold(
                 onSuccess = { items ->
                     val pk = CloudProviderKind.valueOf(account.provider)
-                    val dirRef = FileReference(
-                        providerType = pk.providerType,
-                        uriOrPath = folderIdOrPath,
-                        displayName = "${account.displayName} ($folderIdOrPath)",
-                        parentUriOrPath = "root",
-                        isDirectory = true
+                    val sortedItems = FileSortAndFilterEngine.sortFiles(
+                        items,
+                        currentSettings.defaultSortField,
+                        currentSettings.defaultSortOrder
                     )
+                    val rootRef = FileReference(
+                        providerType = pk.providerType,
+                        uriOrPath = "root",
+                        displayName = "${account.displayName} (${account.accountEmail})",
+                        parentUriOrPath = null,
+                        isDirectory = true,
+                        capabilities = FileReference.defaultCapabilitiesFor(pk.providerType, true),
+                        metadata = mapOf("accountId" to account.id.toString())
+                    )
+                    val previousState = _browserState.value
+                    val updatedBreadcrumbs: List<FileReference> = when {
+                        normalizedFolder.equals("root", ignoreCase = true) -> listOf(rootRef)
+                        normalizedFolder.contains("/") || !CloudStorageEngine.isLiveOAuthSession(account, accessToken) || pk != CloudProviderKind.GOOGLE_DRIVE -> {
+                            // Path-based hierarchy (Native Drive VFS, OneDrive, Dropbox)
+                            val segments = normalizedFolder.split('/').filter { it.isNotBlank() }
+                            val crumbs = mutableListOf<FileReference>(rootRef)
+                            var runningPath = ""
+                            var parentPath = "root"
+                            for (seg in segments) {
+                                runningPath = if (runningPath.isEmpty()) seg else "$runningPath/$seg"
+                                crumbs += FileReference(
+                                    providerType = pk.providerType,
+                                    uriOrPath = runningPath,
+                                    displayName = seg,
+                                    parentUriOrPath = parentPath,
+                                    isDirectory = true,
+                                    capabilities = FileReference.defaultCapabilitiesFor(pk.providerType, true),
+                                    metadata = mapOf("accountId" to account.id.toString())
+                                )
+                                parentPath = runningPath
+                            }
+                            crumbs
+                        }
+                        else -> {
+                            // Opaque folder ID hierarchy (Live Google Drive OAuth v3)
+                            val existingIdx = previousState.breadcrumbs.indexOfFirst { it.uriOrPath == normalizedFolder }
+                            if (existingIdx >= 0) {
+                                previousState.breadcrumbs.subList(0, existingIdx + 1)
+                            } else {
+                                val matchedItem = previousState.items.firstOrNull { it.uriOrPath == normalizedFolder }
+                                val parentId = previousState.currentDirectory?.uriOrPath ?: "root"
+                                val newCrumb = FileReference(
+                                    providerType = pk.providerType,
+                                    uriOrPath = normalizedFolder,
+                                    displayName = matchedItem?.displayName ?: normalizedFolder,
+                                    parentUriOrPath = parentId,
+                                    isDirectory = true,
+                                    capabilities = FileReference.defaultCapabilitiesFor(pk.providerType, true),
+                                    metadata = mapOf("accountId" to account.id.toString())
+                                )
+                                val baseCrumbs = previousState.breadcrumbs.ifEmpty { listOf(rootRef) }
+                                baseCrumbs + newCrumb
+                            }
+                        }
+                    }
+                    val currentDirRef = updatedBreadcrumbs.lastOrNull() ?: rootRef
                     _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
-                    _browserState.value = _browserState.value.copy(
-                        currentDirectory = dirRef,
-                        breadcrumbs = listOf(dirRef),
-                        items = items,
-                        isLoading = false
+                    _browserState.value = previousState.copy(
+                        currentDirectory = currentDirRef,
+                        breadcrumbs = updatedBreadcrumbs,
+                        items = sortedItems,
+                        isLoading = false,
+                        errorMessage = null,
+                        activeCloudAccount = account,
+                        activeRemoteProfile = null
                     )
                 },
                 onFailure = { err ->
