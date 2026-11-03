@@ -34,6 +34,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
@@ -361,30 +362,26 @@ private fun FtpServerControlTab(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = if (ftpState.isRunning) "FTP Server Running" else "FTP Server Stopped",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = if (ftpState.isRunning) {
-                                    ftpState.connectionUrl
-                                } else {
-                                    "ftp://$resolvedLanIp:${portText.toIntOrNull() ?: 2121}/"
-                                },
-                                style = MaterialTheme.typography.labelLarge,
-                                fontFamily = JetBrainsMonoFamily
-                            )
-                        }
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = if (ftpState.isRunning) "FTP Server Running" else "FTP Server Stopped",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (ftpState.isRunning) {
+                                ftpState.connectionUrl
+                            } else {
+                                "ftp://$resolvedLanIp:${portText.toIntOrNull() ?: 2121}/"
+                            },
+                            style = MaterialTheme.typography.labelLarge,
+                            fontFamily = JetBrainsMonoFamily
+                        )
+                    }
 
+                    Box(modifier = Modifier.align(Alignment.End)) {
                         if (ftpState.isRunning) {
                             Button(
                                 onClick = onStopFtpServer,
@@ -749,7 +746,11 @@ private fun RemoteClientsTab(
                 }
             }
         } else {
-            items(profiles, key = { it.id }) { profile ->
+            items(
+            items = profiles,
+            key = { it.id },
+            contentType = { "profile" }
+        ) { profile ->
                 Card(
                     onClick = { onConnectProfile(profile) },
                     colors = CardDefaults.cardColors(
@@ -793,7 +794,11 @@ private fun RemoteClientsTab(
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("Discovered LAN Services", style = MaterialTheme.typography.titleSmall)
             }
-            items(discoveredHosts, key = { "${it.ipAddress}:${it.port}" }) { host ->
+            items(
+            items = discoveredHosts,
+            key = { "${it.ipAddress}:${it.port}" },
+            contentType = { "host" }
+        ) { host ->
                 Card(
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surfaceContainerLow
@@ -1122,7 +1127,11 @@ fun CloudStorageScreen(
                 HorizontalDivider()
                 Text("Mounted Cloud Drives (Tap to Open Natively)", style = MaterialTheme.typography.titleMedium)
             }
-            items(accounts, key = { it.id }) { acc ->
+            items(
+            items = accounts,
+            key = { it.id },
+            contentType = { "account" }
+        ) { acc ->
                 Card(
                     onClick = { onOpenCloudAccount(acc) },
                     colors = CardDefaults.cardColors(
@@ -1204,7 +1213,7 @@ fun CloudStorageScreen(
                     onStatusMessage = onShowMessage,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(520.dp)
+                        .heightIn(max = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp * 0.6f))
                 )
             }
         }
@@ -1403,7 +1412,8 @@ fun SettingsScreen(
     onConfirmDeleteChange: (Boolean) -> Unit,
     onMoveToTrashChange: (Boolean) -> Unit,
     onVerifyChecksumChange: (Boolean) -> Unit,
-    onClearPrivacyData: (Boolean) -> Unit
+    onClearPrivacyData: (Boolean) -> Unit,
+    onMountSafFolder: () -> Unit
 ) {
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -1482,6 +1492,19 @@ fun SettingsScreen(
                         checked = settings.verifyChecksumAfterTransfer,
                         onCheckedChange = onVerifyChecksumChange
                     )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedButton(
+                        onClick = onMountSafFolder,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            Icons.Filled.FolderOpen,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Mount SAF Folder")
+                    }
                 }
             }
         }

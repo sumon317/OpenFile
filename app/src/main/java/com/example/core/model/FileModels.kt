@@ -1,6 +1,5 @@
 package com.example.core.model
 
-import androidx.compose.runtime.Immutable
 import java.text.DecimalFormat
 import kotlin.math.log10
 import kotlin.math.pow
@@ -49,7 +48,6 @@ enum class ProviderCapability {
  * Structured, capability-aware reference to any file or directory across Local, SAF, MediaStore,
  * Archive, Network (FTP/FTPS/SFTP/SMB), or Cloud (Drive/OneDrive/Dropbox) providers.
  */
-@Immutable
 data class FileReference(
     val providerType: ProviderType,
     val uriOrPath: String,
@@ -194,7 +192,6 @@ enum class FileCategory(val title: String, val extensions: Set<String>) {
     }
 }
 
-@Immutable
 data class StorageVolumeInfo(
     val id: String,
     val title: String,
@@ -210,7 +207,6 @@ data class StorageVolumeInfo(
         get() = if (totalBytes > 0L) (usedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f) else 0f
 }
 
-@Immutable
 data class CategoryUsageBucket(
     val categoryName: String,
     val bytesUsed: Long,
@@ -219,7 +215,6 @@ data class CategoryUsageBucket(
     val colorHex: Long
 )
 
-@Immutable
 data class StorageAnalysisReport(
     val rootPath: String,
     val totalBytes: Long,
@@ -234,7 +229,6 @@ data class StorageAnalysisReport(
     val duplicateGroups: List<DuplicateFileGroup>
 )
 
-@Immutable
 data class DuplicateFileGroup(
     val sha256Hash: String,
     val fileSizeBytes: Long,
@@ -244,7 +238,6 @@ data class DuplicateFileGroup(
         get() = if (files.size > 1) fileSizeBytes * (files.size - 1) else 0L
 }
 
-@Immutable
 data class InstalledAppInfo(
     val appName: String,
     val packageName: String,
@@ -260,7 +253,6 @@ data class InstalledAppInfo(
     val canShareApk: Boolean = apkPath.isNotEmpty()
 )
 
-@Immutable
 data class ApkArchiveInfo(
     val appName: String,
     val packageName: String,

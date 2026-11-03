@@ -149,10 +149,10 @@ private fun resolveLocalBackingFile(file: FileReference): File? {
 fun FileIconBadge(
     file: FileReference,
     showThumbnails: Boolean,
-    isSelected: Boolean,
+    isSelected: () -> Boolean,
     modifier: Modifier = Modifier
 ) {
-    if (isSelected) {
+    if (isSelected()) {
         Box(
             modifier = modifier
                 .size(42.dp)
@@ -288,8 +288,8 @@ private val rowDateFormat = object : ThreadLocal<SimpleDateFormat>() {
 @Composable
 fun FileItemRow(
     file: FileReference,
-    isSelected: Boolean,
-    isBookmarked: Boolean,
+    isSelected: () -> Boolean,
+    isBookmarked: () -> Boolean,
     showThumbnails: Boolean,
     showExtensions: Boolean,
     onClick: () -> Unit,
@@ -318,7 +318,7 @@ fun FileItemRow(
     }
 
     Surface(
-        color = if (isSelected) {
+        color = if (isSelected()) {
             MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
         } else {
             Color.Transparent
@@ -353,7 +353,7 @@ fun FileItemRow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (isBookmarked) {
+                    if (isBookmarked()) {
                         Spacer(modifier = Modifier.width(6.dp))
                         Icon(
                             imageVector = Icons.Filled.Bookmark,
@@ -446,10 +446,10 @@ fun FileItemRow(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text(if (isBookmarked) "Remove Bookmark" else "Add Bookmark") },
+                        text = { Text(if (isBookmarked()) "Remove Bookmark" else "Add Bookmark") },
                         leadingIcon = {
                             Icon(
-                                if (isBookmarked) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                                if (isBookmarked()) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
                                 contentDescription = null
                             )
                         },
@@ -501,7 +501,7 @@ fun FileItemRow(
 @Composable
 fun FileItemGridCard(
     file: FileReference,
-    isSelected: Boolean,
+    isSelected: () -> Boolean,
     showThumbnails: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
@@ -509,7 +509,7 @@ fun FileItemGridCard(
 ) {
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) {
+            containerColor = if (isSelected()) {
                 MaterialTheme.colorScheme.primaryContainer
             } else {
                 MaterialTheme.colorScheme.surfaceContainerLow
@@ -1322,7 +1322,11 @@ fun TransferQueueBottomSheet(
                     modifier = Modifier.heightIn(max = 380.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(jobs, key = { it.jobId }) { job ->
+                    items(
+                items = jobs,
+                key = { it.jobId },
+                contentType = { "job" }
+            ) { job ->
                         val fraction = if (job.totalBytes > 0L) {
                             (job.transferredBytes.toFloat() / job.totalBytes.toFloat()).coerceIn(0f, 1f)
                         } else 0f

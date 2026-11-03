@@ -362,7 +362,11 @@ private fun LargestFilesTab(
         verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxSize()
     ) {
-        items(files, key = { it.uriOrPath }) { file ->
+        items(
+            items = files,
+            key = { it.uriOrPath },
+            contentType = { "file" }
+        ) { file ->
             Card(
                 onClick = { onOpen(file) },
                 colors = CardDefaults.cardColors(
@@ -404,7 +408,11 @@ private fun LargestDirectoriesTab(
         verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxSize()
     ) {
-        items(directories, key = { it.first.uriOrPath }) { (dirRef, totalSize) ->
+        items(
+            items = directories,
+            key = { it.first.uriOrPath },
+            contentType = { "dir" }
+        ) { (dirRef, totalSize) ->
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow
@@ -456,7 +464,11 @@ private fun DuplicateFilesTab(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier.fillMaxSize()
     ) {
-        items(report.duplicateGroups, key = { it.sha256Hash }) { group ->
+        items(
+            items = report.duplicateGroups,
+            key = { it.sha256Hash },
+            contentType = { "dup_group" }
+        ) { group ->
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow
@@ -702,7 +714,11 @@ fun BookmarksScreen(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(bookmarks, key = { it.id }) { bm ->
+                items(
+                    items = bookmarks,
+                    key = { it.id },
+                    contentType = { "bookmark" }
+                ) { bm ->
                     Card(
                         onClick = { onOpenBookmark(bm) },
                         colors = CardDefaults.cardColors(
@@ -833,7 +849,11 @@ fun TrashScreen(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(trashItems, key = { it.id }) { item ->
+                items(
+                    items = trashItems,
+                    key = { it.id },
+                    contentType = { "trash" }
+                ) { item ->
                     Card(
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.surfaceContainerLow

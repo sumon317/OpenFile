@@ -34,13 +34,10 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -284,7 +281,6 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                             }
                         },
                         onCycleThemeMode = onCycleThemeMode,
-                        onRequestSaf = { safTreeLauncher.launch(null) },
                         onOpenTransferQueue = { showTransferQueueSheet = true },
                         onRefresh = { viewModel.refreshCurrentDirectory() },
                         onTriggerUndo = { undoAction?.let { viewModel.performUndo(it) } },
@@ -328,7 +324,6 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                     ModalDrawerSheet(
                         drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
                         modifier = Modifier
-                            .width(305.dp)
                             .verticalScroll(rememberScrollState())
                             .testTag("navigation_drawer_sheet")
                     ) {
@@ -435,7 +430,6 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                         }
                     },
                     onCycleThemeMode = onCycleThemeMode,
-                    onRequestSaf = { safTreeLauncher.launch(null) },
                     onOpenTransferQueue = { showTransferQueueSheet = true },
                     onRefresh = { viewModel.refreshCurrentDirectory() },
                     onTriggerUndo = { undoAction?.let { viewModel.performUndo(it) } },
@@ -582,15 +576,12 @@ private fun MainScaffoldContent(
     onOpenDrawer: () -> Unit,
     onNavigateUp: () -> Unit,
     onCycleThemeMode: () -> Unit,
-    onRequestSaf: () -> Unit,
     onOpenTransferQueue: () -> Unit,
     onRefresh: () -> Unit,
     onTriggerUndo: () -> Unit,
     onDismissUndo: () -> Unit,
     content: @Composable () -> Unit
 ) {
-    var showOverflowMenu by remember { mutableStateOf(false) }
-
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
         containerColor = MaterialTheme.colorScheme.background,
@@ -635,28 +626,30 @@ private fun MainScaffoldContent(
                     },
                     actions = {
                         // Quick Theme Mode Cycle Button (SYSTEM -> LIGHT -> DARK -> AMOLED) with Material 3 Tonal Container
-                        IconButton(
-                            onClick = onCycleThemeMode,
-                            modifier = Modifier.testTag("top_bar_theme_button")
-                        ) {
-                            val themeIcon = when (currentThemeMode) {
-                                ThemeMode.LIGHT -> Icons.Filled.LightMode
-                                ThemeMode.DARK -> Icons.Filled.DarkMode
-                                ThemeMode.AMOLED -> Icons.Filled.Contrast
-                                ThemeMode.SYSTEM -> Icons.Filled.BrightnessAuto
-                            }
-                            Surface(
-                                color = MaterialTheme.colorScheme.secondaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                shape = CircleShape,
-                                modifier = Modifier.size(34.dp)
+                        if (currentDest == OpenFileDestination.HOME) {
+                            IconButton(
+                                onClick = onCycleThemeMode,
+                                modifier = Modifier.testTag("top_bar_theme_button")
                             ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = themeIcon,
-                                        contentDescription = "Theme: ${currentThemeMode.name}",
-                                        modifier = Modifier.size(18.dp)
-                                    )
+                                val themeIcon = when (currentThemeMode) {
+                                    ThemeMode.LIGHT -> Icons.Filled.LightMode
+                                    ThemeMode.DARK -> Icons.Filled.DarkMode
+                                    ThemeMode.AMOLED -> Icons.Filled.Contrast
+                                    ThemeMode.SYSTEM -> Icons.Filled.BrightnessAuto
+                                }
+                                Surface(
+                                    color = MaterialTheme.colorScheme.secondaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    shape = CircleShape,
+                                    modifier = Modifier.size(34.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = themeIcon,
+                                            contentDescription = "Theme: ${currentThemeMode.name}",
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -681,33 +674,6 @@ private fun MainScaffoldContent(
                             modifier = Modifier.testTag("top_bar_refresh_button")
                         ) {
                             Icon(Icons.Filled.Refresh, contentDescription = "Refresh directory")
-                        }
-                        // Overflow Menu (Mount SAF Folder, etc.)
-                        Box {
-                            IconButton(
-                                onClick = { showOverflowMenu = true },
-                                modifier = Modifier.testTag("top_bar_overflow_button")
-                            ) {
-                                Icon(Icons.Filled.MoreVert, contentDescription = "More options")
-                            }
-                            DropdownMenu(
-                                expanded = showOverflowMenu,
-                                onDismissRequest = { showOverflowMenu = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("Mount SAF Folder") },
-                                    onClick = {
-                                        showOverflowMenu = false
-                                        onRequestSaf()
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            Icons.Filled.FolderOpen,
-                                            contentDescription = null
-                                        )
-                                    }
-                                )
-                            }
                         }
                     }
                 )
@@ -1060,7 +1026,8 @@ private fun DestinationRouter(
                 onConfirmDeleteChange = { viewModel.setConfirmBeforeDelete(it) },
                 onMoveToTrashChange = { viewModel.setMoveToTrashByDefault(it) },
                 onVerifyChecksumChange = { viewModel.setVerifyChecksumAfterTransfer(it) },
-                onClearPrivacyData = { purgeVault -> viewModel.clearAllPrivacyHistoryAndCredentials(purgeVault) }
+                onClearPrivacyData = { purgeVault -> viewModel.clearAllPrivacyHistoryAndCredentials(purgeVault) },
+                onMountSafFolder = onRequestSafAccess
             )
         }
     }

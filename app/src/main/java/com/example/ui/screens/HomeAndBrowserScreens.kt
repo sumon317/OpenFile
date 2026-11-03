@@ -3,6 +3,8 @@ package com.example.ui.screens
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -875,7 +877,6 @@ fun FileBrowserScreen(
                 singleLine = true,
                 modifier = Modifier
                     .weight(1f)
-                    .height(48.dp)
                     .testTag("browser_search_input")
             )
 
@@ -998,6 +999,7 @@ fun FileBrowserScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
                     .padding(horizontal = 12.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1305,7 +1307,7 @@ fun FileBrowserScreen(
                                 ) { item ->
                                     FileItemGridCard(
                                         file = item,
-                                        isSelected = item.uriOrPath in browserState.selectedUris,
+                                        isSelected = { item.uriOrPath in browserState.selectedUris },
                                         showThumbnails = settings.showThumbnails,
                                         onClick = { onFileClick(item) },
                                         onLongClick = { onFileLongClick(item) },
@@ -1324,8 +1326,8 @@ fun FileBrowserScreen(
                                     val isRemote = browserState.activeRemoteProfile != null || browserState.activeCloudAccount != null
                                     FileItemRow(
                                         file = item,
-                                        isSelected = item.uriOrPath in browserState.selectedUris,
-                                        isBookmarked = item.uriOrPath in bookmarkedPaths,
+                                        isSelected = { item.uriOrPath in browserState.selectedUris },
+                                        isBookmarked = { item.uriOrPath in bookmarkedPaths },
                                         showThumbnails = settings.showThumbnails,
                                         showExtensions = settings.showFileExtensions,
                                         onClick = { onFileClick(item) },

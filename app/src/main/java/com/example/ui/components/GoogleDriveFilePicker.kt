@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -390,7 +389,6 @@ fun GoogleDriveFilePicker(
                                 onClick = { onOpenFullBrowserAtFolder(account, currentFolderIdOrPath) },
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                                 modifier = Modifier
-                                    .height(34.dp)
                                     .testTag("drive_picker_expand_browser_button")
                             ) {
                                 Text("Full Browser", style = MaterialTheme.typography.labelSmall)
@@ -477,7 +475,6 @@ fun GoogleDriveFilePicker(
                     singleLine = true,
                     modifier = Modifier
                         .weight(1f)
-                        .height(48.dp)
                         .testTag("drive_picker_search_input")
                 )
 
@@ -722,8 +719,8 @@ fun GoogleDriveFilePicker(
                                 val isBookmarked = bookmarkedPaths.contains(item.uriOrPath)
                                 FileItemRow(
                                     file = item,
-                                    isSelected = isSelected,
-                                    isBookmarked = isBookmarked,
+                                    isSelected = { selectedUris.contains(item.uriOrPath) },
+                                    isBookmarked = { bookmarkedPaths.contains(item.uriOrPath) },
                                     showThumbnails = settings.showThumbnails,
                                     showExtensions = true,
                                     onClick = {
@@ -773,7 +770,7 @@ fun GoogleDriveFilePicker(
                                 val isSelected = selectedUris.contains(item.uriOrPath)
                                 FileItemGridCard(
                                     file = item,
-                                    isSelected = isSelected,
+                                    isSelected = { selectedUris.contains(item.uriOrPath) },
                                     showThumbnails = settings.showThumbnails,
                                     onClick = {
                                         if (selectedUris.isNotEmpty()) {
