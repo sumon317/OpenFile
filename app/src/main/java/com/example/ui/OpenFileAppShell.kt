@@ -212,7 +212,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
     }
 
     val onCycleThemeMode: () -> Unit = {
-        val nextMode = when (settings.themeMode) {
+        val currentMode = viewModel.settings.value.themeMode
+        val nextMode = when (currentMode) {
             ThemeMode.SYSTEM -> ThemeMode.LIGHT
             ThemeMode.LIGHT -> ThemeMode.DARK
             ThemeMode.DARK -> ThemeMode.AMOLED

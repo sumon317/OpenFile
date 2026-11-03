@@ -1436,45 +1436,73 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Cloud Storage OAuth 2.0 PKCE, Direct In-App Web Login & Account Management
+    // Cloud Storage OAuth 2.0 PKCE, Default Browser Login & Account Management
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * File Manager + style 1-tap Cloud Connect:
-     * Directly opens the provider's login webpage inside the app (either OAuth 2.0 PKCE if a client_id
-     * is configured in BuildConfig, or the provider's official web login & storage portal),
-     * logs the user in, and immediately shows their cloud storage inside the app.
+     * Launches the user's default external browser (`Intent.ACTION_VIEW`) to sign in to the cloud provider.
+     * Never uses an embedded in-app WebView, so the user benefits from their existing default browser
+     * sessions, saved credentials, and passkeys.
      */
-    fun connectCloudProviderDirect(provider: CloudProviderKind) {
-        val configuredClientId = provider.defaultClientIdFromBuildConfig()
-        if (configuredClientId.isNotBlank()) {
-            startCloudOAuthFlow(provider, configuredClientId).onSuccess { authUrl ->
-                _activeWebCloudProvider.value = provider
-                _activeWebCloudUrl.value = authUrl
-                return
+    fun openUrlInDefaultBrowser(url: String): Boolean {
+        return runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-        }
-        // Directly open the provider's official web sign-in & cloud storage portal inside the app
-        _activeWebCloudProvider.value = provider
-        _activeWebCloudUrl.value = provider.loginUrl
+            getApplication<Application>().startActivity(intent)
+            true
+        }.onFailure { err ->
+            showStatus("Unable to open default browser: ${err.message}")
+        }.getOrDefault(false)
     }
 
     /**
-     * Called automatically when the user finishes logging in on the in-app Cloud Web Portal
-     * and reaches their authenticated cloud drive (Google Drive, OneDrive, or Dropbox).
+     * 1-tap Cloud Connect using the user's default browser:
+     * Opens the provider's login / OAuth 2.0 page in the user's default external browser
+     * (pre-selecting `container6767@gmail.com` for Google Drive when no custom hint is given).
+     */
+    fun connectCloudProviderDirect(provider: CloudProviderKind, loginHint: String? = null) {
+        val effectiveHint = loginHint ?: if (provider == CloudProviderKind.GOOGLE_DRIVE) {
+            "container6767@gmail.com"
+        } else {
+            null
+        }
+        val configuredClientId = provider.defaultClientIdFromBuildConfig()
+        if (configuredClientId.isNotBlank()) {
+            startCloudOAuthFlow(provider, configuredClientId, effectiveHint).onSuccess { authUrl ->
+                _activeWebCloudProvider.value = provider
+                _activeWebCloudUrl.value = authUrl
+                openUrlInDefaultBrowser(authUrl)
+                showStatus("Opening ${provider.displayName} sign-in in your default browser...")
+                return
+            }
+        }
+        val browserUrl = provider.defaultBrowserLoginUrl(effectiveHint)
+        _activeWebCloudProvider.value = provider
+        _activeWebCloudUrl.value = browserUrl
+        onWebCloudAuthenticated(
+            provider = provider,
+            detectedLabelOrEmail = effectiveHint ?: "${provider.displayName} (Default Browser)"
+        )
+        openUrlInDefaultBrowser(browserUrl)
+        showStatus("Opening ${provider.displayName} in your default browser...")
+    }
+
+    /**
+     * Registers or updates a cloud account connected via the user's default browser.
      */
     fun onWebCloudAuthenticated(provider: CloudProviderKind, detectedLabelOrEmail: String?) {
         viewModelScope.launch {
             val cleanLabel = detectedLabelOrEmail
                 ?.trim()
                 ?.takeIf { it.isNotBlank() }
-                ?: "${provider.displayName} Web Account"
+                ?: "${provider.displayName} Browser Account"
             val existing = cloudAccounts.value.firstOrNull {
                 it.provider == provider.name &&
                     it.clientId == CloudStorageEngine.WEB_SESSION_CLIENT_MARKER
             }
             if (existing == null || existing.accountEmail != cleanLabel) {
-                val alias = credentialVault.storeSecret(existing?.tokenSecretAlias, "WEB_COOKIE_SESSION")
+                val alias = credentialVault.storeSecret(existing?.tokenSecretAlias, "DEFAULT_BROWSER_SESSION")
                 dao.upsertCloudAccount(
                     CloudAccountEntity(
                         id = existing?.id ?: 0L,
@@ -1525,9 +1553,18 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun startCloudOAuthFlow(provider: CloudProviderKind, clientId: String): Result<String> {
+    fun startCloudOAuthFlow(
+        provider: CloudProviderKind,
+        clientId: String,
+        loginHint: String? = null
+    ): Result<String> {
         return runCatching {
-            val session = CloudStorageEngine.createPkceAuthorizationSession(provider, clientId)
+            val effectiveHint = loginHint ?: if (provider == CloudProviderKind.GOOGLE_DRIVE) {
+                "container6767@gmail.com"
+            } else {
+                null
+            }
+            val session = CloudStorageEngine.createPkceAuthorizationSession(provider, clientId, effectiveHint)
             _activePkceSession.value = session
             session.authorizationUrl
         }
@@ -1567,7 +1604,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     /**
-     * Handles the OAuth 2.0 redirect (com.openfile.manager:/oauth2redirect) delivered by the browser or in-app WebView.
+     * Handles the OAuth 2.0 redirect (com.openfile.manager:/oauth2redirect) delivered by the user's default browser.
      * Validates `state`, surfaces provider errors, exchanges the code automatically, and opens the cloud storage.
      */
     fun handleOAuthRedirect(uri: Uri) {
@@ -1679,9 +1716,12 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     fun openCloudDirectory(account: CloudAccountEntity, folderIdOrPath: String = "root") {
         val providerKind = runCatching { CloudProviderKind.valueOf(account.provider) }.getOrNull()
         if (account.clientId == CloudStorageEngine.WEB_SESSION_CLIENT_MARKER && providerKind != null) {
-            _currentDestination.value = OpenFileDestination.CLOUD_STORAGE
+            val hint = account.accountEmail.takeIf { it.contains("@") }
+            val url = providerKind.defaultBrowserLoginUrl(hint)
             _activeWebCloudProvider.value = providerKind
-            _activeWebCloudUrl.value = providerKind.webPortalUrl
+            _activeWebCloudUrl.value = url
+            openUrlInDefaultBrowser(url)
+            showStatus("Opening ${providerKind.displayName} in your default browser...")
             return
         }
 

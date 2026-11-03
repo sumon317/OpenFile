@@ -77,6 +77,27 @@ enum class CloudProviderKind(
     }
 
     /**
+     * Builds the URL to open in the user's default external browser when signing in directly,
+     * pre-filling the target account hint (e.g. `container6767@gmail.com` for Google Drive) when provided.
+     */
+    fun defaultBrowserLoginUrl(loginHint: String? = null): String {
+        val cleanHint = loginHint?.trim()?.takeIf { it.isNotBlank() }
+        return when (this) {
+            GOOGLE_DRIVE -> if (cleanHint != null) {
+                "https://accounts.google.com/AccountChooser?Email=${Uri.encode(cleanHint)}&continue=${Uri.encode(webPortalUrl)}"
+            } else {
+                loginUrl
+            }
+            ONEDRIVE -> if (cleanHint != null) {
+                "https://login.live.com/login.srf?username=${Uri.encode(cleanHint)}"
+            } else {
+                loginUrl
+            }
+            DROPBOX -> loginUrl
+        }
+    }
+
+    /**
      * Returns true once the user has completed web sign-in and landed on their cloud storage drive page.
      */
     fun isAuthenticatedPortalUrl(url: String): Boolean {
@@ -112,7 +133,7 @@ data class OAuthTokenResponse(
 
 /**
  * Modular, official REST + OAuth 2.0 PKCE engine for Google Drive v3, Microsoft Graph OneDrive,
- * and Dropbox API v2, plus authenticated Web Session Portal & Download Bridge.
+ * and Dropbox API v2, using the user's default external browser for authentication.
  */
 object CloudStorageEngine {
 
@@ -131,7 +152,8 @@ object CloudStorageEngine {
      */
     fun createPkceAuthorizationSession(
         provider: CloudProviderKind,
-        customClientId: String
+        customClientId: String,
+        loginHint: String? = null
     ): PkceSession {
         val effectiveClientId = customClientId.trim().ifEmpty { provider.defaultClientIdFromBuildConfig() }
         require(effectiveClientId.isNotBlank()) {
@@ -166,6 +188,9 @@ object CloudStorageEngine {
         } else {
             uriBuilder.appendQueryParameter("scope", provider.defaultScope)
             uriBuilder.appendQueryParameter("access_type", "offline")
+            if (!loginHint.isNullOrBlank()) {
+                uriBuilder.appendQueryParameter("login_hint", loginHint.trim())
+            }
         }
 
         return PkceSession(

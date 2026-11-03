@@ -974,61 +974,7 @@ fun CloudStorageScreen(
     onCloseWebCloudPortal: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var configuringProvider by remember { mutableStateOf<CloudProviderKind?>(null) }
-
-    val googleConsentLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartIntentSenderForResult()
-    ) { activityResult ->
-        runCatching { GoogleDriveOnDeviceAuth.resultFromConsentIntent(context, activityResult.data) }
-            .onSuccess { r ->
-                val token = r.accessToken
-                if (token.isNullOrBlank()) {
-                    onConnectProviderDirect(CloudProviderKind.GOOGLE_DRIVE)
-                } else {
-                    onGoogleDriveAuthorized(token, r.toGoogleSignInAccount()?.email)
-                }
-            }
-            .onFailure {
-                onConnectProviderDirect(CloudProviderKind.GOOGLE_DRIVE)
-            }
-    }
-
-    // One-tap Google Drive connect: tries Play Services on-device auth first; if not configured in Cloud Console,
-    // immediately opens the Google Drive login webpage inside the app and shows the storage!
-    val connectGoogleDrive: () -> Unit = {
-        scope.launch {
-            runCatching { GoogleDriveOnDeviceAuth.authorize(context) }
-                .onSuccess { r ->
-                    val pending = r.pendingIntent
-                    val token = r.accessToken
-                    if (r.hasResolution() && pending != null) {
-                        googleConsentLauncher.launch(IntentSenderRequest.Builder(pending.intentSender).build())
-                    } else if (!token.isNullOrBlank()) {
-                        onGoogleDriveAuthorized(token, r.toGoogleSignInAccount()?.email)
-                    } else {
-                        onConnectProviderDirect(CloudProviderKind.GOOGLE_DRIVE)
-                    }
-                }
-                .onFailure {
-                    onConnectProviderDirect(CloudProviderKind.GOOGLE_DRIVE)
-                }
-        }
-    }
-
-    // If the user tapped Connect or opened a connected cloud account, display the full-screen
-    // in-app Cloud Login & Storage View right inside the app!
-    if (activeWebCloudProvider != null && !activeWebCloudUrl.isNullOrBlank()) {
-        CloudWebPortalView(
-            provider = activeWebCloudProvider,
-            initialUrl = activeWebCloudUrl,
-            onWebCloudAuthenticated = onWebCloudAuthenticated,
-            onOAuthRedirectUri = onOAuthRedirectUri,
-            onDownloadCloudWebFile = onDownloadCloudWebFile,
-            onClose = onCloseWebCloudPortal
-        )
-        return
-    }
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -1040,10 +986,76 @@ fun CloudStorageScreen(
         item {
             Text("Cloud Storage Providers", style = MaterialTheme.typography.titleLarge)
             Text(
-                text = "Tap Connect on any cloud provider to sign in directly on its login page and browse, upload, or download your cloud files right inside OpenFile.",
+                text = "Tap Connect on any cloud provider to sign in using your default browser and access your cloud storage.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+
+        if (activeWebCloudProvider != null && !activeWebCloudUrl.isNullOrBlank()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("cloud_web_portal_view")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "${activeWebCloudProvider.displayName} • Default Browser Sign-In",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Launched in your default browser. Complete sign-in there to access your cloud files.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                onClick = {
+                                    runCatching {
+                                        context.startActivity(
+                                            Intent(Intent.ACTION_VIEW, Uri.parse(activeWebCloudUrl)).apply {
+                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            }
+                                        )
+                                    }
+                                }
+                            ) {
+                                Text("Re-open")
+                            }
+                            IconButton(
+                                onClick = onCloseWebCloudPortal,
+                                modifier = Modifier.testTag("cloud_web_portal_close")
+                            ) {
+                                Icon(Icons.Filled.Close, contentDescription = "Dismiss browser sign-in banner")
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         if (accounts.isNotEmpty()) {
@@ -1126,7 +1138,7 @@ fun CloudStorageScreen(
                         Column {
                             Text(provider.displayName, style = MaterialTheme.typography.titleSmall)
                             Text(
-                                text = if (isConnected) "Connected • Tap above or Connect to open storage" else "Direct Web Login + OAuth 2.0",
+                                text = if (isConnected) "Connected • Tap above or Connect to open" else "Default Browser Login + OAuth 2.0",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (isConnected) ApkGreen else MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1147,15 +1159,7 @@ fun CloudStorageScreen(
                             )
                         }
                         Button(
-                            onClick = {
-                                if (provider == CloudProviderKind.GOOGLE_DRIVE &&
-                                    provider.defaultClientIdFromBuildConfig().isBlank()
-                                ) {
-                                    connectGoogleDrive()
-                                } else {
-                                    onConnectProviderDirect(provider)
-                                }
-                            },
+                            onClick = { onConnectProviderDirect(provider) },
                             modifier = Modifier.testTag("connect_${provider.id}")
                         ) {
                             Text("Connect")
@@ -1169,7 +1173,9 @@ fun CloudStorageScreen(
     if (configuringProvider != null) {
         val provider = configuringProvider!!
         var clientId by remember(provider) { mutableStateOf(provider.defaultClientIdFromBuildConfig()) }
-        var accountEmail by remember { mutableStateOf("") }
+        var accountEmail by remember {
+            mutableStateOf(if (provider == CloudProviderKind.GOOGLE_DRIVE) "container6767@gmail.com" else "")
+        }
         var authCodeOrToken by remember { mutableStateOf("") }
         var directTokenMode by remember { mutableStateOf(false) }
 
@@ -1210,7 +1216,7 @@ fun CloudStorageScreen(
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("1. Launch Browser OAuth 2.0 PKCE Consent")
+                        Text("1. Launch Default Browser OAuth 2.0 PKCE")
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = directTokenMode, onCheckedChange = { directTokenMode = it })
@@ -1243,254 +1249,6 @@ fun CloudStorageScreen(
             },
             dismissButton = {
                 TextButton(onClick = { configuringProvider = null }) { Text("Cancel") }
-            }
-        )
-    }
-}
-
-/**
- * In-App Cloud Login & Storage View (File Manager + style).
- * Takes the user directly to the Google Drive / OneDrive / Dropbox login webpage,
- * persists authenticated cookies, detects when the user lands on their cloud storage,
- * and bridges file uploads & downloads directly with the device storage.
- */
-@android.annotation.SuppressLint("SetJavaScriptEnabled")
-@Composable
-private fun CloudWebPortalView(
-    provider: CloudProviderKind,
-    initialUrl: String,
-    onWebCloudAuthenticated: (CloudProviderKind, String?) -> Unit,
-    onOAuthRedirectUri: (Uri) -> Unit,
-    onDownloadCloudWebFile: (String, String?, String?, String?, String?) -> Unit,
-    onClose: () -> Unit
-) {
-    val context = LocalContext.current
-    var webViewRef by remember { mutableStateOf<android.webkit.WebView?>(null) }
-    var isLoading by remember { mutableStateOf(true) }
-    var loadProgress by remember { mutableIntStateOf(10) }
-    var currentUrl by remember { mutableStateOf(initialUrl) }
-    var isAuthenticated by remember { mutableStateOf(provider.isAuthenticatedPortalUrl(initialUrl)) }
-    var pendingFileChooserCallback by remember {
-        mutableStateOf<android.webkit.ValueCallback<Array<Uri>>?>(null)
-    }
-
-    val fileUploadLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetMultipleContents()
-    ) { uris ->
-        pendingFileChooserCallback?.onReceiveValue(uris.toTypedArray())
-        pendingFileChooserCallback = null
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .testTag("cloud_web_portal_view")
-    ) {
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            tonalElevation = 4.dp,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    IconButton(
-                        onClick = {
-                            val wv = webViewRef
-                            if (wv != null && wv.canGoBack()) {
-                                wv.goBack()
-                            } else {
-                                onClose()
-                            }
-                        }
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = provider.displayName,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = if (isAuthenticated) {
-                                "Connected • Downloads save to /Download"
-                            } else {
-                                "Sign in to access your ${provider.displayName}"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (isAuthenticated) ApkGreen else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { webViewRef?.reload() }) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Reload cloud page")
-                    }
-                    IconButton(
-                        onClick = {
-                            runCatching {
-                                context.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse(currentUrl)).apply {
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    }
-                                )
-                            }
-                        }
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = "Open in external browser")
-                    }
-                    IconButton(
-                        onClick = onClose,
-                        modifier = Modifier.testTag("cloud_web_portal_close")
-                    ) {
-                        Icon(Icons.Filled.Close, contentDescription = "Close cloud portal")
-                    }
-                }
-            }
-        }
-
-        if (isLoading) {
-            LinearProgressIndicator(
-                progress = { (loadProgress / 100f).coerceIn(0.05f, 1f) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(3.dp)
-            )
-        }
-
-        AndroidView(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            factory = { ctx ->
-                android.webkit.WebView(ctx).apply {
-                    webViewRef = this
-                    val cookieManager = android.webkit.CookieManager.getInstance()
-                    cookieManager.setAcceptCookie(true)
-                    cookieManager.setAcceptThirdPartyCookies(this, true)
-
-                    settings.apply {
-                        javaScriptEnabled = true
-                        domStorageEnabled = true
-                        databaseEnabled = true
-                        loadsImagesAutomatically = true
-                        useWideViewPort = true
-                        loadWithOverviewMode = true
-                        builtInZoomControls = true
-                        displayZoomControls = false
-                        setSupportMultipleWindows(false)
-                        // Strip '; wv' from WebView User-Agent so Google Drive, OneDrive, and Dropbox
-                        // allow standard web sign-in without blocking embedded WebViews.
-                        val defaultUa = userAgentString ?: ""
-                        userAgentString = defaultUa
-                            .replace("; wv", "")
-                            .replace(Regex("Version/\\d+\\.\\d+\\s*"), "")
-                            .ifBlank {
-                                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
-                            }
-                    }
-
-                    webViewClient = object : android.webkit.WebViewClient() {
-                        override fun shouldOverrideUrlLoading(
-                            view: android.webkit.WebView?,
-                            request: android.webkit.WebResourceRequest?
-                        ): Boolean {
-                            val reqUri = request?.url ?: return false
-                            val scheme = reqUri.scheme?.lowercase().orEmpty()
-                            if (scheme == "com.openfile.manager") {
-                                onOAuthRedirectUri(reqUri)
-                                return true
-                            }
-                            if (scheme != "http" && scheme != "https") {
-                                runCatching {
-                                    ctx.startActivity(Intent(Intent.ACTION_VIEW, reqUri).apply {
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    })
-                                }
-                                return true
-                            }
-                            return false
-                        }
-
-                        override fun onPageStarted(
-                            view: android.webkit.WebView?,
-                            url: String?,
-                            favicon: android.graphics.Bitmap?
-                        ) {
-                            super.onPageStarted(view, url, favicon)
-                            isLoading = true
-                            if (!url.isNullOrBlank()) {
-                                currentUrl = url
-                            }
-                        }
-
-                        override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
-                            super.onPageFinished(view, url)
-                            isLoading = false
-                            android.webkit.CookieManager.getInstance().flush()
-                            val loadedUrl = url ?: return
-                            currentUrl = loadedUrl
-                            if (provider.isAuthenticatedPortalUrl(loadedUrl)) {
-                                isAuthenticated = true
-                                val pageTitle = view?.title
-                                    ?.replace(" - Google Drive", "")
-                                    ?.replace(" - OneDrive", "")
-                                    ?.replace(" - Dropbox", "")
-                                    ?.trim()
-                                    ?.takeIf { it.isNotBlank() }
-                                onWebCloudAuthenticated(
-                                    provider,
-                                    pageTitle ?: "${provider.displayName} (Web Session)"
-                                )
-                            }
-                        }
-                    }
-
-                    webChromeClient = object : android.webkit.WebChromeClient() {
-                        override fun onProgressChanged(view: android.webkit.WebView?, newProgress: Int) {
-                            loadProgress = newProgress
-                            if (newProgress >= 100) isLoading = false
-                        }
-
-                        override fun onShowFileChooser(
-                            webView: android.webkit.WebView?,
-                            filePathCallback: android.webkit.ValueCallback<Array<Uri>>?,
-                            fileChooserParams: FileChooserParams?
-                        ): Boolean {
-                            pendingFileChooserCallback?.onReceiveValue(null)
-                            pendingFileChooserCallback = filePathCallback
-                            return runCatching {
-                                fileUploadLauncher.launch("*/*")
-                                true
-                            }.getOrElse {
-                                pendingFileChooserCallback = null
-                                false
-                            }
-                        }
-                    }
-
-                    setDownloadListener { downloadUrl, userAgent, contentDisposition, mimeType, _ ->
-                        val cookies = android.webkit.CookieManager.getInstance().getCookie(downloadUrl)
-                        onDownloadCloudWebFile(
-                            downloadUrl,
-                            cookies,
-                            userAgent,
-                            contentDisposition,
-                            mimeType
-                        )
-                    }
-
-                    loadUrl(initialUrl)
-                }
             }
         )
     }

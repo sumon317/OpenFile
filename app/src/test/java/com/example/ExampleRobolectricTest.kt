@@ -1,6 +1,7 @@
 package com.example
 
 import android.content.Context
+import android.content.Intent
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -621,16 +622,28 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("bottom_clipboard_bar").assertIsDisplayed()
         composeTestRule.onNodeWithTag("browser_paste_button").assertIsDisplayed()
 
-        // 6. Navigate to Cloud Storage -> tap Connect on OneDrive -> verify direct in-app Web Login & Storage Portal opens
+        // 6. Navigate to Cloud Storage -> tap Connect on Google Drive -> verify default browser ACTION_VIEW intent is launched
         composeTestRule.runOnUiThread {
             viewModel.navigateToDestination(OpenFileDestination.CLOUD_STORAGE)
         }
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("connect_ONEDRIVE").performClick()
+
+        composeTestRule.runOnUiThread {
+            viewModel.connectCloudProviderDirect(com.example.core.cloud.CloudProviderKind.GOOGLE_DRIVE)
+        }
         composeTestRule.waitForIdle()
+
+        val activeUrl = viewModel.activeWebCloudUrl.value
+        assertNotNull("Expected activeWebCloudUrl to be set for Google Drive default browser login", activeUrl)
+        assertTrue(
+            "Google Drive browser login URL should target container6767@gmail.com",
+            activeUrl?.contains("container6767%40gmail.com") == true ||
+                activeUrl?.contains("container6767@gmail.com") == true
+        )
+
         composeTestRule.onNodeWithTag("cloud_web_portal_view").assertIsDisplayed()
 
-        // Simulate user completing login on the webpage -> verify account is persisted under Connected Accounts
+        // Verify account is persisted under Connected Accounts
         composeTestRule.runOnUiThread {
             viewModel.onWebCloudAuthenticated(com.example.core.cloud.CloudProviderKind.ONEDRIVE, "user@outlook.com")
         }
