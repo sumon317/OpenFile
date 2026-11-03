@@ -145,6 +145,13 @@ private fun resolveLocalBackingFile(file: FileReference): File? {
     return null
 }
 
+private fun resolveFastThumbnailPath(file: FileReference): String? {
+    val localBackingPath = file.metadata["localBackingPath"]
+    if (!localBackingPath.isNullOrBlank()) return localBackingPath
+    if (file.providerType == ProviderType.LOCAL) return file.uriOrPath
+    return null
+}
+
 @Composable
 fun FileIconBadge(
     file: FileReference,
@@ -170,14 +177,20 @@ fun FileIconBadge(
         return
     }
 
-    val ext = file.extension.lowercase()
-    val localBacking = resolveLocalBackingFile(file)
-    if (showThumbnails && !file.isDirectory && localBacking != null && ext in FileCategory.IMAGES.extensions) {
+    val ext = file.extension
+    val thumbPath = if (showThumbnails && !file.isDirectory && ext in FileCategory.IMAGES.extensions) {
+        resolveFastThumbnailPath(file)
+    } else null
+
+    if (thumbPath != null) {
         val context = LocalContext.current
-        val imageRequest = remember(localBacking.absolutePath) {
+        val imageRequest = remember(thumbPath) {
             ImageRequest.Builder(context)
-                .data(localBacking)
-                .size(128)
+                .data(File(thumbPath))
+                .size(120, 120)
+                .bitmapConfig(Bitmap.Config.RGB_565)
+                .memoryCacheKey(thumbPath)
+                .diskCacheKey(thumbPath)
                 .crossfade(false)
                 .build()
         }
@@ -192,18 +205,21 @@ fun FileIconBadge(
         return
     }
 
-    val (icon, tintColor) = when {
-        file.isDirectory -> Icons.Filled.Folder to FolderAmber
-        ext in FileCategory.ARCHIVES.extensions -> Icons.Filled.FolderZip to ArchiveBrown
-        ext in FileCategory.IMAGES.extensions -> Icons.Filled.Image to MediaTeal
-        ext in FileCategory.VIDEOS.extensions -> Icons.Filled.VideoFile to VideoCoral
-        ext in FileCategory.AUDIO.extensions -> Icons.Filled.AudioFile to AudioPurple
-        ext == "pdf" -> Icons.Filled.PictureAsPdf to VideoCoral
-        ext == "apk" -> Icons.Filled.Android to ApkGreen
-        ext in setOf("kt", "java", "py", "js", "ts", "json", "xml", "html", "sh", "yaml", "yml") ->
-            Icons.Filled.Code to DocumentIndigo
-        ext in FileCategory.DOCUMENTS.extensions -> Icons.Filled.Description to DocumentIndigo
-        else -> Icons.AutoMirrored.Filled.InsertDriveFile to MaterialTheme.colorScheme.secondary
+    val defaultSecondaryColor = MaterialTheme.colorScheme.secondary
+    val (icon, tintColor) = remember(file.isDirectory, ext, defaultSecondaryColor) {
+        when {
+            file.isDirectory -> Icons.Filled.Folder to FolderAmber
+            ext in FileCategory.ARCHIVES.extensions -> Icons.Filled.FolderZip to ArchiveBrown
+            ext in FileCategory.IMAGES.extensions -> Icons.Filled.Image to MediaTeal
+            ext in FileCategory.VIDEOS.extensions -> Icons.Filled.VideoFile to VideoCoral
+            ext in FileCategory.AUDIO.extensions -> Icons.Filled.AudioFile to AudioPurple
+            ext == "pdf" -> Icons.Filled.PictureAsPdf to VideoCoral
+            ext == "apk" -> Icons.Filled.Android to ApkGreen
+            ext in setOf("kt", "java", "py", "js", "ts", "json", "xml", "html", "sh", "yaml", "yml") ->
+                Icons.Filled.Code to DocumentIndigo
+            ext in FileCategory.DOCUMENTS.extensions -> Icons.Filled.Description to DocumentIndigo
+            else -> Icons.AutoMirrored.Filled.InsertDriveFile to defaultSecondaryColor
+        }
     }
 
     Box(
@@ -306,19 +322,38 @@ fun FileItemRow(
     onQuickPreview: (() -> Unit)? = null
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
-    val dateStr = remember(file.lastModifiedEpochMs) {
-        if (file.lastModifiedEpochMs <= 0L) ""
+    val displayTitle = remember(file.displayName, file.isDirectory, showExtensions) {
+        if (!showExtensions && !file.isDirectory && file.displayName.contains('.')) {
+            file.displayName.substringBeforeLast('.')
+        } else {
+            file.displayName
+        }
+    }
+    val childCountMeta = file.metadata["childCount"]
+    val permissionsMeta = file.metadata["permissions"]
+    val subtitleText = remember(
+        file.isDirectory,
+        file.sizeBytes,
+        file.lastModifiedEpochMs,
+        childCountMeta,
+        permissionsMeta
+    ) {
+        val dateStr = if (file.lastModifiedEpochMs <= 0L) ""
         else (rowDateFormat.get() ?: SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()))
             .format(Date(file.lastModifiedEpochMs))
+        val sizePart = file.formattedSize
+        val permPart = file.permissionsString
+        if (dateStr.isEmpty()) {
+            "$sizePart  •  $permPart"
+        } else {
+            "$sizePart  •  $dateStr  •  $permPart"
+        }
     }
-    val displayTitle = if (!showExtensions && !file.isDirectory && file.displayName.contains('.')) {
-        file.displayName.substringBeforeLast('.')
-    } else {
-        file.displayName
-    }
+    val selected = isSelected()
+    val bookmarked = isBookmarked()
 
     Surface(
-        color = if (isSelected()) {
+        color = if (selected) {
             MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
         } else {
             Color.Transparent
@@ -353,7 +388,7 @@ fun FileItemRow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (isBookmarked()) {
+                    if (bookmarked) {
                         Spacer(modifier = Modifier.width(6.dp))
                         Icon(
                             imageVector = Icons.Filled.Bookmark,
@@ -365,11 +400,7 @@ fun FileItemRow(
                 }
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = listOfNotNull(
-                        file.formattedSize,
-                        dateStr.takeIf { it.isNotEmpty() },
-                        file.permissionsString
-                    ).joinToString("  •  "),
+                    text = subtitleText,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -387,110 +418,112 @@ fun FileItemRow(
                         contentDescription = "More actions for ${file.displayName}"
                     )
                 }
-                DropdownMenu(
-                    expanded = menuExpanded,
-                    onDismissRequest = { menuExpanded = false }
-                ) {
-                    if (onOpenWith != null && !file.isDirectory) {
-                        DropdownMenuItem(
-                            text = { Text("Open With...") },
-                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null) },
-                            onClick = {
-                                menuExpanded = false
-                                onOpenWith()
-                            }
-                        )
-                    }
-                    if (onQuickPreview != null && !file.isDirectory) {
-                        DropdownMenuItem(
-                            text = { Text("Quick Preview") },
-                            leadingIcon = { Icon(Icons.Filled.Description, contentDescription = null) },
-                            onClick = {
-                                menuExpanded = false
-                                onQuickPreview()
-                            }
-                        )
-                    }
-                    if (onDownloadRemote != null && !file.isDirectory) {
-                        DropdownMenuItem(
-                            text = { Text("Download to Local") },
-                            leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
-                            onClick = {
-                                menuExpanded = false
-                                onDownloadRemote()
-                            }
-                        )
-                    }
-                    DropdownMenuItem(
-                        text = { Text("Rename") },
-                        leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
-                        onClick = {
-                            menuExpanded = false
-                            onRename()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Copy") },
-                        leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
-                        onClick = {
-                            menuExpanded = false
-                            onCopy()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Cut / Move") },
-                        leadingIcon = { Icon(Icons.Filled.ContentCut, contentDescription = null) },
-                        onClick = {
-                            menuExpanded = false
-                            onCut()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(if (isBookmarked()) "Remove Bookmark" else "Add Bookmark") },
-                        leadingIcon = {
-                            Icon(
-                                if (isBookmarked()) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
-                                contentDescription = null
+                if (menuExpanded) {
+                    DropdownMenu(
+                        expanded = true,
+                        onDismissRequest = { menuExpanded = false }
+                    ) {
+                        if (onOpenWith != null && !file.isDirectory) {
+                            DropdownMenuItem(
+                                text = { Text("Open With...") },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onOpenWith()
+                                }
                             )
-                        },
-                        onClick = {
-                            menuExpanded = false
-                            onToggleBookmark()
                         }
-                    )
-                    if (!file.isDirectory) {
+                        if (onQuickPreview != null && !file.isDirectory) {
+                            DropdownMenuItem(
+                                text = { Text("Quick Preview") },
+                                leadingIcon = { Icon(Icons.Filled.Description, contentDescription = null) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onQuickPreview()
+                                }
+                            )
+                        }
+                        if (onDownloadRemote != null && !file.isDirectory) {
+                            DropdownMenuItem(
+                                text = { Text("Download to Local") },
+                                leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onDownloadRemote()
+                                }
+                            )
+                        }
                         DropdownMenuItem(
-                            text = { Text("Share") },
-                            leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
+                            text = { Text("Rename") },
+                            leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
                             onClick = {
                                 menuExpanded = false
-                                onShare()
+                                onRename()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Copy") },
+                            leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onCopy()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Cut / Move") },
+                            leadingIcon = { Icon(Icons.Filled.ContentCut, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onCut()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (bookmarked) "Remove Bookmark" else "Add Bookmark") },
+                            leadingIcon = {
+                                Icon(
+                                    if (bookmarked) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onToggleBookmark()
+                            }
+                        )
+                        if (!file.isDirectory) {
+                            DropdownMenuItem(
+                                text = { Text("Share") },
+                                leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onShare()
+                                }
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text("Properties & Hashes") },
+                            leadingIcon = { Icon(Icons.Filled.Info, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onProperties()
+                            }
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onDelete()
                             }
                         )
                     }
-                    DropdownMenuItem(
-                        text = { Text("Properties & Hashes") },
-                        leadingIcon = { Icon(Icons.Filled.Info, contentDescription = null) },
-                        onClick = {
-                            menuExpanded = false
-                            onProperties()
-                        }
-                    )
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Filled.Delete,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                        },
-                        onClick = {
-                            menuExpanded = false
-                            onDelete()
-                        }
-                    )
                 }
             }
         }
@@ -507,6 +540,9 @@ fun FileItemGridCard(
     onLongClick: () -> Unit,
     onProperties: () -> Unit
 ) {
+    val formattedSize = remember(file.isDirectory, file.sizeBytes, file.metadata["childCount"]) {
+        file.formattedSize
+    }
     Card(
         colors = CardDefaults.cardColors(
             containerColor = if (isSelected()) {
@@ -550,7 +586,7 @@ fun FileItemGridCard(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    text = file.formattedSize,
+                    text = formattedSize,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),

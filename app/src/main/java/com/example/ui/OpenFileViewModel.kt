@@ -175,7 +175,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         _volumeRefreshTrigger.value = System.currentTimeMillis()
     }
 
-    val storageVolumes: StateFlow<List<StorageVolumeInfo>> = combine(safGrants, settings, _volumeRefreshTrigger) { grants, _, _ ->
+    val storageVolumes: StateFlow<List<StorageVolumeInfo>> = combine(safGrants, _volumeRefreshTrigger) { grants, _ ->
         withContext(Dispatchers.IO) {
             localProvider.getStorageVolumes(
                 safProvider = safProvider,
@@ -287,11 +287,19 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun refreshCategoryCountsAndPrewarm() {
+    @Volatile
+    private var lastCategoryPrewarmEpochMs: Long = 0L
+
+    fun refreshCategoryCountsAndPrewarm(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastCategoryPrewarmEpochMs < 45_000L && _categoryCounts.value.isNotEmpty()) {
+            return
+        }
+        lastCategoryPrewarmEpochMs = now
         viewModelScope.launch(Dispatchers.IO) {
             val thresholdBytes = _settings.value.largeFileThresholdMb * 1024L * 1024L
             _categoryCounts.value = mediaStoreProvider.queryCategoryCounts(thresholdBytes)
-            // Pre-warm common categories in the background so tapping them on Home opens in 0ms
+            // Pre-warm common categories in the background with cooperative yields so UI scrolling stays silky smooth
             listOf(
                 FileCategory.IMAGES,
                 FileCategory.VIDEOS,
@@ -301,6 +309,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 FileCategory.LARGE_FILES,
                 FileCategory.RECENT_FILES
             ).forEach { cat ->
+                kotlinx.coroutines.yield()
                 runCatching {
                     val items = mediaStoreProvider.queryByCategory(cat, thresholdBytes)
                     categoryCache[cat] = items
@@ -406,24 +415,52 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             }
             result.fold(
                 onSuccess = { rawItems ->
-                    val sorted = withContext(Dispatchers.Default) {
-                        FileSortAndFilterEngine.sortFiles(
-                            files = rawItems,
-                            field = currentSettings.defaultSortField,
-                            order = currentSettings.defaultSortOrder
-                        )
+                    val folderCount = rawItems.count { it.isDirectory }
+                    val itemsForInitialRender = if (directory.providerType == ProviderType.LOCAL && folderCount in 1..60) {
+                        withContext(Dispatchers.IO) {
+                            val enrichedRaw = rawItems.map { item ->
+                                if (item.isDirectory && item.metadata["childCount"] == null) {
+                                    val count = runCatching {
+                                        val list = File(item.uriOrPath).list()
+                                        if (currentSettings.showHiddenFiles) list?.size else list?.count { !it.startsWith(".") }
+                                    }.getOrNull()
+                                    if (count != null) {
+                                        item.copy(metadata = item.metadata + ("childCount" to count.toString()))
+                                    } else {
+                                        item
+                                    }
+                                } else {
+                                    item
+                                }
+                            }
+                            FileSortAndFilterEngine.sortFiles(
+                                files = enrichedRaw,
+                                field = currentSettings.defaultSortField,
+                                order = currentSettings.defaultSortOrder
+                            )
+                        }
+                    } else {
+                        withContext(Dispatchers.Default) {
+                            FileSortAndFilterEngine.sortFiles(
+                                files = rawItems,
+                                field = currentSettings.defaultSortField,
+                                order = currentSettings.defaultSortOrder
+                            )
+                        }
                     }
+
                     _browserState.value = _browserState.value.copy(
                         currentDirectory = directory,
                         breadcrumbs = crumbs,
-                        items = sorted,
+                        items = itemsForInitialRender,
                         isLoading = false,
                         errorMessage = null
                     )
-                    // Non-blocking background pass to enrich local folder rows with child counts (File Manager + style)
-                    if (directory.providerType == ProviderType.LOCAL && sorted.any { it.isDirectory }) {
+
+                    // Only run a deferred second pass when a directory has > 60 subfolders
+                    if (directory.providerType == ProviderType.LOCAL && folderCount > 60) {
                         val enriched = withContext(Dispatchers.IO) {
-                            sorted.map { item ->
+                            itemsForInitialRender.map { item ->
                                 if (item.isDirectory && item.metadata["childCount"] == null) {
                                     val count = runCatching {
                                         val list = File(item.uriOrPath).list()

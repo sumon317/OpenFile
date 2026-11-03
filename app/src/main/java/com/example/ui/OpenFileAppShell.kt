@@ -100,38 +100,15 @@ import java.io.File
 fun OpenFileAppShell(viewModel: OpenFileViewModel) {
     val currentDest by viewModel.currentDestination.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
-    val volumes by viewModel.storageVolumes.collectAsStateWithLifecycle()
-    val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
-    val recentFiles by viewModel.recentFiles.collectAsStateWithLifecycle()
-    val networkProfiles by viewModel.networkProfiles.collectAsStateWithLifecycle()
-    val cloudAccounts by viewModel.cloudAccounts.collectAsStateWithLifecycle()
-    val trashItems by viewModel.trashItems.collectAsStateWithLifecycle()
     val transferJobs by viewModel.transferJobs.collectAsStateWithLifecycle()
-    val clipboard by viewModel.clipboard.collectAsStateWithLifecycle()
     val conflictPrompt by viewModel.conflictPrompt.collectAsStateWithLifecycle()
     val undoAction by viewModel.latestUndoAction.collectAsStateWithLifecycle()
-    val ftpState by viewModel.ftpServerState.collectAsStateWithLifecycle()
     val browserState by viewModel.browserState.collectAsStateWithLifecycle()
     val previewFile by viewModel.previewFile.collectAsStateWithLifecycle()
     val propertiesFile by viewModel.propertiesFile.collectAsStateWithLifecycle()
-    val propertiesChecksums by viewModel.propertiesChecksums.collectAsStateWithLifecycle()
-    val propertiesApkInfo by viewModel.propertiesApkInfo.collectAsStateWithLifecycle()
-    val analysisReport by viewModel.analysisReport.collectAsStateWithLifecycle()
-    val isAnalyzing by viewModel.isAnalyzingStorage.collectAsStateWithLifecycle()
-    val analysisProgress by viewModel.analysisProgressText.collectAsStateWithLifecycle()
-    val installedApps by viewModel.installedApps.collectAsStateWithLifecycle()
-    val includeSystemApps by viewModel.includeSystemApps.collectAsStateWithLifecycle()
-    val isLoadingApps by viewModel.isLoadingApps.collectAsStateWithLifecycle()
-    val discoveredHosts by viewModel.discoveredLanHosts.collectAsStateWithLifecycle()
-    val isScanningLan by viewModel.isScanningLan.collectAsStateWithLifecycle()
-    val sshHostKeyPrompt by viewModel.sshHostKeyPrompt.collectAsStateWithLifecycle()
-    val activePkceSession by viewModel.activePkceSession.collectAsStateWithLifecycle()
     val activeWebCloudProvider by viewModel.activeWebCloudProvider.collectAsStateWithLifecycle()
     val showDriveFilePickerModal by viewModel.showDriveFilePickerModal.collectAsStateWithLifecycle()
-    val activeDrivePickerAccount by viewModel.activeDrivePickerAccount.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
-    val categoryCounts by viewModel.categoryCounts.collectAsStateWithLifecycle()
-    val selectedNetworkTab by viewModel.selectedNetworkTab.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -289,28 +266,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                         DestinationRouter(
                             currentDest = currentDest,
                             viewModel = viewModel,
-                            volumes = volumes,
-                            bookmarks = bookmarks,
-                            recentFiles = recentFiles,
-                            networkProfiles = networkProfiles,
-                            cloudAccounts = cloudAccounts,
-                            trashItems = trashItems,
-                            ftpState = ftpState,
                             browserState = browserState,
                             settings = settings,
-                            clipboard = clipboard,
-                            analysisReport = analysisReport,
-                            isAnalyzing = isAnalyzing,
-                            analysisProgress = analysisProgress,
-                            installedApps = installedApps,
-                            includeSystemApps = includeSystemApps,
-                            isLoadingApps = isLoadingApps,
-                            discoveredHosts = discoveredHosts,
-                            isScanningLan = isScanningLan,
-                            sshHostKeyPrompt = sshHostKeyPrompt,
-                            activePkceSession = activePkceSession,
-                            categoryCounts = categoryCounts,
-                            selectedNetworkTab = selectedNetworkTab,
                             onRequestSafAccess = { safTreeLauncher.launch(null) }
                         )
                     }
@@ -438,28 +395,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                     DestinationRouter(
                         currentDest = currentDest,
                         viewModel = viewModel,
-                        volumes = volumes,
-                        bookmarks = bookmarks,
-                        recentFiles = recentFiles,
-                        networkProfiles = networkProfiles,
-                        cloudAccounts = cloudAccounts,
-                        trashItems = trashItems,
-                        ftpState = ftpState,
                         browserState = browserState,
                         settings = settings,
-                        clipboard = clipboard,
-                        analysisReport = analysisReport,
-                        isAnalyzing = isAnalyzing,
-                        analysisProgress = analysisProgress,
-                        installedApps = installedApps,
-                        includeSystemApps = includeSystemApps,
-                        isLoadingApps = isLoadingApps,
-                        discoveredHosts = discoveredHosts,
-                        isScanningLan = isScanningLan,
-                        sshHostKeyPrompt = sshHostKeyPrompt,
-                        activePkceSession = activePkceSession,
-                        categoryCounts = categoryCounts,
-                        selectedNetworkTab = selectedNetworkTab,
                         onRequestSafAccess = { safTreeLauncher.launch(null) }
                     )
                 }
@@ -489,6 +426,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
 
     // File Properties & Checksums Sheet
     if (propertiesFile != null) {
+        val propertiesChecksums by viewModel.propertiesChecksums.collectAsStateWithLifecycle()
+        val propertiesApkInfo by viewModel.propertiesApkInfo.collectAsStateWithLifecycle()
         FilePropertiesModalSheet(
             file = propertiesFile!!,
             checksums = propertiesChecksums,
@@ -518,6 +457,10 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
 
     // Native Google Drive FilePicker Modal Dialog
     if (showDriveFilePickerModal) {
+        val activeDrivePickerAccount by viewModel.activeDrivePickerAccount.collectAsStateWithLifecycle()
+        val cloudAccounts by viewModel.cloudAccounts.collectAsStateWithLifecycle()
+        val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
+        val clipboard by viewModel.clipboard.collectAsStateWithLifecycle()
         val googleAccount = activeDrivePickerAccount
             ?: browserState.activeCloudAccount?.takeIf {
                 it.provider == com.example.core.cloud.CloudProviderKind.GOOGLE_DRIVE.name
@@ -730,32 +673,19 @@ private fun MainScaffoldContent(
 private fun DestinationRouter(
     currentDest: OpenFileDestination,
     viewModel: OpenFileViewModel,
-    volumes: List<com.example.core.model.StorageVolumeInfo>,
-    bookmarks: List<com.example.core.database.BookmarkEntity>,
-    recentFiles: List<com.example.core.database.RecentFileEntity>,
-    networkProfiles: List<com.example.core.database.NetworkProfileEntity>,
-    cloudAccounts: List<com.example.core.database.CloudAccountEntity>,
-    trashItems: List<com.example.core.database.TrashItemEntity>,
-    ftpState: com.example.core.network.FtpServerRuntimeState,
     browserState: BrowserUiState,
     settings: com.example.core.datastore.AppSettingsState,
-    clipboard: com.example.core.filesystem.ClipboardState,
-    analysisReport: com.example.core.model.StorageAnalysisReport?,
-    isAnalyzing: Boolean,
-    analysisProgress: String,
-    installedApps: List<com.example.core.model.InstalledAppInfo>,
-    includeSystemApps: Boolean,
-    isLoadingApps: Boolean,
-    discoveredHosts: List<com.example.core.network.DiscoveredLanHost>,
-    isScanningLan: Boolean,
-    sshHostKeyPrompt: SshHostKeyPrompt?,
-    activePkceSession: com.example.core.cloud.PkceSession?,
-    categoryCounts: Map<com.example.core.model.FileCategory, Int>,
-    selectedNetworkTab: Int,
     onRequestSafAccess: () -> Unit
 ) {
     when (currentDest) {
         OpenFileDestination.HOME -> {
+            val volumes by viewModel.storageVolumes.collectAsStateWithLifecycle()
+            val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
+            val recentFiles by viewModel.recentFiles.collectAsStateWithLifecycle()
+            val networkProfiles by viewModel.networkProfiles.collectAsStateWithLifecycle()
+            val cloudAccounts by viewModel.cloudAccounts.collectAsStateWithLifecycle()
+            val ftpState by viewModel.ftpServerState.collectAsStateWithLifecycle()
+            val categoryCounts by viewModel.categoryCounts.collectAsStateWithLifecycle()
             HomeScreen(
                 volumes = volumes,
                 bookmarks = bookmarks,
@@ -787,6 +717,9 @@ private fun DestinationRouter(
         OpenFileDestination.ARCHIVES,
         OpenFileDestination.RECENT_FILES,
         OpenFileDestination.LARGE_FILES -> {
+            val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
+            val clipboard by viewModel.clipboard.collectAsStateWithLifecycle()
+            val cloudAccounts by viewModel.cloudAccounts.collectAsStateWithLifecycle()
             FileBrowserScreen(
                 browserState = browserState,
                 settings = settings,
@@ -834,6 +767,9 @@ private fun DestinationRouter(
         }
 
         OpenFileDestination.STORAGE_ANALYSIS -> {
+            val analysisReport by viewModel.analysisReport.collectAsStateWithLifecycle()
+            val isAnalyzing by viewModel.isAnalyzingStorage.collectAsStateWithLifecycle()
+            val analysisProgress by viewModel.analysisProgressText.collectAsStateWithLifecycle()
             StorageAnalysisScreen(
                 report = analysisReport,
                 isScanning = isAnalyzing,
@@ -858,6 +794,9 @@ private fun DestinationRouter(
         }
 
         OpenFileDestination.APPLICATIONS -> {
+            val installedApps by viewModel.installedApps.collectAsStateWithLifecycle()
+            val includeSystemApps by viewModel.includeSystemApps.collectAsStateWithLifecycle()
+            val isLoadingApps by viewModel.isLoadingApps.collectAsStateWithLifecycle()
             ApplicationsScreen(
                 apps = installedApps,
                 includeSystemApps = includeSystemApps,
@@ -878,6 +817,7 @@ private fun DestinationRouter(
         }
 
         OpenFileDestination.BOOKMARKS -> {
+            val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
             BookmarksScreen(
                 bookmarks = bookmarks,
                 onOpenBookmark = { bm -> viewModel.openBookmark(bm) },
@@ -887,6 +827,7 @@ private fun DestinationRouter(
         }
 
         OpenFileDestination.TRASH -> {
+            val trashItems by viewModel.trashItems.collectAsStateWithLifecycle()
             val scope = rememberCoroutineScope()
             TrashScreen(
                 trashItems = trashItems,
@@ -913,6 +854,12 @@ private fun DestinationRouter(
         }
 
         OpenFileDestination.NETWORK -> {
+            val ftpState by viewModel.ftpServerState.collectAsStateWithLifecycle()
+            val networkProfiles by viewModel.networkProfiles.collectAsStateWithLifecycle()
+            val discoveredHosts by viewModel.discoveredLanHosts.collectAsStateWithLifecycle()
+            val isScanningLan by viewModel.isScanningLan.collectAsStateWithLifecycle()
+            val sshHostKeyPrompt by viewModel.sshHostKeyPrompt.collectAsStateWithLifecycle()
+            val selectedNetworkTab by viewModel.selectedNetworkTab.collectAsStateWithLifecycle()
             val scope = rememberCoroutineScope()
             NetworkScreen(
                 ftpState = ftpState,
@@ -953,6 +900,10 @@ private fun DestinationRouter(
         }
 
         OpenFileDestination.CLOUD_STORAGE -> {
+            val cloudAccounts by viewModel.cloudAccounts.collectAsStateWithLifecycle()
+            val activePkceSession by viewModel.activePkceSession.collectAsStateWithLifecycle()
+            val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
+            val clipboard by viewModel.clipboard.collectAsStateWithLifecycle()
             val activeWebProvider by viewModel.activeWebCloudProvider.collectAsStateWithLifecycle()
             val activeWebUrl by viewModel.activeWebCloudUrl.collectAsStateWithLifecycle()
             CloudStorageScreen(
@@ -996,6 +947,8 @@ private fun DestinationRouter(
         }
 
         OpenFileDestination.SETTINGS -> {
+            val networkProfiles by viewModel.networkProfiles.collectAsStateWithLifecycle()
+            val cloudAccounts by viewModel.cloudAccounts.collectAsStateWithLifecycle()
             val vaultCount by produceState(
                 initialValue = 0,
                 networkProfiles,

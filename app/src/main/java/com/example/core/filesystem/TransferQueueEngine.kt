@@ -285,7 +285,7 @@ class TransferQueueEngine(
                     createdDestinations.add(transferredRef)
                     processedFiles++
                     val now = System.currentTimeMillis()
-                    if (now - lastDbUpdateMs >= 100L || processedFiles == clip.items.size) {
+                    if (now - lastDbUpdateMs >= 300L || processedFiles == clip.items.size) {
                         lastDbUpdateMs = now
                         dao.upsertTransferJob(
                             initialEntity.copy(

@@ -402,7 +402,7 @@ fun HomeScreen(
         }
 
         // Section 2: File Manager + Symmetrical 3-Column Circular-Badge Grid
-        item {
+        item(key = "home_categories_grid", contentType = "categories_grid") {
             Text(
                 text = "Categories & Quick Access",
                 style = MaterialTheme.typography.titleMedium,
@@ -410,112 +410,113 @@ fun HomeScreen(
             )
             Spacer(modifier = Modifier.height(10.dp))
 
-            fun countLabel(cat: FileCategory, fallback: String): String {
-                val c = categoryCounts[cat]
-                return if (c != null) "$c items" else fallback
+            val gridTiles = remember(categoryCounts, cloudAccountsCount, remoteProfilesCount, ftpState.isRunning) {
+                fun countLabel(cat: FileCategory, fallback: String): String {
+                    val c = categoryCounts[cat]
+                    return if (c != null) "$c items" else fallback
+                }
+                listOf(
+                    HomeTileSpec(
+                        label = "Downloads",
+                        subtitle = countLabel(FileCategory.DOWNLOADS, "Folder"),
+                        icon = Icons.Filled.Download,
+                        badgeColor = Color(0xFF26A69A),
+                        testTag = "shortcut_${OpenFileDestination.DOWNLOADS.route}",
+                        onClick = { onNavigateDestination(OpenFileDestination.DOWNLOADS) }
+                    ),
+                    HomeTileSpec(
+                        label = "Images",
+                        subtitle = countLabel(FileCategory.IMAGES, "Photos"),
+                        icon = Icons.Filled.Image,
+                        badgeColor = Color(0xFFFF7043),
+                        testTag = "shortcut_${OpenFileDestination.IMAGES.route}",
+                        onClick = { onNavigateDestination(OpenFileDestination.IMAGES) }
+                    ),
+                    HomeTileSpec(
+                        label = "Audio",
+                        subtitle = countLabel(FileCategory.AUDIO, "Music"),
+                        icon = Icons.Filled.AudioFile,
+                        badgeColor = Color(0xFFAB47BC),
+                        testTag = "shortcut_${OpenFileDestination.AUDIO.route}",
+                        onClick = { onNavigateDestination(OpenFileDestination.AUDIO) }
+                    ),
+                    HomeTileSpec(
+                        label = "Videos",
+                        subtitle = countLabel(FileCategory.VIDEOS, "Movies"),
+                        icon = Icons.Filled.VideoFile,
+                        badgeColor = Color(0xFFEF5350),
+                        testTag = "shortcut_${OpenFileDestination.VIDEOS.route}",
+                        onClick = { onNavigateDestination(OpenFileDestination.VIDEOS) }
+                    ),
+                    HomeTileSpec(
+                        label = "Documents",
+                        subtitle = countLabel(FileCategory.DOCUMENTS, "PDF & Office"),
+                        icon = Icons.Filled.Description,
+                        badgeColor = Color(0xFF42A5F5),
+                        testTag = "shortcut_${OpenFileDestination.DOCUMENTS.route}",
+                        onClick = { onNavigateDestination(OpenFileDestination.DOCUMENTS) }
+                    ),
+                    HomeTileSpec(
+                        label = "Apps & APKs",
+                        subtitle = categoryCounts[FileCategory.APPLICATIONS]?.let { "$it apps" } ?: "Installed",
+                        icon = Icons.Filled.Android,
+                        badgeColor = ApkGreen,
+                        testTag = "shortcut_${OpenFileDestination.APPLICATIONS.route}",
+                        onClick = { onNavigateDestination(OpenFileDestination.APPLICATIONS) }
+                    ),
+                    HomeTileSpec(
+                        label = "New Files",
+                        subtitle = countLabel(FileCategory.RECENT_FILES, "Recent"),
+                        icon = Icons.Filled.History,
+                        badgeColor = Color(0xFF29B6F6),
+                        testTag = "shortcut_${OpenFileDestination.RECENT_FILES.route}",
+                        onClick = { onNavigateDestination(OpenFileDestination.RECENT_FILES) }
+                    ),
+                    HomeTileSpec(
+                        label = "Archives",
+                        subtitle = countLabel(FileCategory.ARCHIVES, "ZIP / 7Z"),
+                        icon = Icons.Filled.FolderZip,
+                        badgeColor = FolderAmber,
+                        testTag = "shortcut_${OpenFileDestination.ARCHIVES.route}",
+                        onClick = { onNavigateDestination(OpenFileDestination.ARCHIVES) }
+                    ),
+                    HomeTileSpec(
+                        label = "Large Files",
+                        subtitle = countLabel(FileCategory.LARGE_FILES, "> 25 MB"),
+                        icon = Icons.Filled.Storage,
+                        badgeColor = Color(0xFFEC407A),
+                        testTag = "shortcut_${OpenFileDestination.LARGE_FILES.route}",
+                        onClick = { onNavigateDestination(OpenFileDestination.LARGE_FILES) }
+                    ),
+                    HomeTileSpec(
+                        label = "Cloud Drives",
+                        subtitle = if (cloudAccountsCount > 0) "$cloudAccountsCount connected" else "Drive / OneDrive",
+                        icon = Icons.Filled.Cloud,
+                        badgeColor = Color(0xFF5C6BC0),
+                        testTag = "home_cloud_button",
+                        onClick = { onNavigateDestination(OpenFileDestination.CLOUD_STORAGE) }
+                    ),
+                    HomeTileSpec(
+                        label = "Remote",
+                        subtitle = if (remoteProfilesCount > 0) "$remoteProfilesCount server(s)" else "SMB / SFTP / FTP",
+                        icon = Icons.Filled.Lan,
+                        badgeColor = Color(0xFFFFA726),
+                        testTag = "home_network_button",
+                        onClick = onOpenRemoteConnections
+                    ),
+                    HomeTileSpec(
+                        label = "Access from PC",
+                        subtitle = if (ftpState.isRunning) "Server Active" else "Wi-Fi FTP",
+                        icon = Icons.Filled.Computer,
+                        badgeColor = Color(0xFF00ACC1),
+                        testTag = "home_access_pc_button",
+                        onClick = onOpenAccessFromPc
+                    )
+                ).chunked(3)
             }
 
-            val gridTiles = listOf(
-                HomeTileSpec(
-                    label = "Downloads",
-                    subtitle = countLabel(FileCategory.DOWNLOADS, "Folder"),
-                    icon = Icons.Filled.Download,
-                    badgeColor = Color(0xFF26A69A),
-                    testTag = "shortcut_${OpenFileDestination.DOWNLOADS.route}",
-                    onClick = { onNavigateDestination(OpenFileDestination.DOWNLOADS) }
-                ),
-                HomeTileSpec(
-                    label = "Images",
-                    subtitle = countLabel(FileCategory.IMAGES, "Photos"),
-                    icon = Icons.Filled.Image,
-                    badgeColor = Color(0xFFFF7043),
-                    testTag = "shortcut_${OpenFileDestination.IMAGES.route}",
-                    onClick = { onNavigateDestination(OpenFileDestination.IMAGES) }
-                ),
-                HomeTileSpec(
-                    label = "Audio",
-                    subtitle = countLabel(FileCategory.AUDIO, "Music"),
-                    icon = Icons.Filled.AudioFile,
-                    badgeColor = Color(0xFFAB47BC),
-                    testTag = "shortcut_${OpenFileDestination.AUDIO.route}",
-                    onClick = { onNavigateDestination(OpenFileDestination.AUDIO) }
-                ),
-                HomeTileSpec(
-                    label = "Videos",
-                    subtitle = countLabel(FileCategory.VIDEOS, "Movies"),
-                    icon = Icons.Filled.VideoFile,
-                    badgeColor = Color(0xFFEF5350),
-                    testTag = "shortcut_${OpenFileDestination.VIDEOS.route}",
-                    onClick = { onNavigateDestination(OpenFileDestination.VIDEOS) }
-                ),
-                HomeTileSpec(
-                    label = "Documents",
-                    subtitle = countLabel(FileCategory.DOCUMENTS, "PDF & Office"),
-                    icon = Icons.Filled.Description,
-                    badgeColor = Color(0xFF42A5F5),
-                    testTag = "shortcut_${OpenFileDestination.DOCUMENTS.route}",
-                    onClick = { onNavigateDestination(OpenFileDestination.DOCUMENTS) }
-                ),
-                HomeTileSpec(
-                    label = "Apps & APKs",
-                    subtitle = categoryCounts[FileCategory.APPLICATIONS]?.let { "$it apps" } ?: "Installed",
-                    icon = Icons.Filled.Android,
-                    badgeColor = ApkGreen,
-                    testTag = "shortcut_${OpenFileDestination.APPLICATIONS.route}",
-                    onClick = { onNavigateDestination(OpenFileDestination.APPLICATIONS) }
-                ),
-                HomeTileSpec(
-                    label = "New Files",
-                    subtitle = countLabel(FileCategory.RECENT_FILES, "Recent"),
-                    icon = Icons.Filled.History,
-                    badgeColor = Color(0xFF29B6F6),
-                    testTag = "shortcut_${OpenFileDestination.RECENT_FILES.route}",
-                    onClick = { onNavigateDestination(OpenFileDestination.RECENT_FILES) }
-                ),
-                HomeTileSpec(
-                    label = "Archives",
-                    subtitle = countLabel(FileCategory.ARCHIVES, "ZIP / 7Z"),
-                    icon = Icons.Filled.FolderZip,
-                    badgeColor = FolderAmber,
-                    testTag = "shortcut_${OpenFileDestination.ARCHIVES.route}",
-                    onClick = { onNavigateDestination(OpenFileDestination.ARCHIVES) }
-                ),
-                HomeTileSpec(
-                    label = "Large Files",
-                    subtitle = countLabel(FileCategory.LARGE_FILES, "> 25 MB"),
-                    icon = Icons.Filled.Storage,
-                    badgeColor = Color(0xFFEC407A),
-                    testTag = "shortcut_${OpenFileDestination.LARGE_FILES.route}",
-                    onClick = { onNavigateDestination(OpenFileDestination.LARGE_FILES) }
-                ),
-                HomeTileSpec(
-                    label = "Cloud Drives",
-                    subtitle = if (cloudAccountsCount > 0) "$cloudAccountsCount connected" else "Drive / OneDrive",
-                    icon = Icons.Filled.Cloud,
-                    badgeColor = Color(0xFF5C6BC0),
-                    testTag = "home_cloud_button",
-                    onClick = { onNavigateDestination(OpenFileDestination.CLOUD_STORAGE) }
-                ),
-                HomeTileSpec(
-                    label = "Remote",
-                    subtitle = if (remoteProfilesCount > 0) "$remoteProfilesCount server(s)" else "SMB / SFTP / FTP",
-                    icon = Icons.Filled.Lan,
-                    badgeColor = Color(0xFFFFA726),
-                    testTag = "home_network_button",
-                    onClick = onOpenRemoteConnections
-                ),
-                HomeTileSpec(
-                    label = "Access from PC",
-                    subtitle = if (ftpState.isRunning) "Server Active" else "Wi-Fi FTP",
-                    icon = Icons.Filled.Computer,
-                    badgeColor = Color(0xFF00ACC1),
-                    testTag = "home_access_pc_button",
-                    onClick = onOpenAccessFromPc
-                )
-            )
-
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                gridTiles.chunked(3).forEach { rowItems ->
+                gridTiles.forEach { rowItems ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -827,29 +828,22 @@ fun FileBrowserScreen(
 
     val bookmarkedPaths = remember(bookmarks) { bookmarks.map { it.uriOrPath }.toSet() }
 
-    val initialUnfiltered = remember(browserState.items, settings.showHiddenFiles) {
-        if (settings.showHiddenFiles) browserState.items
-        else browserState.items.filter { !it.isHidden }
-    }
-
-    val filteredItems by produceState(
-        initialValue = initialUnfiltered,
+    val filteredItems = remember(
         browserState.items,
         browserState.searchQuery,
         extensionFilter,
         settings.showHiddenFiles
     ) {
-        value = if (browserState.searchQuery.isBlank() && extensionFilter == null) {
-            initialUnfiltered
+        if (browserState.searchQuery.isBlank() && extensionFilter == null) {
+            if (settings.showHiddenFiles) browserState.items
+            else browserState.items.filter { !it.isHidden }
         } else {
-            withContext(Dispatchers.Default) {
-                FileSortAndFilterEngine.filterFiles(
-                    files = browserState.items,
-                    query = browserState.searchQuery,
-                    extensionFilter = extensionFilter,
-                    showHidden = settings.showHiddenFiles
-                )
-            }
+            FileSortAndFilterEngine.filterFiles(
+                files = browserState.items,
+                query = browserState.searchQuery,
+                extensionFilter = extensionFilter,
+                showHidden = settings.showHiddenFiles
+            )
         }
     }
 
@@ -1523,19 +1517,17 @@ fun FileBrowserScreen(
         }
 
         // KDE Dolphin-Style Directory Summary Footer Bar
-        val dirSummary by produceState(initialValue = Triple(0, 0, 0L), filteredItems) {
-            value = withContext(Dispatchers.Default) {
-                var folders = 0
-                var files = 0
-                var totalBytes = 0L
-                for (item in filteredItems) {
-                    if (item.isDirectory) folders++ else {
-                        files++
-                        totalBytes += item.sizeBytes
-                    }
+        val dirSummary = remember(filteredItems) {
+            var folders = 0
+            var files = 0
+            var totalBytes = 0L
+            for (item in filteredItems) {
+                if (item.isDirectory) folders++ else {
+                    files++
+                    totalBytes += item.sizeBytes
                 }
-                Triple(folders, files, totalBytes)
             }
+            Triple(folders, files, totalBytes)
         }
         Surface(
             color = MaterialTheme.colorScheme.surfaceContainer,
