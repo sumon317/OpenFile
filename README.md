@@ -94,6 +94,11 @@ OpenFile includes a built-in **GitHub Releases Auto-Updater** (`AppUpdateEngine`
 ./gradlew assembleRelease
 ```
 
+> [!IMPORTANT]
+> **Production Release Policy — Never Send Debug APKs to Releases**:
+> Under no circumstances should a debug APK (`app-debug.apk` or `*-debug.apk`) ever be attached to GitHub Releases or distributed to users. Debug builds have `android:debuggable="true"`, bypass R8 dead-code stripping and obfuscation, run significantly slower, and are signed with insecure development keys. All public distribution and updates must strictly use the signed, minified `OpenFile-*-release.apk`.
+
+
 ---
 
 ## 🔒 Privacy & Security

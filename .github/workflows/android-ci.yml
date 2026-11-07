@@ -52,7 +52,15 @@ jobs:
               -dname "CN=OpenFile, OU=Mobile, O=OpenFile, L=Earth, S=Earth, C=US"
           fi
 
-      - name: Run Unit Tests & Assemble Debug + Signed Release APKs
+      # =========================================================================================
+      # CRITICAL RELEASE SECURITY POLICY:
+      # NEVER PUBLISH, DISTRIBUTE, OR ATTACH DEBUG APKS TO RELEASES!
+      #
+      # Debug APKs contain unoptimized bytecode, disabled R8 minification, debug symbols, and
+      # insecure testing signatures. Public releases MUST strictly use signed production release
+      # APKs (OpenFile-*-release.apk). Do NOT include app-debug.apk in release distribution assets.
+      # =========================================================================================
+      - name: Run Unit Tests & Assemble Production Release APK
         env:
           KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
@@ -60,15 +68,15 @@ jobs:
         run: |
           export STORE_PASSWORD="${STORE_PASSWORD:-openfile_release_2026}"
           export KEY_PASSWORD="${KEY_PASSWORD:-openfile_release_2026}"
-          ./gradlew :app:testDebugUnitTest --tests "com.example.ExampleUnitTest" assembleDebug assembleRelease
+          ./gradlew :app:testDebugUnitTest --tests "com.example.ExampleUnitTest" assembleRelease
           mkdir -p dist
+          # Copy ONLY the signed, minified release APK for distribution
           cp app/build/outputs/apk/release/app-release.apk dist/OpenFile-v1.0.0-release.apk
-          cp app/build/outputs/apk/debug/app-debug.apk dist/OpenFile-v1.0.0-debug.apk
           ls -lh dist/
 
-      - name: Upload APK Build Artifacts
+      - name: Upload Release APK Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OpenFile-APKs
+          name: OpenFile-Release-APK
           path: dist/*.apk
           if-no-files-found: error

@@ -326,6 +326,18 @@ class AppUpdateEngine(private val context: Context) {
             for (asset in assets) {
                 val name = (asset["name"] as? String).orEmpty()
                 val downloadUrl = (asset["browser_download_url"] as? String).orEmpty()
+
+                // =========================================================================
+                // CRITICAL RELEASE SECURITY POLICY:
+                // NEVER SEND, PUBLISH, OR ACCEPT DEBUG APKS FOR RELEASES!
+                // Debug APKs are unoptimized, unminified, contain debug symbols, and are
+                // signed with insecure development keys. Releases must strictly use signed
+                // production release APKs.
+                // =========================================================================
+                if (name.contains("debug", ignoreCase = true)) {
+                    continue
+                }
+
                 if (name.endsWith(".apk", ignoreCase = true) && downloadUrl.isNotBlank()) {
                     val isPreferredReleaseApk = name.contains("release", ignoreCase = true) ||
                         chosenUrl.isEmpty()

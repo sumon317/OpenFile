@@ -41,6 +41,13 @@ android {
   }
 
   buildTypes {
+    // =========================================================================
+    // CRITICAL RELEASE POLICY:
+    // NEVER publish, upload, or send debug APKs to GitHub Releases or end users.
+    // Debug builds have debugging enabled, disable R8 optimization/minification,
+    // and use insecure debug keys. All public distribution and updates MUST
+    // exclusively use signed production release builds ('release').
+    // =========================================================================
     release {
       isCrunchPngs = false
       isMinifyEnabled = true
