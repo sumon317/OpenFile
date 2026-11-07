@@ -16,8 +16,8 @@ android {
     applicationId = "com.openfile.manager"
     minSdk = 24
     targetSdk = 36
-    versionCode = 4
-    versionName = "1.0.0"
+    versionCode = 5
+    versionName = "1.1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -28,9 +28,9 @@ android {
     create("release") {
       val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
       storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD")
+      storePassword = System.getenv("STORE_PASSWORD") ?: "openfile_release_2026"
       keyAlias = "upload"
-      keyPassword = System.getenv("KEY_PASSWORD")
+      keyPassword = System.getenv("KEY_PASSWORD") ?: "openfile_release_2026"
     }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")

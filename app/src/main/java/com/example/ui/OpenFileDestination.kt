@@ -40,12 +40,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 enum class DrawerSection(val title: String) {
     OVERVIEW("Overview"),
     CATEGORIES("Categories & Media"),
-    REMOTE("Network & Cloud"),
+    REMOTE("Network & Remote"),
     TOOLS("Analysis & Tools")
 }
 
 /**
- * The 17 primary navigation destinations of OpenFile.
+ * The 16 primary navigation destinations of OpenFile.
  */
 enum class OpenFileDestination(
     val route: String,
@@ -150,14 +150,6 @@ enum class OpenFileDestination(
         selectedIcon = Icons.Filled.Lan,
         unselectedIcon = Icons.Outlined.Lan,
         testTag = "nav_network"
-    ),
-    CLOUD_STORAGE(
-        route = "cloud_storage",
-        title = "Cloud Storage",
-        section = DrawerSection.REMOTE,
-        selectedIcon = Icons.Filled.Cloud,
-        unselectedIcon = Icons.Outlined.Cloud,
-        testTag = "nav_cloud_storage"
     ),
     STORAGE_ANALYSIS(
         route = "storage_analysis",

@@ -39,6 +39,7 @@ data class FtpServerConfig(
     val passivePortStart: Int = 50000,
     val passivePortEnd: Int = 50050,
     val rootDirectory: File,
+    val virtualMounts: Map<String, File> = emptyMap(),
     val username: String = "openfile",
     val password: String = "",
     val allowAnonymous: Boolean = false,
@@ -60,6 +61,7 @@ data class FtpServerRuntimeState(
     val port: Int = 2121,
     val passivePortRange: String = "50000-50050",
     val rootPath: String = "",
+    val mountedVolumesSummary: String = "",
     val activeClientsCount: Int = 0,
     val bytesTransferred: Long = 0L,
     val allowWrite: Boolean = true,
@@ -73,10 +75,25 @@ data class FtpServerRuntimeState(
 }
 
 /**
+ * Resolved target for an FTP path request:
+ * - [VirtualRoot]: represents `/` when [FtpServerConfig.virtualMounts] is active (File Manager + style `/device` & `/sdcard` root).
+ * - [PhysicalTarget]: a validated [file] inside a specific volume root, along with its canonical [virtualPath].
+ */
+sealed class ResolvedFtpTarget {
+    data object VirtualRoot : ResolvedFtpTarget()
+    data class PhysicalTarget(
+        val file: File,
+        val virtualPath: String
+    ) : ResolvedFtpTarget()
+}
+
+/**
  * RFC-959 / RFC-2428 (PASV & EPSV) / RFC-3659 (SIZE, MDTM, REST) local LAN FTP server engine.
  * - Binds strictly to the resolved local Wi-Fi / LAN interface IPv4 address.
  * - Allocates passive data sockets inside the configured [passivePortStart..passivePortEnd] range.
- * - Enforces canonical path confinement so clients cannot escape [FtpServerConfig.rootDirectory].
+ * - Supports File Manager + style multi-storage virtual mounts (`/device` for Internal Storage, `/sdcard` for SD Card)
+ *   as well as single-directory root confinement.
+ * - Enforces canonical path confinement so clients cannot escape mounted storage roots.
  * - Tracks live client sessions, byte counters, and idle auto-shutdown.
  */
 object FtpServerEngine {
@@ -118,10 +135,9 @@ object FtpServerEngine {
     }
 
     /**
-     * Validates that a client-requested FTP path stays strictly inside [rootDir].
+     * Normalizes a virtual FTP path (combining [currentWorkingDir] and [argumentPath]) into clean segments.
      */
-    fun resolveSafeFtpFile(rootDir: File, currentWorkingDir: String, argumentPath: String): File {
-        val canonicalRoot = rootDir.canonicalFile
+    fun normalizeVirtualPathSegments(currentWorkingDir: String, argumentPath: String): List<String> {
         val combinedVirtualPath = if (argumentPath.startsWith("/")) {
             argumentPath
         } else {
@@ -135,6 +151,15 @@ object FtpServerEngine {
                 else -> normalizedSegments.add(segment)
             }
         }
+        return normalizedSegments
+    }
+
+    /**
+     * Validates that a client-requested FTP path stays strictly inside [rootDir].
+     */
+    fun resolveSafeFtpFile(rootDir: File, currentWorkingDir: String, argumentPath: String): File {
+        val canonicalRoot = rootDir.canonicalFile
+        val normalizedSegments = normalizeVirtualPathSegments(currentWorkingDir, argumentPath)
         val relativePath = normalizedSegments.joinToString(File.separator)
         val candidate = if (relativePath.isEmpty()) {
             canonicalRoot
@@ -148,10 +173,48 @@ object FtpServerEngine {
         return candidate
     }
 
+    /**
+     * Resolves an FTP path against either [FtpServerConfig.virtualMounts] (when non-empty, exposing `/device`, `/sdcard`, etc.)
+     * or the single [FtpServerConfig.rootDirectory].
+     */
+    fun resolveTargetForConfig(
+        config: FtpServerConfig,
+        currentWorkingDir: String,
+        argumentPath: String
+    ): ResolvedFtpTarget {
+        if (config.virtualMounts.isEmpty()) {
+            val file = resolveSafeFtpFile(config.rootDirectory, currentWorkingDir, argumentPath)
+            val vPath = toVirtualPath(config.rootDirectory, file)
+            return ResolvedFtpTarget.PhysicalTarget(file, vPath)
+        }
+
+        val segments = normalizeVirtualPathSegments(currentWorkingDir, argumentPath)
+        if (segments.isEmpty()) {
+            return ResolvedFtpTarget.VirtualRoot
+        }
+
+        val mountSegment = segments.first()
+        val mountEntry = config.virtualMounts.entries.firstOrNull {
+            it.key.equals(mountSegment, ignoreCase = true)
+        } ?: throw SecurityException("Unknown FTP virtual storage mount: /$mountSegment")
+
+        val mountName = mountEntry.key
+        val mountRootDir = mountEntry.value
+        val subPath = segments.drop(1).joinToString("/")
+        val resolvedFile = resolveSafeFtpFile(mountRootDir, "/", subPath)
+        val subVirtual = toVirtualPath(mountRootDir, resolvedFile)
+        val fullVirtualPath = if (subVirtual == "/") {
+            "/$mountName"
+        } else {
+            "/$mountName$subVirtual"
+        }
+        return ResolvedFtpTarget.PhysicalTarget(resolvedFile, fullVirtualPath)
+    }
+
     fun startServer(config: FtpServerConfig, onIdleTimeoutStop: () -> Unit = {}): Result<Unit> {
         stopServer()
         return runCatching {
-            if (!config.rootDirectory.exists()) {
+            if (config.virtualMounts.isEmpty() && !config.rootDirectory.exists()) {
                 config.rootDirectory.mkdirs()
             }
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -161,12 +224,21 @@ object FtpServerEngine {
             val listener = ServerSocket(config.port, 50, bindInet)
             serverSocket = listener
 
+            val mountsSummary = if (config.virtualMounts.isNotEmpty()) {
+                config.virtualMounts.entries.joinToString(" • ") { (name, dir) ->
+                    "/$name → ${dir.absolutePath}"
+                }
+            } else {
+                "/ → ${config.rootDirectory.absolutePath}"
+            }
+
             _state.value = FtpServerRuntimeState(
                 isRunning = true,
                 boundIpAddress = config.bindAddress,
                 port = config.port,
                 passivePortRange = "${config.passivePortStart}-${config.passivePortEnd}",
-                rootPath = config.rootDirectory.absolutePath,
+                rootPath = if (config.virtualMounts.isNotEmpty()) "ALL" else config.rootDirectory.absolutePath,
+                mountedVolumesSummary = mountsSummary,
                 activeClientsCount = 0,
                 bytesTransferred = 0L,
                 allowWrite = config.allowWrite,
@@ -176,7 +248,7 @@ object FtpServerEngine {
                 logs = listOf(
                     FtpLogEntry(
                         clientAddress = config.bindAddress,
-                        message = "FTP Server started on ${config.bindAddress}:${config.port} (PASV ${config.passivePortStart}-${config.passivePortEnd})"
+                        message = "FTP Server started on ${config.bindAddress}:${config.port} ($mountsSummary)"
                     )
                 )
             )
@@ -314,25 +386,43 @@ object FtpServerEngine {
                         when (cmd) {
                             "PWD", "XPWD" -> reply(257, "\"$currentVirtualDir\" is current directory")
                             "CWD", "XCWD" -> {
-                                val target = runCatching {
-                                    resolveSafeFtpFile(config.rootDirectory, currentVirtualDir, arg)
+                                val resolved = runCatching {
+                                    resolveTargetForConfig(config, currentVirtualDir, arg.ifBlank { "/" })
                                 }.getOrNull()
-                                if (target != null && target.exists() && target.isDirectory) {
-                                    currentVirtualDir = toVirtualPath(config.rootDirectory, target)
-                                    reply(250, "Directory changed to $currentVirtualDir")
-                                } else {
-                                    reply(550, "Failed to change directory")
+                                when (resolved) {
+                                    is ResolvedFtpTarget.VirtualRoot -> {
+                                        currentVirtualDir = "/"
+                                        reply(250, "Directory changed to /")
+                                    }
+                                    is ResolvedFtpTarget.PhysicalTarget -> {
+                                        if (resolved.file.exists() && resolved.file.isDirectory) {
+                                            currentVirtualDir = resolved.virtualPath
+                                            reply(250, "Directory changed to $currentVirtualDir")
+                                        } else {
+                                            reply(550, "Failed to change directory")
+                                        }
+                                    }
+                                    null -> reply(550, "Failed to change directory")
                                 }
                             }
                             "CDUP", "XCUP" -> {
-                                val target = runCatching {
-                                    resolveSafeFtpFile(config.rootDirectory, currentVirtualDir, "..")
+                                val resolved = runCatching {
+                                    resolveTargetForConfig(config, currentVirtualDir, "..")
                                 }.getOrNull()
-                                if (target != null && target.exists()) {
-                                    currentVirtualDir = toVirtualPath(config.rootDirectory, target)
-                                    reply(250, "Directory changed to $currentVirtualDir")
-                                } else {
-                                    reply(550, "Failed to change directory")
+                                when (resolved) {
+                                    is ResolvedFtpTarget.VirtualRoot -> {
+                                        currentVirtualDir = "/"
+                                        reply(250, "Directory changed to /")
+                                    }
+                                    is ResolvedFtpTarget.PhysicalTarget -> {
+                                        if (resolved.file.exists()) {
+                                            currentVirtualDir = resolved.virtualPath
+                                            reply(250, "Directory changed to $currentVirtualDir")
+                                        } else {
+                                            reply(550, "Failed to change directory")
+                                        }
+                                    }
+                                    null -> reply(550, "Failed to change directory")
                                 }
                             }
                             "PASV" -> {
@@ -357,45 +447,82 @@ object FtpServerEngine {
                                     reply(425, "Use PASV or EPSV first")
                                     continue
                                 }
-                                val listTargetPath = if (arg.isBlank() || arg.startsWith("-")) "." else arg
-                                val dir = runCatching {
-                                    resolveSafeFtpFile(config.rootDirectory, currentVirtualDir, listTargetPath)
+                                // Strip option flags like -a, -l, -la while preserving directory path arguments
+                                val cleanArg = arg.split(' ')
+                                    .filter { !it.startsWith("-") }
+                                    .joinToString(" ")
+                                    .trim()
+                                val listTargetPath = cleanArg.ifBlank { "." }
+                                val resolved = runCatching {
+                                    resolveTargetForConfig(config, currentVirtualDir, listTargetPath)
                                 }.getOrNull()
-                                if (dir == null || !dir.exists()) {
-                                    reply(550, "Directory not found")
-                                    continue
-                                }
-                                reply(150, "Opening data connection for directory listing")
-                                pasv.soTimeout = 15_000
-                                pasv.accept().use { dataSocket ->
-                                    val dataWriter = PrintWriter(OutputStreamWriter(dataSocket.getOutputStream(), Charsets.UTF_8), false)
-                                    val children = if (dir.isDirectory) dir.listFiles().orEmpty() else arrayOf(dir)
-                                    val dateFmt = SimpleDateFormat("MMM dd HH:mm", Locale.US)
-                                    for (child in children) {
-                                        if (cmd == "NLST") {
-                                            dataWriter.print("${child.name}\r\n")
-                                        } else {
-                                            val perms = buildString {
-                                                append(if (child.isDirectory) 'd' else '-')
-                                                append(if (child.canRead()) "r-x" else "---")
-                                                append(if (child.canWrite() && config.allowWrite) "rwx" else "r-x")
-                                                append("r-x")
+
+                                when (resolved) {
+                                    is ResolvedFtpTarget.VirtualRoot -> {
+                                        reply(150, "Opening data connection for directory listing")
+                                        pasv.soTimeout = 15_000
+                                        pasv.accept().use { dataSocket ->
+                                            val dataWriter = PrintWriter(OutputStreamWriter(dataSocket.getOutputStream(), Charsets.UTF_8), false)
+                                            val dateFmt = SimpleDateFormat("MMM dd HH:mm", Locale.US)
+                                            for ((mountName, mountDir) in config.virtualMounts) {
+                                                if (cmd == "NLST") {
+                                                    dataWriter.print("$mountName\r\n")
+                                                } else {
+                                                    val perms = if (config.allowWrite && mountDir.canWrite()) "drwxrwxr-x" else "drwxr-xr-x"
+                                                    val lastMod = mountDir.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
+                                                    val dateStr = dateFmt.format(Date(lastMod))
+                                                    dataWriter.print("$perms 1 openfile openfile 4096 $dateStr $mountName\r\n")
+                                                }
                                             }
-                                            val dateStr = dateFmt.format(Date(child.lastModified()))
-                                            val size = if (child.isDirectory) 4096L else child.length()
-                                            dataWriter.print("$perms 1 openfile openfile $size $dateStr ${child.name}\r\n")
+                                            dataWriter.flush()
                                         }
+                                        runCatching { pasv.close() }
+                                        passiveServer = null
+                                        reply(226, "Transfer complete")
                                     }
-                                    dataWriter.flush()
+                                    is ResolvedFtpTarget.PhysicalTarget -> {
+                                        val dir = resolved.file
+                                        if (!dir.exists()) {
+                                            reply(550, "Directory not found")
+                                            continue
+                                        }
+                                        reply(150, "Opening data connection for directory listing")
+                                        pasv.soTimeout = 15_000
+                                        pasv.accept().use { dataSocket ->
+                                            val dataWriter = PrintWriter(OutputStreamWriter(dataSocket.getOutputStream(), Charsets.UTF_8), false)
+                                            val children = if (dir.isDirectory) dir.listFiles().orEmpty() else arrayOf(dir)
+                                            val dateFmt = SimpleDateFormat("MMM dd HH:mm", Locale.US)
+                                            for (child in children) {
+                                                if (cmd == "NLST") {
+                                                    dataWriter.print("${child.name}\r\n")
+                                                } else {
+                                                    val perms = buildString {
+                                                        append(if (child.isDirectory) 'd' else '-')
+                                                        append(if (child.canRead()) "r-x" else "---")
+                                                        append(if (child.canWrite() && config.allowWrite) "rwx" else "r-x")
+                                                        append("r-x")
+                                                    }
+                                                    val lastMod = child.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
+                                                    val dateStr = dateFmt.format(Date(lastMod))
+                                                    val size = if (child.isDirectory) 4096L else child.length()
+                                                    dataWriter.print("$perms 1 openfile openfile $size $dateStr ${child.name}\r\n")
+                                                }
+                                            }
+                                            dataWriter.flush()
+                                        }
+                                        runCatching { pasv.close() }
+                                        passiveServer = null
+                                        reply(226, "Transfer complete")
+                                    }
+                                    null -> {
+                                        reply(550, "Directory not found")
+                                    }
                                 }
-                                runCatching { pasv.close() }
-                                passiveServer = null
-                                reply(226, "Transfer complete")
                             }
                             "SIZE" -> {
-                                val target = runCatching {
-                                    resolveSafeFtpFile(config.rootDirectory, currentVirtualDir, arg)
-                                }.getOrNull()
+                                val target = (runCatching {
+                                    resolveTargetForConfig(config, currentVirtualDir, arg)
+                                }.getOrNull() as? ResolvedFtpTarget.PhysicalTarget)?.file
                                 if (target != null && target.exists() && target.isFile) {
                                     reply(213, target.length().toString())
                                 } else {
@@ -403,14 +530,15 @@ object FtpServerEngine {
                                 }
                             }
                             "MDTM" -> {
-                                val target = runCatching {
-                                    resolveSafeFtpFile(config.rootDirectory, currentVirtualDir, arg)
-                                }.getOrNull()
+                                val target = (runCatching {
+                                    resolveTargetForConfig(config, currentVirtualDir, arg)
+                                }.getOrNull() as? ResolvedFtpTarget.PhysicalTarget)?.file
                                 if (target != null && target.exists()) {
                                     val fmt = SimpleDateFormat("yyyyMMddHHmmss", Locale.US).apply {
                                         timeZone = TimeZone.getTimeZone("UTC")
                                     }
-                                    reply(213, fmt.format(Date(target.lastModified())))
+                                    val lastMod = target.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
+                                    reply(213, fmt.format(Date(lastMod)))
                                 } else {
                                     reply(550, "File not found")
                                 }
@@ -425,9 +553,9 @@ object FtpServerEngine {
                                     reply(425, "Use PASV or EPSV first")
                                     continue
                                 }
-                                val target = runCatching {
-                                    resolveSafeFtpFile(config.rootDirectory, currentVirtualDir, arg)
-                                }.getOrNull()
+                                val target = (runCatching {
+                                    resolveTargetForConfig(config, currentVirtualDir, arg)
+                                }.getOrNull() as? ResolvedFtpTarget.PhysicalTarget)?.file
                                 if (target == null || !target.exists() || !target.isFile) {
                                     reply(550, "File not found")
                                     continue
@@ -467,11 +595,11 @@ object FtpServerEngine {
                                     reply(425, "Use PASV or EPSV first")
                                     continue
                                 }
-                                val target = runCatching {
-                                    resolveSafeFtpFile(config.rootDirectory, currentVirtualDir, arg)
-                                }.getOrNull()
+                                val target = (runCatching {
+                                    resolveTargetForConfig(config, currentVirtualDir, arg)
+                                }.getOrNull() as? ResolvedFtpTarget.PhysicalTarget)?.file
                                 if (target == null) {
-                                    reply(550, "Invalid destination path")
+                                    reply(550, "Select a storage folder (/device or /sdcard) before uploading")
                                     continue
                                 }
                                 target.parentFile?.mkdirs()
@@ -503,12 +631,13 @@ object FtpServerEngine {
                                     reply(550, "Read-only mode")
                                     continue
                                 }
-                                val dir = runCatching {
-                                    resolveSafeFtpFile(config.rootDirectory, currentVirtualDir, arg)
-                                }.getOrNull()
+                                val resolved = runCatching {
+                                    resolveTargetForConfig(config, currentVirtualDir, arg)
+                                }.getOrNull() as? ResolvedFtpTarget.PhysicalTarget
+                                val dir = resolved?.file
                                 if (dir != null && dir.mkdirs()) {
                                     appendLog(clientAddr, "Created directory ${dir.name}")
-                                    reply(257, "\"${toVirtualPath(config.rootDirectory, dir)}\" created")
+                                    reply(257, "\"${resolved.virtualPath}\" created")
                                 } else {
                                     reply(550, "Create directory operation failed")
                                 }
@@ -518,9 +647,9 @@ object FtpServerEngine {
                                     reply(550, "Read-only mode")
                                     continue
                                 }
-                                val target = runCatching {
-                                    resolveSafeFtpFile(config.rootDirectory, currentVirtualDir, arg)
-                                }.getOrNull()
+                                val target = (runCatching {
+                                    resolveTargetForConfig(config, currentVirtualDir, arg)
+                                }.getOrNull() as? ResolvedFtpTarget.PhysicalTarget)?.file
                                 if (target != null && target.isFile && target.delete()) {
                                     appendLog(clientAddr, "Deleted file ${target.name}")
                                     reply(250, "Delete operation successful")
@@ -533,9 +662,9 @@ object FtpServerEngine {
                                     reply(550, "Read-only mode")
                                     continue
                                 }
-                                val target = runCatching {
-                                    resolveSafeFtpFile(config.rootDirectory, currentVirtualDir, arg)
-                                }.getOrNull()
+                                val target = (runCatching {
+                                    resolveTargetForConfig(config, currentVirtualDir, arg)
+                                }.getOrNull() as? ResolvedFtpTarget.PhysicalTarget)?.file
                                 if (target != null && target.isDirectory && target.delete()) {
                                     appendLog(clientAddr, "Removed directory ${target.name}")
                                     reply(250, "Remove directory operation successful")
@@ -548,9 +677,9 @@ object FtpServerEngine {
                                     reply(550, "Read-only mode")
                                     continue
                                 }
-                                val target = runCatching {
-                                    resolveSafeFtpFile(config.rootDirectory, currentVirtualDir, arg)
-                                }.getOrNull()
+                                val target = (runCatching {
+                                    resolveTargetForConfig(config, currentVirtualDir, arg)
+                                }.getOrNull() as? ResolvedFtpTarget.PhysicalTarget)?.file
                                 if (target != null && target.exists()) {
                                     renameFromFile = target
                                     reply(350, "Ready for RNTO")
@@ -561,9 +690,9 @@ object FtpServerEngine {
                             "RNTO" -> {
                                 val src = renameFromFile
                                 renameFromFile = null
-                                val dst = runCatching {
-                                    resolveSafeFtpFile(config.rootDirectory, currentVirtualDir, arg)
-                                }.getOrNull()
+                                val dst = (runCatching {
+                                    resolveTargetForConfig(config, currentVirtualDir, arg)
+                                }.getOrNull() as? ResolvedFtpTarget.PhysicalTarget)?.file
                                 if (src != null && dst != null && src.renameTo(dst)) {
                                     appendLog(clientAddr, "Renamed ${src.name} -> ${dst.name}")
                                     reply(250, "Rename successful")

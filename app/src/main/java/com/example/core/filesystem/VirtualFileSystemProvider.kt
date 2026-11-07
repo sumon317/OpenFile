@@ -61,12 +61,14 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
     private val appLabelCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     fun hasAllFilesAccess(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Environment.isExternalStorageManager()
-        } else {
-            val ext = Environment.getExternalStorageDirectory()
-            ext != null && ext.exists() && ext.canRead()
-        }
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Environment.isExternalStorageManager()
+            } else {
+                val ext = Environment.getExternalStorageDirectory()
+                ext != null && ext.exists() && ext.canRead()
+            }
+        }.getOrDefault(true)
     }
 
     fun invalidateRootCache() {
@@ -88,7 +90,7 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
                     File(externalRoot, "Android").exists() ||
                     File(externalRoot, "DCIM").exists() ||
                     !externalRoot.list().isNullOrEmpty()
-                if (hasStandardFolder || hasAllFilesAccess()) {
+                if (hasStandardFolder) {
                     cachedPrimaryRoot = externalRoot
                     return externalRoot
                 }
@@ -520,6 +522,169 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
         total
     }
 
+    /**
+     * Discovers all physical removable storage root directories (microSD cards, USB OTG drives)
+     * across Android API levels and OEM ROMs using:
+     * 1. [StorageManager.getStorageVolumes] (`directory`, `uuid` -> `/storage/<uuid>`, reflection `getPath`)
+     * 2. [Context.getExternalFilesDirs], `obbDirs`, and `externalMediaDirs`
+     * 3. Persisted SAF URI permissions (`tree/<UUID>:`) mapped to `/storage/<UUID>`
+     * 4. `/proc/mounts` and `/storage` directory scan for mounted volumes (e.g. `XXXX-XXXX`)
+     */
+    fun discoverRemovableStorageDirectories(): List<Pair<String, File>> {
+        val primaryRoot = getPrimaryRootDirectory()
+        val primaryExtPath = runCatching { Environment.getExternalStorageDirectory()?.absolutePath }.getOrNull().orEmpty()
+        val addedPaths = mutableSetOf(
+            primaryRoot.absolutePath,
+            runCatching { primaryRoot.canonicalPath }.getOrDefault(primaryRoot.absolutePath),
+            primaryExtPath,
+            "/storage/emulated/0",
+            "/storage/emulated",
+            "/storage/self"
+        )
+        val discovered = mutableListOf<Pair<String, File>>()
+
+        fun tryAddVolume(label: String, candidate: File?) {
+            val dir = candidate ?: return
+            val absPath = dir.absolutePath.trimEnd('/')
+            if (absPath.isEmpty() || absPath == "/storage" || absPath.startsWith("/storage/emulated") ||
+                absPath.startsWith("/storage/self") || absPath.startsWith("/data")
+            ) {
+                return
+            }
+            val existsOrMounted = runCatching { dir.exists() || dir.isDirectory || dir.list() != null }.getOrDefault(false)
+            if (!existsOrMounted) return
+            val canonical = runCatching { dir.canonicalPath }.getOrDefault(absPath)
+            if (addedPaths.add(absPath) && (canonical == absPath || addedPaths.add(canonical))) {
+                discovered.add(label to dir)
+            }
+        }
+
+        val extFilesDirs = runCatching { context.getExternalFilesDirs(null).filterNotNull() }.getOrDefault(emptyList())
+        extFilesDirs.firstOrNull()?.absolutePath?.substringBefore("/Android")?.takeIf { it.isNotBlank() }?.let {
+            addedPaths.add(it.trimEnd('/'))
+        }
+        val storageManager = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
+        val smVolumes = runCatching { storageManager?.storageVolumes }.getOrNull().orEmpty()
+
+        for (sv in smVolumes) {
+            if (sv.isPrimary) continue
+            val state = runCatching { sv.state }.getOrNull()
+            if (state != null && state != Environment.MEDIA_MOUNTED && state != Environment.MEDIA_MOUNTED_READ_ONLY) {
+                continue
+            }
+            val desc = runCatching { sv.getDescription(context) }.getOrNull()?.takeIf { it.isNotBlank() } ?: "SD Card"
+            val dirApi30 = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                runCatching { sv.directory }.getOrNull()
+            } else null
+            val reflectedPath = runCatching {
+                sv.javaClass.getMethod("getPath").invoke(sv) as? String
+            }.getOrNull()?.takeIf { it.isNotBlank() }?.let { File(it) }
+            val uuidDir = sv.uuid?.takeIf { it.isNotBlank() }?.let { File("/storage/$it") }
+            val fromExtFiles = extFilesDirs.drop(1).firstOrNull { f ->
+                val path = f.absolutePath
+                val uuid = sv.uuid
+                if (uuid != null) path.contains(uuid, ignoreCase = true)
+                else (!path.startsWith("/storage/emulated") && !path.startsWith("/data"))
+            }?.let { File(it.absolutePath.substringBefore("/Android")) }
+
+            val resolved = dirApi30 ?: reflectedPath ?: fromExtFiles ?: uuidDir
+            tryAddVolume(desc, resolved)
+        }
+
+        // Check secondary entries (drop(1)) of getExternalFilesDirs and obbDirs for any remaining removable volumes
+        val allSecondaryAppExtDirs = buildList {
+            addAll(extFilesDirs.drop(1))
+            addAll(runCatching { context.obbDirs.filterNotNull().drop(1) }.getOrDefault(emptyList()))
+        }
+        allSecondaryAppExtDirs.forEach { extDir ->
+            val rootPath = extDir.absolutePath.substringBefore("/Android")
+            if (rootPath.isNotBlank() && rootPath != extDir.absolutePath) {
+                tryAddVolume("SD Card", File(rootPath))
+            }
+        }
+
+        // Check persisted SAF URI permissions for volume UUIDs (e.g. content://com.android.externalstorage.documents/tree/1234-5678%3A)
+        runCatching {
+            val uuidRegex = Regex("tree/([0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}):")
+            for (perm in context.contentResolver.persistedUriPermissions) {
+                val decoded = Uri.decode(perm.uri.toString())
+                val match = uuidRegex.find(decoded)
+                if (match != null) {
+                    val uuid = match.groupValues[1]
+                    tryAddVolume("SD Card ($uuid)", File("/storage/$uuid"))
+                }
+            }
+        }
+
+        // Check /proc/mounts for mounted /storage/<volume> entries (works even when /storage itself is 0711 non-listable)
+        runCatching {
+            val mountsFile = File("/proc/mounts")
+            if (mountsFile.canRead()) {
+                mountsFile.forEachLine { line ->
+                    val parts = line.split(' ')
+                    if (parts.size >= 2) {
+                        val mountPoint = parts[1]
+                        if (mountPoint.startsWith("/storage/") && mountPoint.count { it == '/' } == 2) {
+                            val volName = mountPoint.substringAfterLast('/')
+                            if (volName !in IgnoredStorageDirNames) {
+                                tryAddVolume("SD Card ($volName)", File(mountPoint))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Direct /storage child scan if readable
+        runCatching {
+            File("/storage").listFiles()?.forEach { child ->
+                if (child.name !in IgnoredStorageDirNames && child.isDirectory) {
+                    tryAddVolume("SD Card (${child.name})", child)
+                }
+            }
+        }
+
+        return discovered
+    }
+
+    /**
+     * Builds the File Manager + style FTP root configuration:
+     * - When [configuredRootMode] is `"ALL"`, `""`, or matches legacy default primary storage when an SD card is present,
+     *   exposes a virtual multi-storage root `/` with `/device` (Internal Storage) and `/sdcard` (SD Card, plus `/sdcard2` if multiple).
+     * - When [configuredRootMode] is `"INTERNAL"`, exposes Internal Storage directly at `/`.
+     * - When [configuredRootMode] points to a specific directory (e.g. SD card root path), exposes that directory at `/`.
+     */
+    fun resolveFtpServerRootAndMounts(configuredRootMode: String): Pair<File, Map<String, File>> {
+        val primaryRoot = getPrimaryRootDirectory()
+        val removableList = discoverRemovableStorageDirectories()
+        val normalizedMode = configuredRootMode.trim()
+
+        // Explicit single-volume Internal Storage mode
+        if (normalizedMode.equals("INTERNAL", ignoreCase = true)) {
+            return primaryRoot to emptyMap()
+        }
+
+        // Explicit single-volume SD Card or custom path mode (when not legacy auto-saved primaryRoot)
+        if (normalizedMode.isNotBlank() &&
+            !normalizedMode.equals("ALL", ignoreCase = true) &&
+            normalizedMode != primaryRoot.absolutePath
+        ) {
+            val customDir = File(normalizedMode)
+            if (customDir.exists() && customDir.isDirectory) {
+                return customDir to emptyMap()
+            }
+        }
+
+        // File Manager + "All Storage" Virtual Root mode (/device + /sdcard)
+        val mounts = LinkedHashMap<String, File>()
+        mounts["device"] = primaryRoot
+        removableList.forEachIndexed { index, (_, file) ->
+            val mountKey = if (index == 0) "sdcard" else "sdcard${index + 1}"
+            mounts[mountKey] = file
+        }
+        return primaryRoot to mounts
+    }
+
     fun getStorageVolumes(safProvider: SafDocumentProvider, persistedGrantUris: List<Pair<String, String>>): List<StorageVolumeInfo> {
         val volumes = mutableListOf<StorageVolumeInfo>()
         val primaryRoot = getPrimaryRootDirectory()
@@ -543,41 +708,16 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
         )
 
         // 2. Discover real physical & removable volumes (SD card, USB OTG)
-        val storageManager = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
         val addedPaths = mutableSetOf(primaryRoot.absolutePath)
-
-        val smVolumes = runCatching { storageManager?.storageVolumes }.getOrNull().orEmpty()
-        for (sv in smVolumes) {
-            if (sv.isPrimary) continue
-            val state = runCatching { sv.state }.getOrNull()
-            if (state != null && state != Environment.MEDIA_MOUNTED && state != Environment.MEDIA_MOUNTED_READ_ONLY) {
-                continue
-            }
-            val dir = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                runCatching { sv.directory }.getOrNull()
-            } else null
-
-            val rootFile = dir ?: run {
-                context.getExternalFilesDirs(null).filterNotNull().firstOrNull { f ->
-                    val path = f.absolutePath
-                    val uuid = sv.uuid
-                    if (uuid != null) path.contains(uuid) else (!path.startsWith("/storage/emulated/0") && !path.startsWith("/data"))
-                }?.let { f ->
-                    val path = f.absolutePath
-                    val rootPath = path.substringBefore("/Android")
-                    File(rootPath)
-                }
-            }
-
-            if (rootFile != null && addedPaths.add(rootFile.absolutePath)) {
+        val removableDirs = discoverRemovableStorageDirectories()
+        for ((desc, rootFile) in removableDirs) {
+            if (addedPaths.add(rootFile.absolutePath)) {
                 val stat = runCatching { StatFs(rootFile.absolutePath) }.getOrNull()
                 val extTotal = stat?.totalBytes ?: 0L
                 val extAvail = stat?.availableBytes ?: 0L
-                val desc = runCatching { sv.getDescription(context) }.getOrNull()?.takeIf { it.isNotBlank() }
-                    ?: "SD Card"
                 volumes.add(
                     StorageVolumeInfo(
-                        id = "storage_vol_${sv.uuid ?: rootFile.name}",
+                        id = "storage_vol_${rootFile.name}",
                         title = desc,
                         subtitle = rootFile.absolutePath,
                         rootReference = toFileReference(rootFile),
@@ -587,32 +727,6 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
                         isRemovable = true
                     )
                 )
-            }
-        }
-
-        // Fallback for older devices if StorageManager returned no secondary volumes
-        if (volumes.size == 1) {
-            val extDirs = context.getExternalFilesDirs(null)
-            extDirs.drop(1).filterNotNull().forEachIndexed { index, extDir ->
-                val rootPath = extDir.absolutePath.substringBefore("/Android")
-                val rootFile = File(rootPath)
-                if (addedPaths.add(rootFile.absolutePath)) {
-                    val stat = runCatching { StatFs(rootFile.absolutePath) }.getOrNull()
-                    val extTotal = stat?.totalBytes ?: 0L
-                    val extAvail = stat?.availableBytes ?: 0L
-                    volumes.add(
-                        StorageVolumeInfo(
-                            id = "external_vol_$index",
-                            title = "External SD Card",
-                            subtitle = rootFile.absolutePath,
-                            rootReference = toFileReference(rootFile),
-                            totalBytes = extTotal,
-                            usedBytes = (extTotal - extAvail).coerceAtLeast(0L),
-                            availableBytes = extAvail,
-                            isRemovable = true
-                        )
-                    )
-                }
             }
         }
 
@@ -651,6 +765,14 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
     companion object {
         private val DefaultDirMetadata = mapOf("permissions" to "drwxr-xr-x")
         private val DefaultFileMetadata = mapOf("permissions" to "-rw-r--r--")
+        private val IgnoredStorageDirNames = setOf(
+            "emulated",
+            "self",
+            "enc_emulated",
+            "knox-emulated",
+            "sdcard0",
+            "container"
+        )
 
         fun sanitizeFileName(raw: String): String {
             val trimmed = raw.trim()
@@ -1118,6 +1240,12 @@ class MediaStoreProvider(
 
     @Volatile
     private var cachedSupplementalRootPath: String = ""
+
+    @Synchronized
+    fun invalidateSupplementalCache() {
+        cachedSupplementalAtMs = 0L
+        cachedSupplementalFiles = emptyList()
+    }
 
     @Synchronized
     private fun getOrScanSupplementalFiles(primaryRoot: File): List<FileReference> {

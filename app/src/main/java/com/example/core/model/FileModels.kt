@@ -14,10 +14,7 @@ enum class ProviderType(val label: String, val isRemote: Boolean) {
     FTP("FTP Server", true),
     FTPS("FTPS (TLS)", true),
     SFTP("SFTP (SSH)", true),
-    SMB("SMB2/3 Share", true),
-    GOOGLE_DRIVE("Google Drive", true),
-    ONEDRIVE("Microsoft OneDrive", true),
-    DROPBOX("Dropbox", true)
+    SMB("SMB2/3 Share", true)
 }
 
 /**
@@ -45,7 +42,7 @@ enum class ProviderCapability {
 
 /**
  * Structured, capability-aware reference to any file or directory across Local, SAF, MediaStore,
- * Archive, Network (FTP/FTPS/SFTP/SMB), or Cloud (Drive/OneDrive/Dropbox) providers.
+ * Archive, or Network (FTP/FTPS/SFTP/SMB) providers.
  */
 data class FileReference(
     val providerType: ProviderType,
@@ -153,21 +150,6 @@ data class FileReference(
             ProviderCapability.CREATE_DIR
         )
 
-        private val CLOUD_FILE_CAPS: Set<ProviderCapability> = setOf(
-            ProviderCapability.STREAM_READ,
-            ProviderCapability.STREAM_WRITE,
-            ProviderCapability.ATOMIC_RENAME,
-            ProviderCapability.INTRA_PROVIDER_MOVE,
-            ProviderCapability.DELETE,
-            ProviderCapability.REMOTE_TRASH,
-            ProviderCapability.CHECKSUM_CALCULATION
-        )
-        private val CLOUD_DIR_CAPS: Set<ProviderCapability> = CLOUD_FILE_CAPS + setOf(
-            ProviderCapability.LIST_CHILDREN,
-            ProviderCapability.CREATE_DIR,
-            ProviderCapability.CREATE_FILE
-        )
-
         fun defaultCapabilitiesFor(
             provider: ProviderType,
             isDirectory: Boolean
@@ -179,8 +161,6 @@ data class FileReference(
                 ProviderType.ARCHIVE_VIRTUAL -> if (isDirectory) ARCHIVE_DIR_CAPS else ARCHIVE_FILE_CAPS
                 ProviderType.FTP, ProviderType.FTPS, ProviderType.SFTP, ProviderType.SMB ->
                     if (isDirectory) NETWORK_DIR_CAPS else NETWORK_FILE_CAPS
-                ProviderType.GOOGLE_DRIVE, ProviderType.ONEDRIVE, ProviderType.DROPBOX ->
-                    if (isDirectory) CLOUD_DIR_CAPS else CLOUD_FILE_CAPS
             }
         }
 

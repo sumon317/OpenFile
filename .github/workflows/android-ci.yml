@@ -70,8 +70,9 @@ jobs:
           export KEY_PASSWORD="${KEY_PASSWORD:-openfile_release_2026}"
           ./gradlew :app:testDebugUnitTest --tests "com.example.ExampleUnitTest" assembleRelease
           mkdir -p dist
-          # Copy ONLY the signed, minified release APK for distribution
-          cp app/build/outputs/apk/release/app-release.apk dist/OpenFile-v1.0.0-release.apk
+          # Copy ONLY the signed, minified release APK for distribution (NEVER distribute debug builds)
+          VERSION_NAME=$(grep 'versionName =' app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')
+          cp app/build/outputs/apk/release/app-release.apk "dist/OpenFile-v${VERSION_NAME}-release.apk"
           ls -lh dist/
 
       - name: Upload Release APK Build Artifact
@@ -80,3 +81,10 @@ jobs:
           name: OpenFile-Release-APK
           path: dist/*.apk
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.apk
+          generate_release_notes: true

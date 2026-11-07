@@ -16,6 +16,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
 import com.example.R
+import com.example.core.filesystem.LocalFileSystemProvider
 import java.io.File
 
 /**
@@ -61,7 +62,7 @@ class FtpServerForegroundService : Service() {
                 val port = intent.getIntExtra(EXTRA_PORT, 2121)
                 val pasvStart = intent.getIntExtra(EXTRA_PASV_START, 50000)
                 val pasvEnd = intent.getIntExtra(EXTRA_PASV_END, 50050)
-                val rootPath = intent.getStringExtra(EXTRA_ROOT_PATH) ?: filesDir.absolutePath
+                val rootPath = intent.getStringExtra(EXTRA_ROOT_PATH) ?: "ALL"
                 val username = intent.getStringExtra(EXTRA_USERNAME) ?: "openfile"
                 val password = intent.getStringExtra(EXTRA_PASSWORD) ?: ""
                 val anonymous = intent.getBooleanExtra(EXTRA_ANONYMOUS, false)
@@ -73,12 +74,16 @@ class FtpServerForegroundService : Service() {
                 val notification = buildNotification(lanIp, port, allowWrite)
                 startForeground(NOTIFICATION_ID, notification)
 
+                val localProvider = LocalFileSystemProvider(applicationContext)
+                val (resolvedRootDir, virtualMounts) = localProvider.resolveFtpServerRootAndMounts(rootPath)
+
                 val config = FtpServerConfig(
                     bindAddress = lanIp,
                     port = port,
                     passivePortStart = pasvStart,
                     passivePortEnd = pasvEnd,
-                    rootDirectory = File(rootPath),
+                    rootDirectory = resolvedRootDir,
+                    virtualMounts = virtualMounts,
                     username = username,
                     password = password,
                     allowAnonymous = anonymous,

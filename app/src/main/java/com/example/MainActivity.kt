@@ -42,7 +42,6 @@ class MainActivity : ComponentActivity() {
                 OpenFileAppShell(viewModel = viewModel)
             }
         }
-        if (savedInstanceState == null) handleOAuthIntent(intent)
     }
 
     private fun configureFastImageLoader() {
@@ -75,19 +74,6 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         viewModel.refreshStorageVolumes()
         viewModel.onResumeCheckPendingUpdateInstall()
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        handleOAuthIntent(intent)
-    }
-
-    private fun handleOAuthIntent(intent: Intent?) {
-        val data = intent?.data ?: return
-        if (intent.action == Intent.ACTION_VIEW && data.scheme == "com.openfile.manager") {
-            viewModel.handleOAuthRedirect(data)
-        }
     }
 
     companion object {

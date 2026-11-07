@@ -53,19 +53,6 @@ data class NetworkProfileEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-@Entity(tableName = "cloud_accounts")
-data class CloudAccountEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val provider: String, // GOOGLE_DRIVE, ONEDRIVE, DROPBOX
-    val accountEmail: String,
-    val displayName: String,
-    val clientId: String,
-    val tokenSecretAlias: String?, // Reference into KeystoreCredentialVault
-    val refreshTokenSecretAlias: String?,
-    val tokenExpiresAt: Long = 0L,
-    val connectedAt: Long = System.currentTimeMillis()
-)
-
 @Entity(tableName = "trash_items")
 data class TrashItemEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -159,22 +146,6 @@ interface OpenFileDao {
 
     @Query("DELETE FROM network_profiles WHERE id = :id")
     suspend fun deleteNetworkProfile(id: Long)
-
-    // Cloud Accounts
-    @Query("SELECT * FROM cloud_accounts ORDER BY connectedAt DESC")
-    fun observeCloudAccounts(): Flow<List<CloudAccountEntity>>
-
-    @Query("SELECT * FROM cloud_accounts ORDER BY connectedAt DESC")
-    suspend fun getAllCloudAccounts(): List<CloudAccountEntity>
-
-    @Query("SELECT * FROM cloud_accounts WHERE id = :id LIMIT 1")
-    suspend fun getCloudAccountById(id: Long): CloudAccountEntity?
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertCloudAccount(account: CloudAccountEntity): Long
-
-    @Query("DELETE FROM cloud_accounts WHERE id = :id")
-    suspend fun deleteCloudAccount(id: Long)
 
     // Trash Items
     @Query("SELECT * FROM trash_items ORDER BY deletedAt DESC")

@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
@@ -65,8 +66,10 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -95,8 +98,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.core.archive.ArchiveCreationFormat
@@ -127,7 +132,6 @@ import com.example.ui.theme.StorageDangerCrimson
 import com.example.ui.theme.StorageWarningOrange
 
 import androidx.compose.runtime.Immutable
-import com.example.core.database.CloudAccountEntity
 
 private val VolumeCardShape = RoundedCornerShape(18.dp)
 private val VolumeIconShape = RoundedCornerShape(14.dp)
@@ -160,18 +164,15 @@ fun HomeScreen(
     onBookmarkClick: (BookmarkEntity) -> Unit,
     onRecentFileClick: (RecentFileEntity) -> Unit,
     categoryCounts: Map<FileCategory, Int> = emptyMap(),
-    cloudAccountsCount: Int = 0,
     remoteProfilesCount: Int = 0,
-    cloudAccounts: List<CloudAccountEntity> = emptyList(),
     hasAllFilesAccess: Boolean = true,
     onRequestAllFilesAccess: () -> Unit = {},
-    onOpenCloudAccount: (CloudAccountEntity) -> Unit = {},
     onOpenAccessFromPc: () -> Unit = { onNavigateDestination(OpenFileDestination.NETWORK) },
     onOpenRemoteConnections: () -> Unit = { onNavigateDestination(OpenFileDestination.NETWORK) },
     appUpdateState: AppUpdateUiState? = null,
     onOpenUpdateDialog: () -> Unit = {}
 ) {
-    val gridTiles = remember(categoryCounts, cloudAccountsCount, remoteProfilesCount, ftpState.isRunning) {
+    val gridTiles = remember(categoryCounts, remoteProfilesCount, ftpState.isRunning) {
         fun countLabel(cat: FileCategory, fallback: String): String {
             val c = categoryCounts[cat]
             return if (c != null) "$c items" else fallback
@@ -250,14 +251,6 @@ fun HomeScreen(
                 onClick = { onNavigateDestination(OpenFileDestination.LARGE_FILES) }
             ),
             HomeTileSpec(
-                label = "Cloud Drives",
-                subtitle = if (cloudAccountsCount > 0) "$cloudAccountsCount connected" else "Drive / OneDrive",
-                icon = Icons.Filled.Cloud,
-                badgeColor = Color(0xFF5C6BC0),
-                testTag = "home_cloud_button",
-                onClick = { onNavigateDestination(OpenFileDestination.CLOUD_STORAGE) }
-            ),
-            HomeTileSpec(
                 label = "Remote",
                 subtitle = if (remoteProfilesCount > 0) "$remoteProfilesCount server(s)" else "SMB / SFTP / FTP",
                 icon = Icons.Filled.Lan,
@@ -272,6 +265,14 @@ fun HomeScreen(
                 badgeColor = Color(0xFF00ACC1),
                 testTag = "home_access_pc_button",
                 onClick = onOpenAccessFromPc
+            ),
+            HomeTileSpec(
+                label = "Storage Analysis",
+                subtitle = "Space & Dups",
+                icon = Icons.Filled.Analytics,
+                badgeColor = Color(0xFF7E57C2),
+                testTag = "shortcut_${OpenFileDestination.STORAGE_ANALYSIS.route}",
+                onClick = { onNavigateDestination(OpenFileDestination.STORAGE_ANALYSIS) }
             )
         ).chunked(3)
     }
@@ -280,8 +281,8 @@ fun HomeScreen(
         modifier = Modifier
             .fillMaxSize()
             .testTag("home_screen_list"),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         // Full Storage Access (MANAGE_EXTERNAL_STORAGE) Banner when not yet granted on Android 11+
         if (!hasAllFilesAccess) {
@@ -482,12 +483,26 @@ fun HomeScreen(
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    val configuration = LocalConfiguration.current
+                    val screenWidthDp = configuration.screenWidthDp
+                    val deviceTitle = remember(vol.title, screenWidthDp) {
+                        adaptiveStorageDeviceName(vol, screenWidthDp)
+                    }
+                    val titleStyle = when {
+                        screenWidthDp < 360 -> MaterialTheme.typography.titleSmall
+                        screenWidthDp >= 600 -> MaterialTheme.typography.titleLarge
+                        else -> MaterialTheme.typography.titleMedium
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Box(
                                 modifier = Modifier
                                     .size(44.dp)
@@ -506,11 +521,13 @@ fun HomeScreen(
                                 )
                             }
                             Spacer(modifier = Modifier.width(12.dp))
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = vol.title,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold
+                                    text = deviceTitle,
+                                    style = titleStyle,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
                                     text = vol.subtitle,
@@ -521,6 +538,7 @@ fun HomeScreen(
                                 )
                             }
                         }
+                        Spacer(modifier = Modifier.width(8.dp))
                         Surface(
                             color = barColor.copy(alpha = 0.14f),
                             shape = VolumeBadgeShape
@@ -562,171 +580,40 @@ fun HomeScreen(
             }
         }
 
-        // Connected Cloud Drives mounted directly under Storage Devices (File Manager + style)
-        items(
-            items = cloudAccounts,
-            key = { "home_cloud_${it.id}" },
-            contentType = { "cloud_volume_card" }
-        ) { account ->
-            Card(
-                onClick = { onOpenCloudAccount(account) },
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                ),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
-                shape = VolumeCardShape,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("home_cloud_volume_${account.provider}")
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .background(Color(0xFF5C6BC0).copy(alpha = 0.16f), VolumeIconShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Cloud,
-                                contentDescription = null,
-                                tint = Color(0xFF5C6BC0),
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = account.displayName,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = "${account.accountEmail} • Native In-App Drive",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                    Surface(
-                        color = ApkGreen.copy(alpha = 0.14f),
-                        shape = VolumeBadgeShape
-                    ) {
-                        Text(
-                            text = "Mounted",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = ApkGreen,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-            }
-        }
-
         // Section 2: File Manager + Symmetrical 3-Column Circular-Badge Grid
-        item(key = "home_categories_header") {
-            Text(
-                text = "Categories & Quick Access",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-        }
-
-        items(
-            items = gridTiles,
-            key = { row -> "cat_row_${row.first().label}" },
-            contentType = { "category_row" }
-        ) { rowItems ->
-            Row(
+        item(key = "home_categories_grid", contentType = "categories_grid") {
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                rowItems.forEach { tile ->
-                    CategoryShortcutCard(
-                        label = tile.label,
-                        subtitle = tile.subtitle,
-                        icon = tile.icon,
-                        badgeColor = tile.badgeColor,
-                        onClick = tile.onClick,
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag(tile.testTag)
-                    )
-                }
-            }
-        }
-
-        // Section 3: File Manager + Dedicated Storage Analysis Card
-        item(key = "storage_analysis_card", contentType = "analysis_card") {
-            Card(
-                onClick = { onNavigateDestination(OpenFileDestination.STORAGE_ANALYSIS) },
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                ),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
-                shape = VolumeCardShape,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
+                Text(
+                    text = "Categories & Quick Access",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                gridTiles.forEach { rowItems ->
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f), VolumeIconShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Analytics,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(22.dp)
+                        rowItems.forEach { tile ->
+                            CategoryShortcutCard(
+                                label = tile.label,
+                                subtitle = tile.subtitle,
+                                icon = tile.icon,
+                                badgeColor = tile.badgeColor,
+                                onClick = tile.onClick,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag(tile.testTag)
                             )
                         }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = "Storage Analysis",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = "Clean large files, duplicate files, and space hogs",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    FilledTonalButton(
-                        onClick = { onNavigateDestination(OpenFileDestination.STORAGE_ANALYSIS) }
-                    ) {
-                        Text("Analyze")
                     }
                 }
             }
         }
 
-        // Section 4: Bookmarks
+        // Section 3: Bookmarks
         if (bookmarks.isNotEmpty()) {
             item(key = "pinned_bookmarks_section", contentType = "bookmarks_section") {
                 Row(
@@ -858,7 +745,7 @@ private fun CategoryShortcutCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 14.dp, horizontal = 8.dp),
+                .padding(vertical = 14.dp, horizontal = 4.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -880,15 +767,48 @@ private fun CategoryShortcutCard(
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
             )
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
             )
+        }
+    }
+}
+
+/**
+ * Resolves an adaptive display name for a storage device based on the available screen width.
+ * - Compact screens (<360dp, small phones / split-screen): "Main Storage", "SD Card", "USB Drive"
+ * - Medium screens (360dp - 599dp, standard phones): "Internal Storage", "SD Card (ID)", "USB Drive"
+ * - Expanded screens (>=600dp, tablets / foldables unfolded / desktop): Full descriptive names ("Internal Shared Storage", etc.)
+ */
+fun adaptiveStorageDeviceName(volume: StorageVolumeInfo, screenWidthDp: Int): String {
+    val raw = volume.title
+    return when {
+        screenWidthDp < 360 -> {
+            when {
+                raw.contains("Internal", ignoreCase = true) -> "Main Storage"
+                raw.contains("SD Card", ignoreCase = true) || raw.contains("MicroSD", ignoreCase = true) -> "SD Card"
+                raw.contains("USB", ignoreCase = true) || raw.contains("OTG", ignoreCase = true) -> "USB Drive"
+                else -> raw
+            }
+        }
+        screenWidthDp < 600 -> {
+            when {
+                raw.equals("Internal Shared Storage", ignoreCase = true) -> "Internal Storage"
+                raw.startsWith("Physical SD Card", ignoreCase = true) -> raw.replace("Physical ", "")
+                raw.contains("USB Storage", ignoreCase = true) -> "USB Drive"
+                else -> raw
+            }
+        }
+        else -> {
+            raw
         }
     }
 }
@@ -928,12 +848,8 @@ fun FileBrowserScreen(
     onDownloadRemoteItem: (FileReference) -> Unit,
     onOpenWithExternal: ((FileReference) -> Unit)? = null,
     onQuickPreview: ((FileReference) -> Unit)? = null,
-    cloudAccounts: List<CloudAccountEntity> = emptyList(),
+    onOpenParentFolder: ((FileReference) -> Unit)? = null,
     onOpenLocalRoot: (() -> Unit)? = null,
-    onOpenCloudAccount: ((CloudAccountEntity) -> Unit)? = null,
-    onReauthCloudAccount: ((CloudAccountEntity) -> Unit)? = null,
-    onOpenDriveFilePicker: (() -> Unit)? = null,
-    onOpenCloudSection: ((CloudAccountEntity, String) -> Unit)? = null,
     hasAllFilesAccess: Boolean = true,
     onRequestAllFilesAccess: (() -> Unit)? = null,
     onToggleShowHidden: (() -> Unit)? = null,
@@ -1111,107 +1027,17 @@ fun FileBrowserScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "Category Index: ${browserState.activeCategoryFilter.title}",
+                        text = "Category: ${browserState.activeCategoryFilter.title}",
                         style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary
                     )
+                    val count = filteredItems.size
                     Text(
-                        text = "${filteredItems.size} matching item(s)",
+                        text = "$count ${if (count == 1) "item" else "items"}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                }
-            }
-        }
-
-        // Quick Storage Location Switcher (Internal Storage <-> Google Drive / Cloud) for 1-tap cross-storage Cut & Copy
-        if ((cloudAccounts.isNotEmpty() || browserState.activeCloudAccount != null || clipboard.isNotEmpty) &&
-            onOpenLocalRoot != null && onOpenCloudAccount != null
-        ) {
-            val isCloudActive = browserState.activeCloudAccount != null
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                FilterChip(
-                    selected = !isCloudActive && browserState.activeRemoteProfile == null,
-                    onClick = onOpenLocalRoot,
-                    leadingIcon = {
-                        Icon(Icons.Filled.Storage, contentDescription = null, modifier = Modifier.size(16.dp))
-                    },
-                    label = { Text("Internal Storage") },
-                    modifier = Modifier.testTag("quick_switch_internal_storage")
-                )
-                cloudAccounts.forEach { acc ->
-                    val selected = browserState.activeCloudAccount?.id == acc.id
-                    FilterChip(
-                        selected = selected,
-                        onClick = { onOpenCloudAccount(acc) },
-                        leadingIcon = {
-                            Icon(Icons.Filled.Cloud, contentDescription = null, modifier = Modifier.size(16.dp))
-                        },
-                        label = {
-                            Text(
-                                text = "${acc.displayName} (${acc.accountEmail})",
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        },
-                        modifier = Modifier.testTag("quick_switch_cloud_${acc.provider}")
-                    )
-                }
-                if (onOpenDriveFilePicker != null) {
-                    AssistChip(
-                        onClick = onOpenDriveFilePicker,
-                        leadingIcon = {
-                            Icon(Icons.Filled.Cloud, contentDescription = null, modifier = Modifier.size(16.dp))
-                        },
-                        label = { Text("Drive FilePicker") },
-                        modifier = Modifier.testTag("browser_open_drive_picker_button")
-                    )
-                }
-                if (isCloudActive && onReauthCloudAccount != null) {
-                    Spacer(modifier = Modifier.weight(1f))
-                    TextButton(
-                        onClick = { browserState.activeCloudAccount?.let(onReauthCloudAccount) },
-                        modifier = Modifier.testTag("browser_reauth_cloud_button")
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(15.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Browser Auth", style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-            }
-            if (isCloudActive &&
-                browserState.activeCloudAccount?.provider == "GOOGLE_DRIVE" &&
-                onOpenCloudSection != null
-            ) {
-                val activeAcc = browserState.activeCloudAccount!!
-                val currentFolderId = browserState.currentDirectory?.uriOrPath ?: "root"
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    listOf(
-                        "root" to "My Drive",
-                        "sharedWithMe" to "Shared with me",
-                        "starred" to "Starred",
-                        "recent" to "Recent"
-                    ).forEach { (secId, secTitle) ->
-                        FilterChip(
-                            selected = currentFolderId == secId,
-                            onClick = { onOpenCloudSection(activeAcc, secId) },
-                            label = { Text(secTitle) },
-                            modifier = Modifier.testTag("browser_drive_section_$secId")
-                        )
-                    }
                 }
             }
         }
@@ -1249,8 +1075,9 @@ fun FileBrowserScreen(
                         IconButton(onClick = onClearSelection) {
                             Icon(Icons.Filled.Close, contentDescription = "Clear selection")
                         }
+                        val selectedCount = browserState.selectedUris.size
                         Text(
-                            text = "${browserState.selectedUris.size} selected",
+                            text = "$selectedCount ${if (selectedCount == 1) "item" else "items"} selected",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
@@ -1272,7 +1099,6 @@ fun FileBrowserScreen(
         HorizontalDivider()
 
         if (!hasAllFilesAccess &&
-            browserState.activeCloudAccount == null &&
             browserState.activeRemoteProfile == null &&
             onRequestAllFilesAccess != null
         ) {
@@ -1452,7 +1278,7 @@ fun FileBrowserScreen(
         }
 
         // Main File List or Grid + Optional Two-Pane Tablet Inspector
-        val isWideDualPane = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 700
+        val isWideDualPane = LocalConfiguration.current.screenWidthDp >= 700
         val context = androidx.compose.ui.platform.LocalContext.current
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             val singleSelectedItem = remember(isWideDualPane, browserState.selectedUris, filteredItems) {
@@ -1592,7 +1418,7 @@ fun FileBrowserScreen(
                             }
                         }
                         else -> {
-                            val isRemote = browserState.activeRemoteProfile != null || browserState.activeCloudAccount != null
+                            val isRemote = browserState.activeRemoteProfile != null
                             LazyColumn(modifier = Modifier.fillMaxSize().testTag("browser_list_view")) {
                                 items(
                                     items = filteredItems,
@@ -1623,6 +1449,8 @@ fun FileBrowserScreen(
                                         onDownloadRemote = if (isRemote) ({ onDownloadRemoteItem(item) }) else null,
                                         onOpenWith = if (onOpenWithExternal != null && (browserState.activeRemoteProfile == null)) ({ onOpenWithExternal(item) }) else null,
                                         onQuickPreview = if (onQuickPreview != null) ({ onQuickPreview(item) }) else null,
+                                        onOpenParentFolder = if (browserState.currentDirectory == null && onOpenParentFolder != null) ({ onOpenParentFolder(item) }) else null,
+                                        showParentPath = browserState.currentDirectory == null,
                                         context = context
                                     )
                                 }
@@ -1776,8 +1604,9 @@ fun FileBrowserScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
+                    val clipCount = clipboard.items.size
                     Text(
-                        text = "${clipboard.items.size} item(s) ready to ${if (clipboard.mode == ClipboardMode.CUT) "Move" else "Copy"}",
+                        text = "$clipCount ${if (clipCount == 1) "item" else "items"} ready to ${if (clipboard.mode == ClipboardMode.CUT) "move" else "copy"}",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -1824,8 +1653,18 @@ fun FileBrowserScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val folderSummary = when (dirSummary.first) {
+                    0 -> null
+                    1 -> "1 folder"
+                    else -> "${dirSummary.first} folders"
+                }
+                val fileSummary = when (dirSummary.second) {
+                    1 -> "1 file"
+                    else -> "${dirSummary.second} files"
+                }
+                val totalSummary = listOfNotNull(folderSummary, fileSummary).joinToString(", ") + " • ${formatByteSize(dirSummary.third)}"
                 Text(
-                    text = "${dirSummary.first} folder(s), ${dirSummary.second} file(s) • ${formatByteSize(dirSummary.third)}",
+                    text = totalSummary,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2003,25 +1842,83 @@ fun FileBrowserScreen(
         val targets = deleteConfirmTargets!!
         val isLocalOrSaf = targets.all { it.providerType == ProviderType.LOCAL || it.providerType == ProviderType.SAF }
         var useTrash by remember { mutableStateOf(settings.moveToTrashByDefault && isLocalOrSaf) }
+        val count = targets.size
+        val totalSize = formatByteSize(targets.sumOf { it.sizeBytes })
 
         AlertDialog(
             onDismissRequest = { deleteConfirmTargets = null },
-            title = { Text("Delete ${targets.size} Item(s)?") },
+            icon = {
+                Icon(
+                    imageVector = if (useTrash) Icons.Filled.Delete else Icons.Filled.DeleteForever,
+                    contentDescription = null,
+                    tint = if (useTrash) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(28.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = when {
+                        useTrash && count == 1 -> "Move to Trash?"
+                        useTrash -> "Move $count items to Trash?"
+                        count == 1 -> "Delete \"${targets.first().displayName}\"?"
+                        else -> "Delete $count items permanently?"
+                    },
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        text = if (useTrash) {
-                            "Items will be moved to OpenFile Trash and can be restored later."
-                        } else {
-                            "Items will be permanently deleted and cannot be recovered."
-                        }
+                        text = when {
+                            useTrash && count == 1 -> "\"${targets.first().displayName}\" ($totalSize) will be moved to the Trash. You can restore it anytime."
+                            useTrash -> "$count items ($totalSize) will be moved to the Trash. You can restore them anytime."
+                            count == 1 -> "\"${targets.first().displayName}\" ($totalSize) will be permanently deleted. This action cannot be undone."
+                            else -> "$count items ($totalSize) will be permanently deleted. This action cannot be undone."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (isLocalOrSaf) {
-                        FilterChip(
-                            selected = useTrash,
-                            onClick = { useTrash = !useTrash },
-                            label = { Text("Move to Trash instead of permanent delete") }
-                        )
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (useTrash) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f)
+                            else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f),
+                            border = BorderStroke(
+                                1.dp,
+                                if (useTrash) MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f)
+                                else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { useTrash = !useTrash }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = useTrash,
+                                    onCheckedChange = { useTrash = it }
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = "Move to Trash",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        text = if (useTrash) "Files can be recovered from Trash later" else "Skip Trash and delete permanently",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (useTrash) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             },
@@ -2030,6 +1927,14 @@ fun FileBrowserScreen(
                     onClick = {
                         onDeleteItems(targets, useTrash)
                         deleteConfirmTargets = null
+                    },
+                    colors = if (useTrash) {
+                        ButtonDefaults.buttonColors()
+                    } else {
+                        ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
+                        )
                     },
                     modifier = Modifier.testTag("dialog_confirm_delete")
                 ) {

@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/Android-7.0%2B%20(API%2024--36)-3DDC84?logo=android&logoColor=white)](https://github.com/sumon317/OpenFile)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.2%20%E2%80%A2%20Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org/)
 
-**OpenFile** (`com.openfile.manager`) is a fast, privacy-first, capability-aware file manager for Android built with **Kotlin** and **Jetpack Compose (Material 3)**. It unifies local internal storage, removable SD cards & USB OTG drives, restricted `/Android/obb` & `/Android/data` app directories, multi-format archives, LAN network shares (`FTP`, `FTPS`, `SFTP`, `SMB2/3`), an embedded Wi-Fi FTP Server, and Cloud drives (`Google Drive`, `OneDrive`, `Dropbox`) into a single 60/120fps interface.
+**OpenFile** (`com.openfile.manager`) is a fast, privacy-first, capability-aware file manager for Android built with **Kotlin** and **Jetpack Compose (Material 3)**. It unifies local internal storage, removable SD cards & USB OTG drives, restricted `/Android/obb` & `/Android/data` app directories, multi-format archives, LAN network shares (`FTP`, `FTPS`, `SFTP`, `SMB2/3`), and an embedded Wi-Fi FTP Server into a single 60/120fps interface.
 
 ---
 
@@ -43,16 +43,11 @@ OpenFile includes a built-in **GitHub Releases Auto-Updater** (`AppUpdateEngine`
 - **Access from PC (Wi-Fi FTP / FTPS Server)**: Foreground service FTP server (`FtpServerForegroundService`) with configurable port (`2121`), passive port range, read/write permissions, explicit TLS, and strict canonical root sandboxing.
 - **Remote Network Clients**: Connect to remote **FTP / FTPS** (`Apache Commons Net`), **SFTP** (`JSch` with interactive `SHA-256` SSH host-key verification and pinning), and **SMB2/3** (`SMBJ` for Windows/NAS shares) with built-in LAN host discovery.
 
-### 5. Cloud Storage & Native Google Drive FilePicker
-- **Supported Providers**: **Google Drive**, **Microsoft OneDrive**, and **Dropbox**.
-- **Seamless Authentication**: Supports on-device Google Play Services account authorization (`GoogleDriveOnDeviceAuth`) and OAuth 2.0 PKCE browser flows.
-- **Bidirectional Transfers**: Cut or Copy files directly between Local Storage and Cloud folders, or use the built-in **Google Drive FilePicker** modal.
-
-### 6. Storage Analyzer & Parallel Duplicate Finder
+### 5. Storage Analyzer & Parallel Duplicate Finder
 - **Visual Breakdown**: Inspect storage usage by category and locate large space-hogging files.
 - **Two-Stage Parallel Duplicate Detection**: Groups candidate files by byte size, performs a fast 4 KB head+tail partial hash pass, and verifies exact matches with full `SHA-256` digests across CPU cores.
 
-### 7. High-Frame-Rate (60/120fps) Compose Architecture
+### 6. High-Frame-Rate (60/120fps) Compose Architecture
 - **Zero-Jank Lazy Lists**: Stable item keys, `contentType` reuse, hoisted `CompositionLocal`s, unified draw-phase selection highlights, `ThreadLocal` + ring-buffer date formatting cache, and `RGB_565` hardware-backed `Coil` thumbnails.
 - **Zero-Syscall MediaStore Indexing**: Direct cursor-to-model mapping and single-pass shared supplemental directory caching.
 - **Material 3 Themes**: Instant 0ms switching between `System`, `Light`, `Dark`, and `Pure Black (AMOLED)` themes with optional Android 12+ Dynamic Color.
@@ -103,4 +98,4 @@ OpenFile includes a built-in **GitHub Releases Auto-Updater** (`AppUpdateEngine`
 
 ## 🔒 Privacy & Security
 - **Zero Telemetry**: No analytics, no crash-reporting SDKs, and no advertisement libraries.
-- **Hardware-Backed Secrets**: All FTP, SFTP, SMB, and Cloud OAuth tokens are encrypted using `AES-256-GCM` keys stored in the Android Keystore (`KeystoreCredentialVault`).
+- **Hardware-Backed Secrets**: All FTP, SFTP, and SMB credentials are encrypted using `AES-256-GCM` keys stored in the Android Keystore (`KeystoreCredentialVault`).

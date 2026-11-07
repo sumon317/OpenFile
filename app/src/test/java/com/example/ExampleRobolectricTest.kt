@@ -17,7 +17,11 @@ import com.example.core.filesystem.ClipboardMode
 import com.example.core.filesystem.LocalFileSystemProvider
 import com.example.core.filesystem.SafDocumentProvider
 import com.example.core.filesystem.TransferQueueEngine
+import com.example.core.model.FileReference
+import com.example.core.model.ProviderType
+import com.example.core.model.StorageVolumeInfo
 import com.example.core.network.FtpServerConfig
+import com.example.ui.screens.adaptiveStorageDeviceName
 import com.example.core.network.FtpServerEngine
 import com.example.core.network.RemoteNetworkClients
 import com.example.core.security.KeystoreCredentialVault
@@ -270,6 +274,66 @@ class ExampleRobolectricTest {
     }
 
     @Test
+    fun `embedded FTP server exposes device and sdcard virtual mounts like File Manager Plus`() = runBlocking {
+        val tempDeviceRoot = Files.createTempDirectory("ftp_device_root").toFile()
+        val tempSdCardRoot = Files.createTempDirectory("ftp_sdcard_root").toFile()
+        val freePort = ServerSocket(0).use { it.localPort }
+        try {
+            File(tempDeviceRoot, "internal_note.txt").writeText("From Internal Storage")
+            File(tempSdCardRoot, "sdcard_photo.jpg").writeText("From Removable SD Card")
+
+            val startRes = FtpServerEngine.startServer(
+                FtpServerConfig(
+                    bindAddress = "127.0.0.1",
+                    port = freePort,
+                    passivePortStart = 51025,
+                    passivePortEnd = 51045,
+                    rootDirectory = tempDeviceRoot,
+                    virtualMounts = linkedMapOf(
+                        "device" to tempDeviceRoot,
+                        "sdcard" to tempSdCardRoot
+                    ),
+                    username = "openfile",
+                    password = "secret99",
+                    allowAnonymous = false,
+                    allowWrite = true
+                )
+            )
+            assertTrue(startRes.isSuccess)
+
+            val profile = NetworkProfileEntity(
+                displayName = "Multi-Storage FTP",
+                protocol = "FTP",
+                host = "127.0.0.1",
+                port = freePort,
+                username = "openfile",
+                secretAlias = null,
+                remoteInitialPath = "/",
+                usePassiveMode = true
+            )
+
+            // 1. Listing "/" reveals both "device" and "sdcard" virtual folders
+            val rootListing = RemoteNetworkClients.listRemoteDirectory(profile, "secret99", "/").getOrThrow()
+            val rootNames = rootListing.map { it.displayName }.toSet()
+            assertTrue("Expected 'device' and 'sdcard' at FTP root /, got $rootNames", "device" in rootNames && "sdcard" in rootNames)
+
+            // 2. Listing "/sdcard" reveals files on the SD card
+            val sdCardListing = RemoteNetworkClients.listRemoteDirectory(profile, "secret99", "/sdcard").getOrThrow()
+            assertTrue(sdCardListing.any { it.displayName == "sdcard_photo.jpg" })
+
+            // 3. Downloading from "/sdcard/sdcard_photo.jpg" retrieves the SD card file
+            val sdItem = sdCardListing.first { it.displayName == "sdcard_photo.jpg" }
+            val downloadedSdFile = File(tempDeviceRoot, "fetched_from_sd.jpg")
+            RemoteNetworkClients.downloadRemoteFile(profile, "secret99", sdItem, downloadedSdFile).getOrThrow()
+            assertEquals("From Removable SD Card", downloadedSdFile.readText())
+        } finally {
+            FtpServerEngine.stopServer()
+            tempDeviceRoot.deleteRecursively()
+            tempSdCardRoot.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `UI CUJ navigates through all 17 destinations and verifies screens and options`() {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithText("Storage Devices").assertIsDisplayed()
@@ -365,21 +429,14 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("network_tab_ftp_server").performClick()
         composeTestRule.waitForIdle()
 
-        // 9. CLOUD_STORAGE
-        composeTestRule.runOnUiThread {
-            viewModel.navigateToDestination(OpenFileDestination.CLOUD_STORAGE)
-        }
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("cloud_storage_screen").assertIsDisplayed()
-
-        // 10. SETTINGS
+        // 9. SETTINGS
         composeTestRule.runOnUiThread {
             viewModel.navigateToDestination(OpenFileDestination.SETTINGS)
         }
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("settings_screen").assertIsDisplayed()
 
-        // 11. Return HOME via Drawer
+        // 10. Return HOME via Drawer
         composeTestRule.onNodeWithTag("top_bar_drawer_button").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("nav_home").performScrollTo().performClick()
@@ -552,7 +609,7 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         val viewModel = composeTestRule.activity.viewModel
 
-        // 1. Verify File Manager + 12-tile grid tags and Storage Analysis card on Home screen
+        // 1. Verify File Manager + 12-tile grid tags on Home screen
         val expectedTiles = listOf(
             "shortcut_downloads",
             "shortcut_images",
@@ -563,9 +620,9 @@ class ExampleRobolectricTest {
             "shortcut_recent_files",
             "shortcut_archives",
             "shortcut_large_files",
-            "home_cloud_button",
             "home_network_button",
-            "home_access_pc_button"
+            "home_access_pc_button",
+            "shortcut_storage_analysis"
         )
         for (tag in expectedTiles) {
             composeTestRule.onNodeWithTag(tag).assertExists()
@@ -623,291 +680,155 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("bottom_clipboard_bar").assertIsDisplayed()
         composeTestRule.onNodeWithTag("browser_paste_button").assertIsDisplayed()
-
-        // 6. Navigate to Cloud Storage -> tap Connect on Google Drive -> verify browser auth URL is launched AND Drive opens natively in-app
-        composeTestRule.runOnUiThread {
-            viewModel.navigateToDestination(OpenFileDestination.CLOUD_STORAGE)
-        }
-        composeTestRule.waitForIdle()
-
-        composeTestRule.runOnUiThread {
-            viewModel.connectCloudProviderDirect(
-                provider = com.example.core.cloud.CloudProviderKind.GOOGLE_DRIVE,
-                forceBrowserAuth = true
-            )
-        }
-        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
-            org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            viewModel.browserState.value.activeCloudAccount?.provider == "GOOGLE_DRIVE" &&
-                !viewModel.browserState.value.isLoading &&
-                viewModel.browserState.value.items.isNotEmpty()
-        }
-        composeTestRule.waitForIdle()
-
-        val activeUrl = viewModel.activeWebCloudUrl.value
-        assertNotNull("Expected activeWebCloudUrl to be set for Google Drive default browser login", activeUrl)
-        assertTrue(
-            "Google Drive browser login URL should target container6767@gmail.com",
-            activeUrl?.contains("container6767%40gmail.com") == true ||
-                activeUrl?.contains("container6767@gmail.com") == true
-        )
-        // Verify we are inside the native in-app FileBrowserScreen showing Google Drive files
-        assertEquals(OpenFileDestination.INTERNAL_STORAGE, viewModel.currentDestination.value)
-        assertTrue(
-            "Expected Google Drive root items to be loaded natively in app",
-            viewModel.browserState.value.items.any { it.displayName == "Documents" }
-        )
-
-        // Navigate back to CLOUD_STORAGE screen to verify Mounted Cloud Drives list
-        composeTestRule.runOnUiThread {
-            viewModel.navigateToDestination(OpenFileDestination.CLOUD_STORAGE)
-        }
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("cloud_web_portal_view").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("cloud_web_portal_close").performClick()
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithText("Mounted Cloud Drives (Tap to Open Natively)").assertExists()
-        composeTestRule.onNodeWithTag("cloud_account_card_GOOGLE_DRIVE").assertExists()
     }
 
     @Test
-    fun `native Google Drive in-app access supports create edit rename delete and bidirectional Cut and Copy with Local Storage`() = runBlocking {
+    fun `storage analyzer result screen supports sorting searching renaming copying deleting and opening containing folder`() = runBlocking {
         composeTestRule.waitForIdle()
         val viewModel = composeTestRule.activity.viewModel
-
-        // 1. Connect Google Drive and open it natively inside the app
-        composeTestRule.runOnUiThread {
-            viewModel.connectCloudProviderDirect(com.example.core.cloud.CloudProviderKind.GOOGLE_DRIVE)
-        }
-        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
-            org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            viewModel.browserState.value.activeCloudAccount?.provider == "GOOGLE_DRIVE" &&
-                !viewModel.browserState.value.isLoading &&
-                viewModel.browserState.value.items.isNotEmpty()
-        }
-        val driveAccount = viewModel.browserState.value.activeCloudAccount!!
-        assertEquals("GOOGLE_DRIVE", driveAccount.provider)
-
-        // 2. Create a new folder directly in Google Drive
-        composeTestRule.runOnUiThread {
-            viewModel.createNewFolder("NativeDriveFolder")
-        }
-        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
-            org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            viewModel.browserState.value.items.any { it.displayName == "NativeDriveFolder" && it.isDirectory }
-        }
-
-        // 3. Create a new text file directly in Google Drive, edit its content, and rename it
-        composeTestRule.runOnUiThread {
-            viewModel.createNewTextFile("drive_note.txt", "Initial Drive text")
-        }
-        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
-            org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            viewModel.browserState.value.items.any { it.displayName == "drive_note.txt" }
-        }
-        val createdDriveNote = viewModel.browserState.value.items.first { it.displayName == "drive_note.txt" }
-
-        composeTestRule.runOnUiThread {
-            viewModel.saveEditedTextFile(createdDriveNote, "Updated Drive text natively from OpenFile")
-        }
-        delay(200)
-        composeTestRule.runOnUiThread {
-            viewModel.renameItem(createdDriveNote, "drive_note_renamed.txt")
-        }
-        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
-            org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            viewModel.browserState.value.items.any { it.displayName == "drive_note_renamed.txt" }
-        }
-        val renamedDriveNote = viewModel.browserState.value.items.first { it.displayName == "drive_note_renamed.txt" }
-
-        // 4. Bi-directional Transfer A: CUT (Move) 'drive_note_renamed.txt' from Google Drive -> Local Storage
-        val localTempDir = Files.createTempDirectory("local_drive_sync_test").toFile()
+        val tempRoot = Files.createTempDirectory("openfile_analyzer_actions_test").toFile()
         try {
-            val localDirRef = viewModel.localProvider.toFileReference(localTempDir)
-
-            var cutToLocalDone = false
-            viewModel.transferEngine.copyToClipboard(listOf(renamedDriveNote), ClipboardMode.CUT)
-            viewModel.transferEngine.enqueuePasteFromClipboard(
-                destinationDir = localDirRef,
-                verifyChecksum = true,
-                onComplete = { cutToLocalDone = true }
-            )
-            var attempts = 0
-            while (!cutToLocalDone && attempts < 60) {
-                delay(50)
-                attempts++
+            val subFolder = File(tempRoot, "MediaHeavyFolder").apply { mkdirs() }
+            val bigFile = File(subFolder, "heavy_video.mp4").apply {
+                writeBytes(ByteArray(32 * 1024) { (it and 0xFF).toByte() })
             }
-            val movedLocalFile = File(localTempDir, "drive_note_renamed.txt")
-            assertTrue("File cut from Google Drive must exist in Local Storage", movedLocalFile.exists())
-            assertEquals("Updated Drive text natively from OpenFile", movedLocalFile.readText())
+            val dupPayload = "Duplicate content inside storage analyzer for interactive action test"
+            val dupA = File(subFolder, "dup_alpha.txt").apply { writeText(dupPayload) }
+            val dupB = File(subFolder, "dup_beta.txt").apply { writeText(dupPayload) }
 
-            // Refresh Drive directory and verify the cut file was removed from Google Drive
+            // 1. Navigate to Storage Analysis and scan tempRoot
             composeTestRule.runOnUiThread {
-                viewModel.openCloudDirectory(driveAccount, "root")
+                viewModel.navigateToDestination(OpenFileDestination.STORAGE_ANALYSIS)
+                viewModel.runStorageAnalysis(tempRoot)
             }
             composeTestRule.waitUntil(timeoutMillis = 5_000L) {
                 org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                !viewModel.browserState.value.isLoading &&
-                    viewModel.browserState.value.items.none { it.displayName == "drive_note_renamed.txt" }
+                !viewModel.isAnalyzingStorage.value && viewModel.analysisReport.value != null
             }
+            composeTestRule.waitForIdle()
 
-            // 5. Bi-directional Transfer B: COPY a file from Local Storage -> Google Drive ('NativeDriveFolder')
-            val localSourceFile = File(localTempDir, "from_local_to_drive.txt").apply {
-                writeText("Copied from Local Storage directly into Google Drive folder!")
-            }
-            val localSourceRef = viewModel.localProvider.toFileReference(localSourceFile)
-            val driveSubfolderRef = viewModel.browserState.value.items.first { it.displayName == "NativeDriveFolder" }
+            // Switch to Largest Files tab and verify search & sort controls exist
+            composeTestRule.onNodeWithTag("analyzer_tab_largest_files").performClick()
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("analyzer_search_input").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("analyzer_sort_button").assertIsDisplayed()
 
-            var copyToDriveDone = false
-            viewModel.transferEngine.copyToClipboard(listOf(localSourceRef), ClipboardMode.COPY)
-            viewModel.transferEngine.enqueuePasteFromClipboard(
-                destinationDir = driveSubfolderRef,
-                verifyChecksum = true,
-                onComplete = { copyToDriveDone = true }
-            )
-            attempts = 0
-            while (!copyToDriveDone && attempts < 60) {
-                delay(50)
-                attempts++
-            }
+            val initialReport = viewModel.analysisReport.value!!
+            assertTrue(initialReport.largestFiles.any { it.displayName == "heavy_video.mp4" })
 
-            // Navigate into 'NativeDriveFolder' in Google Drive and verify 'from_local_to_drive.txt' is there
+            // 2. Rename 'heavy_video.mp4' -> 'renamed_video.mp4' and verify in-place update in Storage Analysis report
+            val heavyRef = initialReport.largestFiles.first { it.displayName == "heavy_video.mp4" }
             composeTestRule.runOnUiThread {
-                viewModel.onFileItemClicked(driveSubfolderRef)
+                viewModel.renameItem(heavyRef, "renamed_video.mp4")
             }
             composeTestRule.waitUntil(timeoutMillis = 5_000L) {
                 org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                !viewModel.browserState.value.isLoading &&
-                    viewModel.browserState.value.items.any { it.displayName == "from_local_to_drive.txt" }
+                viewModel.analysisReport.value?.largestFiles?.any { it.displayName == "renamed_video.mp4" } == true
             }
-            assertTrue(
-                "Breadcrumb bar should show Google Drive > NativeDriveFolder",
-                viewModel.browserState.value.breadcrumbs.any { it.displayName == "NativeDriveFolder" }
-            )
-        } finally {
-            localTempDir.deleteRecursively()
-        }
-    }
+            val renamedRef = viewModel.analysisReport.value!!.largestFiles.first { it.displayName == "renamed_video.mp4" }
 
-    @Test
-    fun `native GoogleDriveFilePicker mimics local browser using OAuth2 token from existing auth flow and imports selected files`() = runBlocking {
-        composeTestRule.waitForIdle()
-        val viewModel = composeTestRule.activity.viewModel
-
-        // 1. Authenticate via existing OAuth2 flow (onGoogleDriveAuthorized stores OAuth2 token in Keystore)
-        val oauthToken = "ya29.oauth2_test_token_drive_picker_987654"
-        composeTestRule.runOnUiThread {
-            viewModel.onGoogleDriveAuthorized(
-                accessToken = oauthToken,
-                email = "container6767@gmail.com"
-            )
-        }
-        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
-            org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            viewModel.browserState.value.activeCloudAccount?.provider == "GOOGLE_DRIVE" &&
-                !viewModel.browserState.value.isLoading
-        }
-
-        val driveAccount = viewModel.browserState.value.activeCloudAccount!!
-        val retrievedToken = viewModel.retrieveCloudAccessToken(driveAccount)
-        assertEquals("OAuth2 token retrieved from Keystore must match authorized token", oauthToken, retrievedToken)
-
-        // 2. Open a local directory and launch the native GoogleDriveFilePicker modal
-        val localDestDir = Files.createTempDirectory("drive_picker_import_target").toFile()
-        try {
-            val localDestRef = viewModel.localProvider.toFileReference(localDestDir)
+            // 3. Copy the renamed file from Storage Analysis -> verify clipboard bar appears with 'Select Destination Folder'
             composeTestRule.runOnUiThread {
-                viewModel.openDirectory(localDestRef)
-                viewModel.openDriveFilePickerModal()
+                viewModel.transferEngine.copyToClipboard(listOf(renamedRef), ClipboardMode.COPY)
+            }
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("analyzer_bottom_clipboard_bar").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("analyzer_choose_paste_folder_button").assertIsDisplayed()
+            composeTestRule.runOnUiThread {
+                viewModel.transferEngine.clearClipboard()
+            }
+            composeTestRule.waitForIdle()
+
+            // 4. Delete one duplicate file ('dup_alpha.txt') and verify in-place removal from analysisReport without rescan
+            val dupARef = viewModel.analysisReport.value!!.largestFiles.first { it.displayName == "dup_alpha.txt" }
+            composeTestRule.runOnUiThread {
+                viewModel.deleteItems(listOf(dupARef), moveToTrash = false)
             }
             composeTestRule.waitUntil(timeoutMillis = 5_000L) {
                 org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                viewModel.showDriveFilePickerModal.value &&
-                    viewModel.browserState.value.currentDirectory?.uriOrPath == localDestRef.uriOrPath &&
+                viewModel.analysisReport.value?.largestFiles?.none { it.displayName == "dup_alpha.txt" } == true
+            }
+            assertFalse("Deleted duplicate file should be removed from disk", dupA.exists())
+            assertTrue("Remaining file dup_beta.txt should still exist", dupB.exists())
+            assertTrue("Duplicate group should be cleared once only 1 copy remains", viewModel.analysisReport.value!!.duplicateGroups.isEmpty())
+
+            // 5. Open Containing Folder for 'renamed_video.mp4' -> verify navigation to parent folder in FileBrowserScreen
+            composeTestRule.runOnUiThread {
+                viewModel.openContainingFolder(renamedRef)
+            }
+            composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                viewModel.currentDestination.value == OpenFileDestination.INTERNAL_STORAGE &&
+                    viewModel.browserState.value.currentDirectory?.uriOrPath == subFolder.absolutePath &&
                     !viewModel.browserState.value.isLoading
             }
-            composeTestRule.waitForIdle()
-
-            // Verify GoogleDriveFilePickerDialog & OAuth2 badge are displayed
-            composeTestRule.onNodeWithTag("google_drive_file_picker_dialog").assertIsDisplayed()
-            composeTestRule.onNodeWithTag("drive_picker_oauth_badge").assertIsDisplayed()
-
-            // 3. Switch Google Drive sections (Shared with me -> Starred -> My Drive)
-            composeTestRule.onNodeWithTag("drive_picker_section_sharedWithMe").performClick()
-            composeTestRule.waitForIdle()
-            composeTestRule.onNodeWithTag("drive_picker_section_starred").performClick()
-            composeTestRule.waitForIdle()
-            composeTestRule.onNodeWithTag("drive_picker_section_root").performClick()
-            composeTestRule.waitForIdle()
-
-            // 4. Toggle List / Grid view inside GoogleDriveFilePicker
-            composeTestRule.onNodeWithTag("drive_picker_view_toggle").performClick()
-            composeTestRule.waitForIdle()
-            composeTestRule.onNodeWithTag("drive_picker_grid").assertExists()
-            composeTestRule.onNodeWithTag("drive_picker_view_toggle").performClick()
-            composeTestRule.waitForIdle()
-            composeTestRule.onNodeWithTag("drive_picker_list").assertExists()
-
-            // 5. Create a new text file directly inside GoogleDriveFilePicker using the OAuth2 token
-            composeTestRule.onNodeWithTag("drive_picker_new_file_button").performClick()
-            composeTestRule.waitForIdle()
-            composeTestRule.onNodeWithTag("drive_picker_new_file_name_input").performTextReplacement("picked_from_drive.txt")
-            composeTestRule.onNodeWithTag("drive_picker_new_file_content_input").performTextInput("Picked via Native GoogleDriveFilePicker with OAuth2 token")
-            composeTestRule.onNodeWithTag("drive_picker_create_file_confirm").performClick()
-            composeTestRule.waitForIdle()
-
-            var pickedFileRef: com.example.core.model.FileReference? = null
-            var createAttempts = 0
-            while (pickedFileRef == null && createAttempts < 60) {
-                delay(50)
-                org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                val itemsInRoot = com.example.core.cloud.CloudStorageEngine.listCloudDirectory(
-                    account = driveAccount,
-                    accessToken = retrievedToken,
-                    folderIdOrPath = "root",
-                    context = composeTestRule.activity,
-                    showHidden = true
-                ).getOrDefault(emptyList())
-                pickedFileRef = itemsInRoot.firstOrNull { it.displayName == "picked_from_drive.txt" }
-                createAttempts++
-            }
-            assertNotNull("Created file 'picked_from_drive.txt' should exist in Google Drive", pickedFileRef)
-
-            // 6. Filter for 'picked_from_drive.txt', select it, and import into local directory
-            composeTestRule.onNodeWithTag("drive_picker_search_input").performTextInput("picked_from_drive.txt")
-            composeTestRule.waitForIdle()
-
-            var importResult: Result<String>? = null
-            viewModel.importPickedDriveFilesToCurrentDirectory(
-                pickedItems = listOf(pickedFileRef!!),
-                explicitTargetDir = localDestRef,
-                onComplete = { res -> importResult = res }
-            )
-            composeTestRule.runOnUiThread {
-                viewModel.closeDriveFilePickerModal()
-            }
-            composeTestRule.waitForIdle()
-
-            var importAttempts = 0
-            while (importResult == null && importAttempts < 60) {
-                delay(50)
-                org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                importAttempts++
-            }
-            assertNotNull("Drive import callback should complete", importResult)
             assertTrue(
-                "Drive import should succeed (${importResult?.exceptionOrNull()?.message})",
-                importResult!!.isSuccess
+                "Containing folder should list renamed_video.mp4",
+                viewModel.browserState.value.items.any { it.displayName == "renamed_video.mp4" }
             )
-
-            val importedLocalFile = File(localDestDir, "picked_from_drive.txt")
-            assertTrue("Picked Drive file should be imported into local target directory", importedLocalFile.exists())
-            assertEquals(
-                "Picked via Native GoogleDriveFilePicker with OAuth2 token",
-                importedLocalFile.readText()
-            )
+            assertFalse(bigFile.exists())
         } finally {
-            localDestDir.deleteRecursively()
+            tempRoot.deleteRecursively()
         }
+    }
+
+    @Test
+    fun `adaptiveStorageDeviceName adapts storage devices names dynamically across compact medium and expanded screens`() {
+        val dummyRef = FileReference(
+            providerType = ProviderType.LOCAL,
+            uriOrPath = "/dummy",
+            displayName = "dummy",
+            parentUriOrPath = "/",
+            isDirectory = true,
+            sizeBytes = 0L,
+            lastModifiedEpochMs = 0L
+        )
+
+        val internalVolume = StorageVolumeInfo(
+            id = "internal_primary",
+            title = "Internal Shared Storage",
+            subtitle = "/storage/emulated/0",
+            rootReference = dummyRef,
+            totalBytes = 64_000_000_000L,
+            usedBytes = 20_000_000_000L,
+            availableBytes = 44_000_000_000L
+        )
+
+        val sdCardVolume = StorageVolumeInfo(
+            id = "sdcard_vol",
+            title = "Physical SD Card (1234-5678)",
+            subtitle = "/storage/1234-5678",
+            rootReference = dummyRef,
+            totalBytes = 32_000_000_000L,
+            usedBytes = 10_000_000_000L,
+            availableBytes = 22_000_000_000L,
+            isRemovable = true
+        )
+
+        val usbVolume = StorageVolumeInfo(
+            id = "usb_vol",
+            title = "USB Storage Device (OTG)",
+            subtitle = "/storage/ABCD-EF01",
+            rootReference = dummyRef,
+            totalBytes = 16_000_000_000L,
+            usedBytes = 5_000_000_000L,
+            availableBytes = 11_000_000_000L,
+            isRemovable = true
+        )
+
+        // 1. Compact screen (< 360dp, e.g. 320dp small phone / split-screen)
+        assertEquals("Main Storage", adaptiveStorageDeviceName(internalVolume, screenWidthDp = 320))
+        assertEquals("SD Card", adaptiveStorageDeviceName(sdCardVolume, screenWidthDp = 320))
+        assertEquals("USB Drive", adaptiveStorageDeviceName(usbVolume, screenWidthDp = 320))
+
+        // 2. Medium screen (360dp - 599dp, e.g. 411dp standard phone)
+        assertEquals("Internal Storage", adaptiveStorageDeviceName(internalVolume, screenWidthDp = 411))
+        assertEquals("SD Card (1234-5678)", adaptiveStorageDeviceName(sdCardVolume, screenWidthDp = 411))
+        assertEquals("USB Drive", adaptiveStorageDeviceName(usbVolume, screenWidthDp = 411))
+
+        // 3. Expanded screen (>= 600dp, e.g. 800dp tablet / foldable / desktop)
+        assertEquals("Internal Shared Storage", adaptiveStorageDeviceName(internalVolume, screenWidthDp = 800))
+        assertEquals("Physical SD Card (1234-5678)", adaptiveStorageDeviceName(sdCardVolume, screenWidthDp = 800))
+        assertEquals("USB Storage Device (OTG)", adaptiveStorageDeviceName(usbVolume, screenWidthDp = 800))
     }
 }

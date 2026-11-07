@@ -78,11 +78,9 @@ import com.example.core.model.ProviderType
 import com.example.ui.components.ConflictResolutionDialog
 import com.example.ui.components.FilePreviewDialog
 import com.example.ui.components.FilePropertiesModalSheet
-import com.example.ui.components.GoogleDriveFilePickerDialog
 import com.example.ui.components.TransferQueueBottomSheet
 import com.example.ui.screens.ApplicationsScreen
 import com.example.ui.screens.BookmarksScreen
-import com.example.ui.screens.CloudStorageScreen
 import com.example.ui.screens.FileBrowserScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.NetworkScreen
@@ -104,8 +102,6 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
     val browserState by viewModel.browserState.collectAsStateWithLifecycle()
     val previewFile by viewModel.previewFile.collectAsStateWithLifecycle()
     val propertiesFile by viewModel.propertiesFile.collectAsStateWithLifecycle()
-    val activeWebCloudProvider by viewModel.activeWebCloudProvider.collectAsStateWithLifecycle()
-    val showDriveFilePickerModal by viewModel.showDriveFilePickerModal.collectAsStateWithLifecycle()
     val showAppUpdateDialog by viewModel.showAppUpdateDialog.collectAsStateWithLifecycle()
     val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
@@ -154,17 +150,12 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
         viewModel.clearStatusMessage()
     }
 
-    // Hardware Back navigation handling for browser stack, active cloud web portal & sub-destinations
+    // Hardware Back navigation handling for browser stack & sub-destinations
     BackHandler(
         enabled = currentDest != OpenFileDestination.HOME ||
             browserState.isMultiSelectActive ||
-            browserState.inspectArchiveFile != null ||
-            activeWebCloudProvider != null
+            browserState.inspectArchiveFile != null
     ) {
-        if (activeWebCloudProvider != null) {
-            viewModel.closeWebCloudPortal()
-            return@BackHandler
-        }
         val handledInBrowser = if (currentDest in setOf(
                 OpenFileDestination.INTERNAL_STORAGE,
                 OpenFileDestination.DOWNLOADS,
@@ -245,8 +236,6 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                         isExpandedTablet = true,
                         currentDest = currentDest,
                         customTitleOverride = when {
-                            currentDest == OpenFileDestination.INTERNAL_STORAGE && browserState.activeCloudAccount != null ->
-                                "${browserState.activeCloudAccount!!.displayName} (${browserState.activeCloudAccount!!.accountEmail})"
                             currentDest == OpenFileDestination.INTERNAL_STORAGE && browserState.activeRemoteProfile != null ->
                                 browserState.activeRemoteProfile!!.displayName
                             else -> null
@@ -257,9 +246,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                         snackbarHostState = snackbarHostState,
                         onOpenDrawer = {},
                         onNavigateUp = {
-                            if (activeWebCloudProvider != null) {
-                                viewModel.closeWebCloudPortal()
-                            } else if (!viewModel.navigateUpInBrowser()) {
+                            if (!viewModel.navigateUpInBrowser()) {
                                 viewModel.navigateToDestination(OpenFileDestination.HOME)
                             }
                         },
@@ -377,8 +364,6 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                     isExpandedTablet = false,
                     currentDest = currentDest,
                     customTitleOverride = when {
-                        currentDest == OpenFileDestination.INTERNAL_STORAGE && browserState.activeCloudAccount != null ->
-                            "${browserState.activeCloudAccount!!.displayName} (${browserState.activeCloudAccount!!.accountEmail})"
                         currentDest == OpenFileDestination.INTERNAL_STORAGE && browserState.activeRemoteProfile != null ->
                             browserState.activeRemoteProfile!!.displayName
                         else -> null
@@ -389,9 +374,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                     snackbarHostState = snackbarHostState,
                     onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
                     onNavigateUp = {
-                        if (activeWebCloudProvider != null) {
-                            viewModel.closeWebCloudPortal()
-                        } else if (!viewModel.navigateUpInBrowser()) {
+                        if (!viewModel.navigateUpInBrowser()) {
                             viewModel.navigateToDestination(OpenFileDestination.HOME)
                         }
                     },
@@ -465,58 +448,6 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
             },
             onDismiss = { showTransferQueueSheet = false }
         )
-    }
-
-    // Native Google Drive FilePicker Modal Dialog
-    if (showDriveFilePickerModal) {
-        val activeDrivePickerAccount by viewModel.activeDrivePickerAccount.collectAsStateWithLifecycle()
-        val cloudAccounts by viewModel.cloudAccounts.collectAsStateWithLifecycle()
-        val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
-        val clipboard by viewModel.clipboard.collectAsStateWithLifecycle()
-        val googleAccount = activeDrivePickerAccount
-            ?: browserState.activeCloudAccount?.takeIf {
-                it.provider == com.example.core.cloud.CloudProviderKind.GOOGLE_DRIVE.name
-            }
-            ?: cloudAccounts.lastOrNull {
-                it.provider == com.example.core.cloud.CloudProviderKind.GOOGLE_DRIVE.name
-            }
-        if (googleAccount != null) {
-            val activeToken by produceState(initialValue = "", key1 = googleAccount) {
-                value = withContext(Dispatchers.IO) {
-                    viewModel.retrieveCloudAccessToken(googleAccount)
-                }
-            }
-            GoogleDriveFilePickerDialog(
-                account = googleAccount,
-                oauthAccessToken = activeToken,
-                settings = settings,
-                bookmarks = bookmarks,
-                clipboard = clipboard,
-                onPreviewOrEditFile = { viewModel.openBuiltInPreview(it) },
-                onCopyItems = { items, mode ->
-                    viewModel.transferEngine.copyToClipboard(items, mode)
-                    viewModel.showStatus("${items.size} Drive item(s) added to clipboard")
-                },
-                onPasteToDriveFolder = { acc, folder -> viewModel.pasteClipboardIntoCloudFolder(acc, folder) },
-                onClearClipboard = { viewModel.transferEngine.clearClipboard() },
-                onDownloadToLocal = { viewModel.downloadRemoteItemToDownloads(it) },
-                onShareItem = { viewModel.shareFileItem(it) },
-                onOpenProperties = { viewModel.openPropertiesSheet(it) },
-                onToggleBookmark = { viewModel.toggleBookmark(it) },
-                onOpenFullBrowserAtFolder = { acc, folder -> viewModel.openCloudDirectory(acc, folder) },
-                onReauthenticateOAuth = {
-                    viewModel.reauthenticateCloudProviderInBrowser(
-                        com.example.core.cloud.CloudProviderKind.GOOGLE_DRIVE,
-                        googleAccount.accountEmail
-                    )
-                },
-                onFilesPicked = { picked ->
-                    viewModel.importPickedDriveFilesToCurrentDirectory(picked)
-                },
-                onDismiss = { viewModel.closeDriveFilePickerModal() },
-                onStatusMessage = { viewModel.showStatus(it) }
-            )
-        }
     }
 
     // Native In-App GitHub Releases Auto-Update Modal Dialog
@@ -790,7 +721,6 @@ private fun DestinationRouter(
             val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
             val recentFiles by viewModel.recentFiles.collectAsStateWithLifecycle()
             val networkProfiles by viewModel.networkProfiles.collectAsStateWithLifecycle()
-            val cloudAccounts by viewModel.cloudAccounts.collectAsStateWithLifecycle()
             val ftpState by viewModel.ftpServerState.collectAsStateWithLifecycle()
             val categoryCounts by viewModel.categoryCounts.collectAsStateWithLifecycle()
             val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
@@ -800,12 +730,9 @@ private fun DestinationRouter(
                 recentFiles = recentFiles,
                 ftpState = ftpState,
                 categoryCounts = categoryCounts,
-                cloudAccountsCount = cloudAccounts.size,
                 remoteProfilesCount = networkProfiles.size,
-                cloudAccounts = cloudAccounts,
                 hasAllFilesAccess = hasAllFilesAccess,
                 onRequestAllFilesAccess = { viewModel.requestAllFilesAccessInSettings() },
-                onOpenCloudAccount = { acc -> viewModel.openCloudDirectory(acc, "root") },
                 onVolumeClick = { vol ->
                     viewModel.openVolumeInBrowser(vol.rootReference)
                 },
@@ -831,7 +758,6 @@ private fun DestinationRouter(
         OpenFileDestination.LARGE_FILES -> {
             val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
             val clipboard by viewModel.clipboard.collectAsStateWithLifecycle()
-            val cloudAccounts by viewModel.cloudAccounts.collectAsStateWithLifecycle()
             FileBrowserScreen(
                 browserState = browserState,
                 settings = settings,
@@ -869,16 +795,8 @@ private fun DestinationRouter(
                 onDownloadRemoteItem = { viewModel.downloadRemoteItemToDownloads(it) },
                 onOpenWithExternal = { viewModel.openWithExternalApp(it, forceChooser = true) },
                 onQuickPreview = { viewModel.openBuiltInPreview(it) },
-                cloudAccounts = cloudAccounts,
-                onOpenLocalRoot = { viewModel.navigateToDestination(OpenFileDestination.INTERNAL_STORAGE) },
-                onOpenCloudAccount = { acc -> viewModel.openCloudDirectory(acc, "root") },
-                onReauthCloudAccount = { acc ->
-                    runCatching { com.example.core.cloud.CloudProviderKind.valueOf(acc.provider) }
-                        .getOrNull()
-                        ?.let { viewModel.reauthenticateCloudProviderInBrowser(it, acc.accountEmail) }
-                },
-                onOpenDriveFilePicker = { viewModel.openDriveFilePickerModal() },
-                onOpenCloudSection = { acc, secId -> viewModel.openCloudDirectory(acc, secId) }
+                onOpenParentFolder = { viewModel.openContainingFolder(it) },
+                onOpenLocalRoot = { viewModel.navigateToDestination(OpenFileDestination.INTERNAL_STORAGE) }
             )
         }
 
@@ -886,10 +804,15 @@ private fun DestinationRouter(
             val analysisReport by viewModel.analysisReport.collectAsStateWithLifecycle()
             val isAnalyzing by viewModel.isAnalyzingStorage.collectAsStateWithLifecycle()
             val analysisProgress by viewModel.analysisProgressText.collectAsStateWithLifecycle()
+            val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
+            val clipboard by viewModel.clipboard.collectAsStateWithLifecycle()
             StorageAnalysisScreen(
                 report = analysisReport,
                 isScanning = isAnalyzing,
                 progressText = analysisProgress,
+                settings = settings,
+                bookmarks = bookmarks,
+                clipboard = clipboard,
                 onRefreshScan = { customDir ->
                     viewModel.runStorageAnalysis(customDir ?: viewModel.localProvider.getPrimaryRootDirectory())
                 },
@@ -904,7 +827,25 @@ private fun DestinationRouter(
                 },
                 onDeleteDuplicateFile = { dupRef ->
                     viewModel.deleteItems(listOf(dupRef), moveToTrash = true)
-                    viewModel.runStorageAnalysis()
+                },
+                onRenameItem = { item, newName -> viewModel.renameItem(item, newName) },
+                onCopyItems = { items, mode ->
+                    viewModel.transferEngine.copyToClipboard(items, mode)
+                    viewModel.showStatus("${items.size} item(s) added to clipboard — choose destination folder to paste")
+                },
+                onClearClipboard = { viewModel.transferEngine.clearClipboard() },
+                onNavigateToStorageForPaste = {
+                    viewModel.navigateToDestination(OpenFileDestination.INTERNAL_STORAGE)
+                },
+                onDeleteItems = { items, useTrash -> viewModel.deleteItems(items, useTrash) },
+                onToggleBookmark = { viewModel.toggleBookmark(it) },
+                onShareItem = { viewModel.shareFileItem(it) },
+                onOpenProperties = { viewModel.openPropertiesSheet(it) },
+                onOpenParentFolder = { viewModel.openContainingFolder(it) },
+                onOpenWithExternal = { viewModel.openWithExternalApp(it, forceChooser = true) },
+                onQuickPreview = { viewModel.openBuiltInPreview(it) },
+                onCompressItems = { items, name, fmt ->
+                    viewModel.createArchiveFromItems(items, name, fmt)
                 }
             )
         }
@@ -976,7 +917,6 @@ private fun DestinationRouter(
             val isScanningLan by viewModel.isScanningLan.collectAsStateWithLifecycle()
             val sshHostKeyPrompt by viewModel.sshHostKeyPrompt.collectAsStateWithLifecycle()
             val selectedNetworkTab by viewModel.selectedNetworkTab.collectAsStateWithLifecycle()
-            val scope = rememberCoroutineScope()
             NetworkScreen(
                 ftpState = ftpState,
                 settings = settings,
@@ -987,23 +927,54 @@ private fun DestinationRouter(
                 onStartFtpServer = { pass -> viewModel.startLocalFtpServer(pass) },
                 onStopFtpServer = { viewModel.stopLocalFtpServer() },
                 onUpdateFtpConfig = { port, pStart, pEnd, user, anon, write, tls, timeout, root ->
-                    scope.launch {
-                        viewModel.settingsStore.updateFtpServerConfig(
-                            port = port,
-                            passiveStart = pStart,
-                            passiveEnd = pEnd,
-                            username = user,
-                            secretAlias = settings.ftpSecretAlias,
-                            anonymousAllowed = anon,
-                            allowWrite = write,
-                            useTls = tls,
-                            idleTimeoutMinutes = timeout,
-                            rootPath = root
-                        )
+                    viewModel.saveFtpServerConfig(
+                        port = port,
+                        passiveStart = pStart,
+                        passiveEnd = pEnd,
+                        username = user,
+                        anonymousAllowed = anon,
+                        allowWrite = write,
+                        useTls = tls,
+                        idleTimeoutMinutes = timeout,
+                        rootPath = root,
+                        showConfirmation = false
+                    )
+                },
+                onSaveFtpConfig = { port, pStart, pEnd, user, pass, anon, write, tls, timeout, root ->
+                    viewModel.saveFtpServerConfig(
+                        port = port,
+                        passiveStart = pStart,
+                        passiveEnd = pEnd,
+                        username = user,
+                        passwordPlain = pass,
+                        anonymousAllowed = anon,
+                        allowWrite = write,
+                        useTls = tls,
+                        idleTimeoutMinutes = timeout,
+                        rootPath = root,
+                        showConfirmation = true
+                    )
+                    if (ftpState.isRunning) {
+                        viewModel.startLocalFtpServer(pass)
                     }
                 },
                 onSaveProfile = { name, proto, host, port, user, secret, path, share, anon, pasv ->
                     viewModel.saveNetworkProfile(name, proto, host, port, user, secret, path, share, anon, pasv)
+                },
+                onConnectDiscoveredHost = { name, proto, host, port, user, secret, path, share, anon, pasv ->
+                    viewModel.saveNetworkProfile(
+                        displayName = name,
+                        protocol = proto,
+                        host = host,
+                        port = port,
+                        username = user,
+                        passwordOrPrivateKey = secret,
+                        remoteInitialPath = path,
+                        shareName = share,
+                        isAnonymous = anon,
+                        usePassiveMode = pasv,
+                        connectImmediately = true
+                    )
                 },
                 onDeleteProfile = { viewModel.deleteNetworkProfile(it) },
                 onConnectProfile = { viewModel.openRemoteNetworkDirectory(it) },
@@ -1017,61 +988,12 @@ private fun DestinationRouter(
             )
         }
 
-        OpenFileDestination.CLOUD_STORAGE -> {
-            val cloudAccounts by viewModel.cloudAccounts.collectAsStateWithLifecycle()
-            val activePkceSession by viewModel.activePkceSession.collectAsStateWithLifecycle()
-            val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
-            val clipboard by viewModel.clipboard.collectAsStateWithLifecycle()
-            val activeWebProvider by viewModel.activeWebCloudProvider.collectAsStateWithLifecycle()
-            val activeWebUrl by viewModel.activeWebCloudUrl.collectAsStateWithLifecycle()
-            CloudStorageScreen(
-                accounts = cloudAccounts,
-                activePkceSession = activePkceSession,
-                onStartOAuth = { provider, clientId -> viewModel.startCloudOAuthFlow(provider, clientId) },
-                onCompleteOAuth = { email, code, direct -> viewModel.completeCloudOAuthWithCode(email, code, direct) },
-                onOpenCloudAccount = { viewModel.openCloudDirectory(it) },
-                onDisconnectAccount = { viewModel.disconnectCloudAccount(it) },
-                onShowMessage = { viewModel.showStatus(it) },
-                onGoogleDriveAuthorized = { token, email -> viewModel.onGoogleDriveAuthorized(token, email) },
-                activeWebCloudProvider = activeWebProvider,
-                activeWebCloudUrl = activeWebUrl,
-                onConnectProviderDirect = { provider -> viewModel.connectCloudProviderDirect(provider) },
-                onReauthenticateProviderInBrowser = { provider -> viewModel.reauthenticateCloudProviderInBrowser(provider) },
-                onWebCloudAuthenticated = { provider, label -> viewModel.onWebCloudAuthenticated(provider, label) },
-                onOAuthRedirectUri = { uri -> viewModel.handleOAuthRedirect(uri) },
-                onDownloadCloudWebFile = { url, cookies, ua, cd, mime ->
-                    viewModel.downloadFromCloudWebSession(url, cookies, ua, cd, mime)
-                },
-                onCloseWebCloudPortal = { viewModel.closeWebCloudPortal() },
-                settings = settings,
-                bookmarks = bookmarks,
-                clipboard = clipboard,
-                onRetrieveOAuthToken = { acc -> viewModel.retrieveCloudAccessToken(acc) },
-                onOpenDriveFilePickerModal = { viewModel.openDriveFilePickerModal() },
-                onOpenCloudFolderInBrowser = { acc, folder -> viewModel.openCloudDirectory(acc, folder) },
-                onPreviewOrEditFile = { viewModel.openBuiltInPreview(it) },
-                onCopyItems = { items, mode ->
-                    viewModel.transferEngine.copyToClipboard(items, mode)
-                    viewModel.showStatus("${items.size} Drive item(s) added to clipboard")
-                },
-                onPasteToDriveFolder = { acc, folder -> viewModel.pasteClipboardIntoCloudFolder(acc, folder) },
-                onClearClipboard = { viewModel.transferEngine.clearClipboard() },
-                onDownloadToLocal = { viewModel.downloadRemoteItemToDownloads(it) },
-                onShareItem = { viewModel.shareFileItem(it) },
-                onOpenProperties = { viewModel.openPropertiesSheet(it) },
-                onToggleBookmark = { viewModel.toggleBookmark(it) },
-                onImportPickedDriveFiles = { picked -> viewModel.importPickedDriveFilesToCurrentDirectory(picked) }
-            )
-        }
-
         OpenFileDestination.SETTINGS -> {
             val networkProfiles by viewModel.networkProfiles.collectAsStateWithLifecycle()
-            val cloudAccounts by viewModel.cloudAccounts.collectAsStateWithLifecycle()
             val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
             val vaultCount by produceState(
                 initialValue = 0,
                 networkProfiles,
-                cloudAccounts,
                 settings
             ) {
                 value = withContext(Dispatchers.IO) {

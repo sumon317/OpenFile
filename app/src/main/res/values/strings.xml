@@ -12,7 +12,6 @@
     <string name="nav_recent_files">Recent Files</string>
     <string name="nav_large_files">Large Files</string>
     <string name="nav_network">Network</string>
-    <string name="nav_cloud_storage">Cloud Storage</string>
     <string name="nav_storage_analysis">Storage Analysis</string>
     <string name="nav_bookmarks">Bookmarks</string>
     <string name="nav_trash">Trash</string>

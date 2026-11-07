@@ -326,6 +326,21 @@ private val rowDateFormat = object : ThreadLocal<SimpleDateFormat>() {
     override fun initialValue(): SimpleDateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
 }
 
+fun formatParentPathForDisplay(rawPath: String): String {
+    val normalized = rawPath.replace('\\', '/').trimEnd('/')
+    return when {
+        normalized == "/storage/emulated/0" || normalized == "/storage/emulated/0/" -> "Internal Storage"
+        normalized.startsWith("/storage/emulated/0/") -> {
+            "Internal Storage › " + normalized.removePrefix("/storage/emulated/0/").replace("/", " › ")
+        }
+        normalized == "/sdcard" || normalized == "/sdcard/" -> "Internal Storage"
+        normalized.startsWith("/sdcard/") -> {
+            "Internal Storage › " + normalized.removePrefix("/sdcard/").replace("/", " › ")
+        }
+        else -> normalized.replace("/", " › ").trimStart(' ', '›', ' ')
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FileItemRow(
@@ -346,6 +361,10 @@ fun FileItemRow(
     onDownloadRemote: (() -> Unit)? = null,
     onOpenWith: (() -> Unit)? = null,
     onQuickPreview: (() -> Unit)? = null,
+    onOpenParentFolder: (() -> Unit)? = null,
+    onCompress: (() -> Unit)? = null,
+    onDrillDownAnalyze: (() -> Unit)? = null,
+    showParentPath: Boolean = false,
     context: android.content.Context = LocalContext.current
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -377,9 +396,8 @@ fun FileItemRow(
             file.lastModifiedEpochMs,
             rowDateFormat.get() ?: SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
         )
-        // formattedSize and permissionsString are computed properties — evaluate once here
+        // formattedSize is evaluated once here
         val sizePart = file.formattedSize
-        val permPart = file.permissionsString
         val prefix = if (!appLabelMeta.isNullOrBlank()) "$appLabelMeta  •  " else ""
         val statusSuffix = when {
             safMountedMeta == "true" -> "  •  SAF Mounted"
@@ -387,9 +405,9 @@ fun FileItemRow(
             else -> ""
         }
         if (dateStr.isEmpty()) {
-            "$prefix$sizePart  •  $permPart$statusSuffix"
+            "$prefix$sizePart$statusSuffix"
         } else {
-            "$prefix$sizePart  •  $dateStr  •  $permPart$statusSuffix"
+            "$prefix$sizePart  •  $dateStr$statusSuffix"
         }
     }
     val bookmarked = isBookmarked
@@ -454,6 +472,15 @@ fun FileItemRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (showParentPath && !file.parentUriOrPath.isNullOrBlank()) {
+                    Text(
+                        text = formatParentPathForDisplay(file.parentUriOrPath),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
 
             Box {
@@ -471,6 +498,26 @@ fun FileItemRow(
                         expanded = true,
                         onDismissRequest = { menuExpanded = false }
                     ) {
+                        if (onDrillDownAnalyze != null && file.isDirectory) {
+                            DropdownMenuItem(
+                                text = { Text("Analyze This Folder") },
+                                leadingIcon = { Icon(Icons.Filled.Folder, contentDescription = null) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onDrillDownAnalyze()
+                                }
+                            )
+                        }
+                        if (onOpenParentFolder != null && !file.parentUriOrPath.isNullOrBlank()) {
+                            DropdownMenuItem(
+                                text = { Text("Open Containing Folder") },
+                                leadingIcon = { Icon(Icons.Filled.Folder, contentDescription = null) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onOpenParentFolder()
+                                }
+                            )
+                        }
                         if (onOpenWith != null && !file.isDirectory) {
                             DropdownMenuItem(
                                 text = { Text("Open With...") },
@@ -525,6 +572,16 @@ fun FileItemRow(
                                 onCut()
                             }
                         )
+                        if (onCompress != null) {
+                            DropdownMenuItem(
+                                text = { Text("Compress to Archive") },
+                                leadingIcon = { Icon(Icons.Filled.FolderZip, contentDescription = null) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onCompress()
+                                }
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text(if (bookmarked) "Remove Bookmark" else "Add Bookmark") },
                             leadingIcon = {

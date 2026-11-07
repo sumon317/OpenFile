@@ -10,13 +10,12 @@ import androidx.room.RoomDatabase
         BookmarkEntity::class,
         RecentFileEntity::class,
         NetworkProfileEntity::class,
-        CloudAccountEntity::class,
         TrashItemEntity::class,
         TransferJobEntity::class,
         SearchQueryEntity::class,
         SafGrantEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class OpenFileDatabase : RoomDatabase() {

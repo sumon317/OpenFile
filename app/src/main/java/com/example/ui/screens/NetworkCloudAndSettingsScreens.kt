@@ -1,13 +1,5 @@
 package com.example.ui.screens
 
-import android.content.Intent
-import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.IntentSenderRequest
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.launch
-import com.example.core.cloud.GoogleDriveOnDeviceAuth
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -35,7 +27,6 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -53,7 +44,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -77,8 +67,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -87,14 +75,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import com.example.core.cloud.CloudProviderKind
-import com.example.core.cloud.PkceSession
-import com.example.core.database.BookmarkEntity
-import com.example.core.database.CloudAccountEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.example.core.database.NetworkProfileEntity
 import com.example.core.datastore.AppSettingsState
-import com.example.core.filesystem.ClipboardMode
-import com.example.core.filesystem.ClipboardState
 import com.example.core.model.FileReference
 import com.example.core.model.ViewMode
 import com.example.core.model.formatByteSize
@@ -102,7 +86,6 @@ import com.example.core.network.DiscoveredLanHost
 import com.example.core.network.FtpServerEngine
 import com.example.core.network.FtpServerRuntimeState
 import com.example.ui.SshHostKeyPrompt
-import com.example.ui.components.GoogleDriveFilePicker
 import com.example.ui.theme.ApkGreen
 import com.example.ui.theme.FolderAmber
 import com.example.ui.theme.JetBrainsMonoFamily
@@ -131,10 +114,19 @@ fun NetworkScreen(
     onTrustSshHostKey: (SshHostKeyPrompt) -> Unit,
     onDismissSshPrompt: () -> Unit,
     initialTab: Int = 0,
-    savedFtpPassword: String = "openfile123"
+    savedFtpPassword: String = "openfile123",
+    onSaveFtpConfig: (Int, Int, Int, String, String, Boolean, Boolean, Boolean, Int, String) -> Unit =
+        { port, pStart, pEnd, user, _, anon, write, tls, timeout, root ->
+            onUpdateFtpConfig(port, pStart, pEnd, user, anon, write, tls, timeout, root)
+        },
+    onConnectDiscoveredHost: (String, String, String, Int, String, String, String, String, Boolean, Boolean) -> Unit =
+        { name, proto, host, port, user, secret, remotePath, share, anon, pasv ->
+            onSaveProfile(name, proto, host, port, user, secret, remotePath, share, anon, pasv)
+        }
 ) {
     var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab) }
     var showAddProfileDialog by remember { mutableStateOf(false) }
+    var selectedDiscoveredHost by remember { mutableStateOf<DiscoveredLanHost?>(null) }
 
     Column(
         modifier = Modifier
@@ -170,7 +162,8 @@ fun NetworkScreen(
                 initialPassword = savedFtpPassword,
                 onStartFtpServer = onStartFtpServer,
                 onStopFtpServer = onStopFtpServer,
-                onUpdateFtpConfig = onUpdateFtpConfig
+                onUpdateFtpConfig = onUpdateFtpConfig,
+                onSaveFtpConfig = onSaveFtpConfig
             )
         } else {
             RemoteClientsTab(
@@ -180,7 +173,8 @@ fun NetworkScreen(
                 onAddProfileClick = { showAddProfileDialog = true },
                 onConnectProfile = onConnectProfile,
                 onDeleteProfile = onDeleteProfile,
-                onScanLan = onScanLan
+                onScanLan = onScanLan,
+                onSelectDiscoveredHost = { selectedDiscoveredHost = it }
             )
         }
     }
@@ -191,6 +185,42 @@ fun NetworkScreen(
             onSave = { name, proto, host, port, user, secret, remotePath, share, anon, pasv ->
                 onSaveProfile(name, proto, host, port, user, secret, remotePath, share, anon, pasv)
                 showAddProfileDialog = false
+            }
+        )
+    }
+
+    val hostToConnect = selectedDiscoveredHost
+    if (hostToConnect != null) {
+        val existingProfile = remember(hostToConnect, profiles) {
+            profiles.firstOrNull {
+                it.host.equals(hostToConnect.ipAddress, ignoreCase = true) &&
+                    it.port == hostToConnect.port
+            }
+        }
+        ConnectDiscoveredHostDialog(
+            host = hostToConnect,
+            initialUsername = existingProfile?.username?.ifBlank { "openfile" } ?: "openfile",
+            initialShareName = existingProfile?.shareName.orEmpty(),
+            initialAnonymous = existingProfile?.isAnonymous ?: false,
+            onDismiss = { selectedDiscoveredHost = null },
+            onConnect = { username, password, shareName, isAnonymous ->
+                val proto = hostToConnect.protocolGuess.uppercase().let {
+                    if (it in setOf("FTP", "FTPS", "SFTP", "SMB")) it else "FTP"
+                }
+                val displayName = hostToConnect.bannerOrName.ifBlank { "$proto://${hostToConnect.ipAddress}:${hostToConnect.port}" }
+                onConnectDiscoveredHost(
+                    displayName,
+                    proto,
+                    hostToConnect.ipAddress,
+                    hostToConnect.port,
+                    username,
+                    password,
+                    "/",
+                    shareName,
+                    isAnonymous,
+                    true
+                )
+                selectedDiscoveredHost = null
             }
         )
     }
@@ -253,8 +283,13 @@ private fun FtpServerControlTab(
     initialPassword: String = "openfile123",
     onStartFtpServer: (String) -> Unit,
     onStopFtpServer: () -> Unit,
-    onUpdateFtpConfig: (Int, Int, Int, String, Boolean, Boolean, Boolean, Int, String) -> Unit
+    onUpdateFtpConfig: (Int, Int, Int, String, Boolean, Boolean, Boolean, Int, String) -> Unit,
+    onSaveFtpConfig: (Int, Int, Int, String, String, Boolean, Boolean, Boolean, Int, String) -> Unit =
+        { port, pStart, pEnd, user, _, anon, write, tls, timeout, root ->
+            onUpdateFtpConfig(port, pStart, pEnd, user, anon, write, tls, timeout, root)
+        }
 ) {
+    val context = LocalContext.current
     val resolvedLanIp by produceState(
         initialValue = ftpState.boundIpAddress.ifBlank { "127.0.0.1" },
         ftpState.isRunning
@@ -263,6 +298,23 @@ private fun FtpServerControlTab(
             FtpServerEngine.resolveLocalLanIpAddress()
         }
     }
+    val removableVolumes by produceState(
+        initialValue = emptyList<Pair<String, java.io.File>>(),
+        ftpState.isRunning
+    ) {
+        value = withContext(Dispatchers.IO) {
+            com.example.core.filesystem.LocalFileSystemProvider(context).discoverRemovableStorageDirectories()
+        }
+    }
+    val initialRootMode = remember(settings.ftpRootPath) {
+        val raw = settings.ftpRootPath.trim()
+        if (raw.isEmpty() || raw.equals("ALL", ignoreCase = true) || raw.startsWith("/storage/emulated")) {
+            "ALL"
+        } else {
+            raw
+        }
+    }
+    var selectedRootMode by remember(initialRootMode) { mutableStateOf(initialRootMode) }
     var portText by remember(settings.ftpPort) { mutableStateOf(settings.ftpPort.toString()) }
     var pasvStartText by remember(settings.ftpPassivePortStart) { mutableStateOf(settings.ftpPassivePortStart.toString()) }
     var pasvEndText by remember(settings.ftpPassivePortEnd) { mutableStateOf(settings.ftpPassivePortEnd.toString()) }
@@ -403,7 +455,7 @@ private fun FtpServerControlTab(
                                         allowWrite,
                                         false,
                                         timeoutMinText.toIntOrNull() ?: 15,
-                                        settings.ftpRootPath
+                                        selectedRootMode
                                     )
                                     onStartFtpServer(password)
                                 },
@@ -456,6 +508,13 @@ private fun FtpServerControlTab(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                        if (ftpState.mountedVolumesSummary.isNotBlank()) {
+                            Text(
+                                text = "Shared folders: ${ftpState.mountedVolumesSummary}",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = JetBrainsMonoFamily
+                            )
+                        }
                         Text(
                             text = "Active sessions: ${ftpState.activeClientsCount} • Transferred: ${formatByteSize(ftpState.bytesTransferred)} • PASV Range: ${ftpState.passivePortRange}",
                             style = MaterialTheme.typography.labelSmall
@@ -481,12 +540,111 @@ private fun FtpServerControlTab(
                 ) {
                     Text("Server Configuration", style = MaterialTheme.typography.titleSmall)
 
+                    // Shared Storage Root Selector (File Manager + style: All Storage /device & /sdcard vs Single Volume)
+                    Text(
+                        text = "Shared Storage Root (Access from PC / Other Device)",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = selectedRootMode == "ALL",
+                            onClick = {
+                                selectedRootMode = "ALL"
+                                onUpdateFtpConfig(
+                                    portText.toIntOrNull() ?: 2121,
+                                    pasvStartText.toIntOrNull() ?: 50000,
+                                    pasvEndText.toIntOrNull() ?: 50050,
+                                    username,
+                                    allowAnonymous,
+                                    allowWrite,
+                                    false,
+                                    timeoutMinText.toIntOrNull() ?: 15,
+                                    "ALL"
+                                )
+                            },
+                            label = {
+                                Text(
+                                    if (removableVolumes.isNotEmpty()) {
+                                        "All Storage (/device + /sdcard)"
+                                    } else {
+                                        "All Storage (/device)"
+                                    }
+                                )
+                            },
+                            modifier = Modifier.testTag("ftp_root_mode_all")
+                        )
+                        FilterChip(
+                            selected = selectedRootMode == "INTERNAL",
+                            onClick = {
+                                selectedRootMode = "INTERNAL"
+                                onUpdateFtpConfig(
+                                    portText.toIntOrNull() ?: 2121,
+                                    pasvStartText.toIntOrNull() ?: 50000,
+                                    pasvEndText.toIntOrNull() ?: 50050,
+                                    username,
+                                    allowAnonymous,
+                                    allowWrite,
+                                    false,
+                                    timeoutMinText.toIntOrNull() ?: 15,
+                                    "INTERNAL"
+                                )
+                            },
+                            label = { Text("Internal Storage Only") },
+                            modifier = Modifier.testTag("ftp_root_mode_internal")
+                        )
+                        removableVolumes.forEachIndexed { index, (label, dir) ->
+                            val sdPath = dir.absolutePath
+                            FilterChip(
+                                selected = selectedRootMode == sdPath,
+                                onClick = {
+                                    selectedRootMode = sdPath
+                                    onUpdateFtpConfig(
+                                        portText.toIntOrNull() ?: 2121,
+                                        pasvStartText.toIntOrNull() ?: 50000,
+                                        pasvEndText.toIntOrNull() ?: 50050,
+                                        username,
+                                        allowAnonymous,
+                                        allowWrite,
+                                        false,
+                                        timeoutMinText.toIntOrNull() ?: 15,
+                                        sdPath
+                                    )
+                                },
+                                label = { Text("$label Only (${dir.name})") },
+                                modifier = Modifier.testTag("ftp_root_mode_sdcard_$index")
+                            )
+                        }
+                    }
+                    Text(
+                        text = when (selectedRootMode) {
+                            "ALL" -> if (removableVolumes.isNotEmpty()) {
+                                val sdList = removableVolumes.mapIndexed { idx, (_, d) ->
+                                    val key = if (idx == 0) "sdcard" else "sdcard${idx + 1}"
+                                    "/$key (${d.absolutePath})"
+                                }.joinToString(", ")
+                                "Exposes both /device (Internal Storage) and $sdList at the FTP root /."
+                            } else {
+                                "Exposes /device (Internal Storage) at /. Any inserted SD card or USB drive will automatically appear as /sdcard."
+                            }
+                            "INTERNAL" -> "Exposes Internal Shared Storage directly at the FTP root /."
+                            else -> "Exposes SD Card ($selectedRootMode) directly at the FTP root /."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
                             value = portText,
                             onValueChange = { portText = it },
                             label = { Text("Command Port") },
-                            enabled = !ftpState.isRunning,
                             singleLine = true,
                             modifier = Modifier.weight(1f)
                         )
@@ -494,7 +652,6 @@ private fun FtpServerControlTab(
                             value = pasvStartText,
                             onValueChange = { pasvStartText = it },
                             label = { Text("PASV Start") },
-                            enabled = !ftpState.isRunning,
                             singleLine = true,
                             modifier = Modifier.weight(1f)
                         )
@@ -502,7 +659,6 @@ private fun FtpServerControlTab(
                             value = pasvEndText,
                             onValueChange = { pasvEndText = it },
                             label = { Text("PASV End") },
-                            enabled = !ftpState.isRunning,
                             singleLine = true,
                             modifier = Modifier.weight(1f)
                         )
@@ -513,9 +669,10 @@ private fun FtpServerControlTab(
                             value = username,
                             onValueChange = { username = it },
                             label = { Text("Username") },
-                            enabled = !ftpState.isRunning && !allowAnonymous,
                             singleLine = true,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("ftp_username_input")
                         )
                         OutlinedTextField(
                             value = password,
@@ -533,8 +690,6 @@ private fun FtpServerControlTab(
                                     )
                                 }
                             },
-                            readOnly = ftpState.isRunning,
-                            enabled = !allowAnonymous,
                             singleLine = true,
                             modifier = Modifier
                                 .weight(1f)
@@ -547,11 +702,11 @@ private fun FtpServerControlTab(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Allow Read/Write Uploads (STOR/DELE/MKD)", style = MaterialTheme.typography.bodyMedium)
+                        Text("Allow Read/Write Access", style = MaterialTheme.typography.bodyMedium)
                         Switch(
                             checked = allowWrite,
                             onCheckedChange = { allowWrite = it },
-                            enabled = !ftpState.isRunning
+                            modifier = Modifier.testTag("ftp_allow_write_switch")
                         )
                     }
 
@@ -564,7 +719,7 @@ private fun FtpServerControlTab(
                         Switch(
                             checked = allowAnonymous,
                             onCheckedChange = { allowAnonymous = it },
-                            enabled = !ftpState.isRunning
+                            modifier = Modifier.testTag("ftp_allow_anonymous_switch")
                         )
                     }
 
@@ -572,10 +727,31 @@ private fun FtpServerControlTab(
                         value = timeoutMinText,
                         onValueChange = { timeoutMinText = it },
                         label = { Text("Idle Auto-Shutdown Timeout (Minutes)") },
-                        enabled = !ftpState.isRunning,
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+
+                    Button(
+                        onClick = {
+                            onSaveFtpConfig(
+                                portText.toIntOrNull() ?: 2121,
+                                pasvStartText.toIntOrNull() ?: 50000,
+                                pasvEndText.toIntOrNull() ?: 50050,
+                                username.trim().ifBlank { "openfile" },
+                                password,
+                                allowAnonymous,
+                                allowWrite,
+                                false,
+                                timeoutMinText.toIntOrNull() ?: 15,
+                                selectedRootMode
+                            )
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("ftp_save_config_button")
+                    ) {
+                        Text(if (ftpState.isRunning) "Save & Apply Configuration" else "Save Configuration")
+                    }
                 }
             }
         }
@@ -619,7 +795,8 @@ private fun RemoteClientsTab(
     onAddProfileClick: () -> Unit,
     onConnectProfile: (NetworkProfileEntity) -> Unit,
     onDeleteProfile: (NetworkProfileEntity) -> Unit,
-    onScanLan: () -> Unit
+    onScanLan: () -> Unit,
+    onSelectDiscoveredHost: (DiscoveredLanHost) -> Unit = {}
 ) {
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -792,36 +969,157 @@ private fun RemoteClientsTab(
         if (discoveredHosts.isNotEmpty()) {
             item {
                 Spacer(modifier = Modifier.height(8.dp))
-                Text("Discovered LAN Services", style = MaterialTheme.typography.titleSmall)
+                Text("Discovered LAN Services (Tap to Connect)", style = MaterialTheme.typography.titleSmall)
             }
             items(
-            items = discoveredHosts,
-            key = { "${it.ipAddress}:${it.port}" },
-            contentType = { "host" }
-        ) { host ->
+                items = discoveredHosts,
+                key = { "${it.ipAddress}:${it.port}" },
+                contentType = { "host" }
+            ) { host ->
                 Card(
+                    onClick = { onSelectDiscoveredHost(host) },
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surfaceContainerLow
                     ),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("discovered_lan_host_${host.ipAddress}_${host.port}")
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(12.dp),
+                            .padding(14.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(host.bannerOrName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                             Text("${host.ipAddress}:${host.port}", style = MaterialTheme.typography.labelSmall, fontFamily = JetBrainsMonoFamily)
                         }
-                        Text(host.protocolGuess, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(host.protocolGuess, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = "Connect to ${host.ipAddress}",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun ConnectDiscoveredHostDialog(
+    host: DiscoveredLanHost,
+    initialUsername: String = "openfile",
+    initialShareName: String = "",
+    initialAnonymous: Boolean = false,
+    onDismiss: () -> Unit,
+    onConnect: (username: String, password: String, shareName: String, isAnonymous: Boolean) -> Unit
+) {
+    var username by remember(host) { mutableStateOf(initialUsername) }
+    var password by remember(host) { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+    var shareName by remember(host) { mutableStateOf(initialShareName) }
+    var isAnonymous by remember(host) { mutableStateOf(initialAnonymous) }
+    val isSmb = host.protocolGuess.equals("SMB", ignoreCase = true)
+    val isSftp = host.protocolGuess.equals("SFTP", ignoreCase = true)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Connect to ${host.bannerOrName.ifBlank { host.ipAddress }}",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "${host.protocolGuess} • ${host.ipAddress}:${host.port}",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontFamily = JetBrainsMonoFamily,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                if (isSmb) {
+                    OutlinedTextField(
+                        value = shareName,
+                        onValueChange = { shareName = it },
+                        label = { Text("SMB Share Name (e.g. Public)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = isAnonymous,
+                        onCheckedChange = { isAnonymous = it },
+                        modifier = Modifier.testTag("discovered_host_anonymous_checkbox")
+                    )
+                    Text("Anonymous / Guest Login", style = MaterialTheme.typography.bodySmall)
+                }
+                if (!isAnonymous) {
+                    OutlinedTextField(
+                        value = username,
+                        onValueChange = { username = it },
+                        label = { Text("Username") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("discovered_host_username_input")
+                    )
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = {
+                            Text(if (isSftp) "Password or PEM Private Key" else "Password")
+                        },
+                        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(
+                                onClick = { passwordVisible = !passwordVisible },
+                                modifier = Modifier.testTag("discovered_host_password_toggle")
+                            ) {
+                                Icon(
+                                    imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                    contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                                )
+                            }
+                        },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("discovered_host_password_input")
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onConnect(
+                        username.trim().ifBlank { "openfile" },
+                        password,
+                        shareName.trim(),
+                        isAnonymous
+                    )
+                },
+                modifier = Modifier.testTag("discovered_host_connect_button")
+            ) {
+                Text("Connect")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @Composable
@@ -959,448 +1257,6 @@ private fun AddNetworkProfileDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
-}
-
-/**
- * Extensible Cloud Storage Integration Screen (Google Drive, Microsoft OneDrive, Dropbox)
- * with 1-tap direct webpage login & storage view (File Manager + style) and OAuth 2.0 PKCE support.
- */
-@Composable
-fun CloudStorageScreen(
-    accounts: List<CloudAccountEntity>,
-    activePkceSession: PkceSession?,
-    onStartOAuth: (CloudProviderKind, String) -> Result<String>,
-    onCompleteOAuth: (String, String, Boolean) -> Unit,
-    onOpenCloudAccount: (CloudAccountEntity) -> Unit,
-    onDisconnectAccount: (CloudAccountEntity) -> Unit,
-    onShowMessage: (String) -> Unit,
-    onGoogleDriveAuthorized: (String, String?) -> Unit = { _, _ -> },
-    activeWebCloudProvider: CloudProviderKind? = null,
-    activeWebCloudUrl: String? = null,
-    onConnectProviderDirect: (CloudProviderKind) -> Unit = {},
-    onReauthenticateProviderInBrowser: (CloudProviderKind) -> Unit = {},
-    onWebCloudAuthenticated: (CloudProviderKind, String?) -> Unit = { _, _ -> },
-    onOAuthRedirectUri: (Uri) -> Unit = {},
-    onDownloadCloudWebFile: (String, String?, String?, String?, String?) -> Unit = { _, _, _, _, _ -> },
-    onCloseWebCloudPortal: () -> Unit = {},
-    settings: AppSettingsState = AppSettingsState(),
-    bookmarks: List<BookmarkEntity> = emptyList(),
-    clipboard: ClipboardState = ClipboardState(),
-    onRetrieveOAuthToken: (CloudAccountEntity) -> String = { "" },
-    onOpenDriveFilePickerModal: () -> Unit = {},
-    onOpenCloudFolderInBrowser: (CloudAccountEntity, String) -> Unit = { acc, _ -> onOpenCloudAccount(acc) },
-    onPreviewOrEditFile: (FileReference) -> Unit = {},
-    onCopyItems: (List<FileReference>, ClipboardMode) -> Unit = { _, _ -> },
-    onPasteToDriveFolder: (CloudAccountEntity, String) -> Unit = { _, _ -> },
-    onClearClipboard: () -> Unit = {},
-    onDownloadToLocal: (FileReference) -> Unit = {},
-    onShareItem: (FileReference) -> Unit = {},
-    onOpenProperties: (FileReference) -> Unit = {},
-    onToggleBookmark: (FileReference) -> Unit = {},
-    onImportPickedDriveFiles: (List<FileReference>) -> Unit = {}
-) {
-    val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
-    var configuringProvider by remember { mutableStateOf<CloudProviderKind?>(null) }
-
-    val driveAuthIntentLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartIntentSenderForResult()
-    ) { result ->
-        val data = result.data ?: return@rememberLauncherForActivityResult
-        runCatching {
-            GoogleDriveOnDeviceAuth.resultFromConsentIntent(context, data)
-        }.onSuccess { authResult ->
-            val token = authResult.accessToken
-            if (!token.isNullOrBlank()) {
-                onGoogleDriveAuthorized(token, "container6767@gmail.com")
-            }
-        }.onFailure { err ->
-            onShowMessage("Google Drive authorization failed: ${err.message}")
-        }
-    }
-
-    val googleDriveAccount = remember(accounts) {
-        accounts.firstOrNull { it.provider == CloudProviderKind.GOOGLE_DRIVE.name }
-    }
-
-    LazyColumn(
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        modifier = Modifier
-            .fillMaxSize()
-            .testTag("cloud_storage_screen")
-    ) {
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Cloud Storage & Google Drive FilePicker", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        text = "Authenticate via Google OAuth2 / default browser, then browse, select, cut/move, copy, and edit your Google Drive files natively inside OpenFile.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Button(
-                    onClick = onOpenDriveFilePickerModal,
-                    modifier = Modifier.testTag("open_drive_file_picker_button")
-                ) {
-                    Icon(Icons.Filled.Cloud, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Drive FilePicker")
-                }
-            }
-        }
-
-        if (activeWebCloudProvider != null && !activeWebCloudUrl.isNullOrBlank()) {
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("cloud_web_portal_view")
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "${activeWebCloudProvider.displayName} • Browser Authentication",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    text = "Authenticated via browser. Your ${activeWebCloudProvider.displayName} files & folders are mounted natively inside OpenFile.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(
-                                onClick = {
-                                    runCatching {
-                                        context.startActivity(
-                                            Intent(Intent.ACTION_VIEW, Uri.parse(activeWebCloudUrl)).apply {
-                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            }
-                                        )
-                                    }
-                                }
-                            ) {
-                                Text("Re-auth")
-                            }
-                            IconButton(
-                                onClick = onCloseWebCloudPortal,
-                                modifier = Modifier.testTag("cloud_web_portal_close")
-                            ) {
-                                Icon(Icons.Filled.Close, contentDescription = "Dismiss browser sign-in banner")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (accounts.isNotEmpty()) {
-            item {
-                HorizontalDivider()
-                Text("Mounted Cloud Drives (Tap to Open Natively)", style = MaterialTheme.typography.titleMedium)
-            }
-            items(
-            items = accounts,
-            key = { it.id },
-            contentType = { "account" }
-        ) { acc ->
-                Card(
-                    onClick = { onOpenCloudAccount(acc) },
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("cloud_account_card_${acc.provider}")
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Cloud,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(acc.displayName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    text = "${acc.accountEmail} • Native In-App Drive (Cut/Copy/Edit)",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                contentDescription = "Open cloud storage",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            IconButton(onClick = { onDisconnectAccount(acc) }) {
-                                Icon(Icons.Filled.Delete, contentDescription = "Disconnect account", tint = MaterialTheme.colorScheme.error)
-                            }
-                        }
-                    }
-                }
-            }
-            item {
-                HorizontalDivider()
-            }
-        }
-
-        // Embedded Native Google Drive FilePicker when Google Drive is connected
-        if (googleDriveAccount != null) {
-            item(key = "embedded_drive_picker", contentType = "drive_picker") {
-                val activeToken by produceState(initialValue = "", key1 = googleDriveAccount) {
-                    value = withContext(Dispatchers.IO) {
-                        onRetrieveOAuthToken(googleDriveAccount)
-                    }
-                }
-                GoogleDriveFilePicker(
-                    account = googleDriveAccount,
-                    oauthAccessToken = activeToken,
-                    settings = settings,
-                    bookmarks = bookmarks,
-                    clipboard = clipboard,
-                    onPreviewOrEditFile = onPreviewOrEditFile,
-                    onCopyItems = onCopyItems,
-                    onPasteToDriveFolder = onPasteToDriveFolder,
-                    onClearClipboard = onClearClipboard,
-                    onDownloadToLocal = onDownloadToLocal,
-                    onShareItem = onShareItem,
-                    onOpenProperties = onOpenProperties,
-                    onToggleBookmark = onToggleBookmark,
-                    onOpenFullBrowserAtFolder = onOpenCloudFolderInBrowser,
-                    onReauthenticateOAuth = {
-                        onReauthenticateProviderInBrowser(CloudProviderKind.GOOGLE_DRIVE)
-                    },
-                    onFilesPicked = onImportPickedDriveFiles,
-                    onStatusMessage = onShowMessage,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp * 0.6f))
-                )
-            }
-        }
-
-        // Provider Connector Cards
-        items(
-            items = CloudProviderKind.entries,
-            key = { it.id },
-            contentType = { "provider_card" }
-        ) { provider ->
-            val connectedAccount = accounts.firstOrNull { it.provider == provider.name }
-            val isConnected = connectedAccount != null
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                ),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Filled.Cloud, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(provider.displayName, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                text = if (isConnected) "Mounted Natively (${connectedAccount?.accountEmail})" else "Browser Sign-In + Native In-App Access",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (isConnected) ApkGreen else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        IconButton(
-                            onClick = { configuringProvider = provider },
-                            modifier = Modifier.testTag("configure_oauth_${provider.id}")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Key,
-                                contentDescription = "Custom OAuth API Key for ${provider.displayName}",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        if (isConnected) {
-                            OutlinedButton(
-                                onClick = { onReauthenticateProviderInBrowser(provider) },
-                                modifier = Modifier.testTag("reauth_${provider.id}")
-                            ) {
-                                Text("Browser Auth")
-                            }
-                        }
-                        Button(
-                            onClick = {
-                                if (connectedAccount != null) {
-                                    onOpenCloudAccount(connectedAccount)
-                                } else if (provider == CloudProviderKind.GOOGLE_DRIVE) {
-                                    coroutineScope.launch {
-                                        runCatching {
-                                            GoogleDriveOnDeviceAuth.authorize(context, "container6767@gmail.com")
-                                        }.fold(
-                                            onSuccess = { authResult ->
-                                                val token = authResult.accessToken
-                                                if (!authResult.hasResolution() && !token.isNullOrBlank()) {
-                                                    onGoogleDriveAuthorized(token, "container6767@gmail.com")
-                                                } else if (authResult.hasResolution() && authResult.pendingIntent != null) {
-                                                    driveAuthIntentLauncher.launch(
-                                                        IntentSenderRequest.Builder(authResult.pendingIntent!!.intentSender).build()
-                                                    )
-                                                } else {
-                                                    onConnectProviderDirect(provider)
-                                                }
-                                            },
-                                            onFailure = {
-                                                // Fallback to browser sign-in + native Drive mount
-                                                onConnectProviderDirect(provider)
-                                            }
-                                        )
-                                    }
-                                } else {
-                                    onConnectProviderDirect(provider)
-                                }
-                            },
-                            modifier = Modifier.testTag("connect_${provider.id}")
-                        ) {
-                            Text(if (isConnected) "Open in App" else "Connect")
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if (configuringProvider != null) {
-        val provider = configuringProvider!!
-        var clientId by remember(provider) { mutableStateOf(provider.defaultClientIdFromBuildConfig()) }
-        var accountEmail by remember {
-            mutableStateOf(if (provider == CloudProviderKind.GOOGLE_DRIVE) "container6767@gmail.com" else "")
-        }
-        var authCodeOrToken by remember { mutableStateOf("") }
-        var directTokenMode by remember { mutableStateOf(false) }
-
-        AlertDialog(
-            onDismissRequest = { configuringProvider = null },
-            title = { Text("Custom OAuth Key: ${provider.displayName}") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = clientId,
-                        onValueChange = { clientId = it },
-                        label = { Text("OAuth 2.0 Client ID / App Key") },
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = accountEmail,
-                        onValueChange = { accountEmail = it },
-                        label = { Text("Account Label / Email") },
-                        singleLine = true
-                    )
-                    OutlinedButton(
-                        onClick = {
-                            onStartOAuth(provider, clientId).fold(
-                                onSuccess = { authUrl ->
-                                    runCatching {
-                                        context.startActivity(
-                                            Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)).apply {
-                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            }
-                                        )
-                                        configuringProvider = null
-                                    }.onFailure {
-                                        onShowMessage("No browser available to sign in: ${it.message}")
-                                    }
-                                },
-                                onFailure = { onShowMessage(it.message ?: "Invalid Client ID") }
-                            )
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("1. Launch Default Browser OAuth 2.0 PKCE")
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = directTokenMode, onCheckedChange = { directTokenMode = it })
-                        Text("Use Direct OAuth Access Token", style = MaterialTheme.typography.bodySmall)
-                    }
-                    OutlinedTextField(
-                        value = authCodeOrToken,
-                        onValueChange = { authCodeOrToken = it },
-                        label = {
-                            Text(if (directTokenMode) "OAuth 2.0 Access Token" else "2. Authorization Code from Redirect")
-                        },
-                        singleLine = true
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (activePkceSession == null && clientId.isNotBlank()) {
-                            onStartOAuth(provider, clientId)
-                        }
-                        if (authCodeOrToken.isNotBlank()) {
-                            onCompleteOAuth(accountEmail, authCodeOrToken, directTokenMode)
-                            configuringProvider = null
-                        }
-                    }
-                ) {
-                    Text("Verify & Save to Keystore")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { configuringProvider = null }) { Text("Cancel") }
-            }
-        )
-    }
 }
 
 /**

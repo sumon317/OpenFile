@@ -119,12 +119,12 @@ class StorageAnalyzerEngine(
                     )
                 }
 
-            val largestFiles = allFiles.sortedByDescending { it.sizeBytes }.take(50)
+            val largestFiles = allFiles.sortedByDescending { it.sizeBytes }.take(200)
             val largestDirs = directorySizes.entries
                 .filter { it.key != rootDir }
                 .sortedByDescending { it.value }
-                .take(30)
-                .map { localProvider.toFileReference(it.key) to it.value }
+                .take(100)
+                .map { localProvider.toFileReference(it.key).copy(sizeBytes = it.value) to it.value }
 
             val topExtensions = extensionStats.entries
                 .sortedByDescending { it.value.second }

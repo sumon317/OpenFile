@@ -78,18 +78,6 @@ class TransferQueueEngine(
         File(context.filesDir, ".openfile_trash").apply { if (!exists()) mkdirs() }
     }
 
-    private val googleDriveProvider: com.example.core.cloud.CloudFileSystemProvider by lazy {
-        com.example.core.cloud.CloudFileSystemProvider(context, dao, credentialVault, ProviderType.GOOGLE_DRIVE)
-    }
-
-    private val oneDriveProvider: com.example.core.cloud.CloudFileSystemProvider by lazy {
-        com.example.core.cloud.CloudFileSystemProvider(context, dao, credentialVault, ProviderType.ONEDRIVE)
-    }
-
-    private val dropboxProvider: com.example.core.cloud.CloudFileSystemProvider by lazy {
-        com.example.core.cloud.CloudFileSystemProvider(context, dao, credentialVault, ProviderType.DROPBOX)
-    }
-
     fun copyToClipboard(items: List<FileReference>, mode: ClipboardMode) {
         _clipboard.value = ClipboardState(items = items, mode = mode)
     }
@@ -127,9 +115,6 @@ class TransferQueueEngine(
 
     private fun providerFor(type: ProviderType): VirtualFileSystemProvider = when (type) {
         ProviderType.SAF -> safProvider
-        ProviderType.GOOGLE_DRIVE -> googleDriveProvider
-        ProviderType.ONEDRIVE -> oneDriveProvider
-        ProviderType.DROPBOX -> dropboxProvider
         else -> localProvider
     }
 

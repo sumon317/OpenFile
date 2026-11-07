@@ -233,15 +233,11 @@ class OpenFileDeviceInstrumentedTest {
                 viewModel.navigateToDestination(OpenFileDestination.NETWORK)
                 assertEquals(OpenFileDestination.NETWORK, viewModel.currentDestination.value)
 
-                // 4. Cloud Storage screen
-                viewModel.navigateToDestination(OpenFileDestination.CLOUD_STORAGE)
-                assertEquals(OpenFileDestination.CLOUD_STORAGE, viewModel.currentDestination.value)
-
-                // 5. Settings screen
+                // 4. Settings screen
                 viewModel.navigateToDestination(OpenFileDestination.SETTINGS)
                 assertEquals(OpenFileDestination.SETTINGS, viewModel.currentDestination.value)
 
-                // 6. Return Home
+                // 5. Return Home
                 viewModel.navigateToDestination(OpenFileDestination.HOME)
                 assertEquals(OpenFileDestination.HOME, viewModel.currentDestination.value)
             }
