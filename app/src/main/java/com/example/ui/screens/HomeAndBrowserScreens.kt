@@ -183,12 +183,28 @@ fun HomeScreen(
         }
         listOf(
             HomeTileSpec(
+                label = "New Files",
+                subtitle = countLabel(FileCategory.RECENT_FILES, "Recent"),
+                icon = Icons.Filled.History,
+                badgeColor = Color(0xFF29B6F6),
+                testTag = "shortcut_${OpenFileDestination.RECENT_FILES.route}",
+                onClick = { onNavigateDestination(OpenFileDestination.RECENT_FILES) }
+            ),
+            HomeTileSpec(
                 label = "Downloads",
                 subtitle = countLabel(FileCategory.DOWNLOADS, "Folder"),
                 icon = Icons.Filled.Download,
                 badgeColor = Color(0xFF26A69A),
                 testTag = "shortcut_${OpenFileDestination.DOWNLOADS.route}",
                 onClick = { onNavigateDestination(OpenFileDestination.DOWNLOADS) }
+            ),
+            HomeTileSpec(
+                label = "Documents",
+                subtitle = countLabel(FileCategory.DOCUMENTS, "PDF & Office"),
+                icon = Icons.Filled.Description,
+                badgeColor = Color(0xFF42A5F5),
+                testTag = "shortcut_${OpenFileDestination.DOCUMENTS.route}",
+                onClick = { onNavigateDestination(OpenFileDestination.DOCUMENTS) }
             ),
             HomeTileSpec(
                 label = "Images",
@@ -215,28 +231,12 @@ fun HomeScreen(
                 onClick = { onNavigateDestination(OpenFileDestination.VIDEOS) }
             ),
             HomeTileSpec(
-                label = "Documents",
-                subtitle = countLabel(FileCategory.DOCUMENTS, "PDF & Office"),
-                icon = Icons.Filled.Description,
-                badgeColor = Color(0xFF42A5F5),
-                testTag = "shortcut_${OpenFileDestination.DOCUMENTS.route}",
-                onClick = { onNavigateDestination(OpenFileDestination.DOCUMENTS) }
-            ),
-            HomeTileSpec(
                 label = "Apps & APKs",
                 subtitle = categoryCounts[FileCategory.APPLICATIONS]?.let { "$it apps" } ?: "Installed",
                 icon = Icons.Filled.Android,
                 badgeColor = ApkGreen,
                 testTag = "shortcut_${OpenFileDestination.APPLICATIONS.route}",
                 onClick = { onNavigateDestination(OpenFileDestination.APPLICATIONS) }
-            ),
-            HomeTileSpec(
-                label = "New Files",
-                subtitle = countLabel(FileCategory.RECENT_FILES, "Recent"),
-                icon = Icons.Filled.History,
-                badgeColor = Color(0xFF29B6F6),
-                testTag = "shortcut_${OpenFileDestination.RECENT_FILES.route}",
-                onClick = { onNavigateDestination(OpenFileDestination.RECENT_FILES) }
             ),
             HomeTileSpec(
                 label = "Archives",
