@@ -11,6 +11,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -134,6 +136,10 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+private val CodeExtensions = setOf(
+    "kt", "java", "py", "js", "ts", "json", "xml", "html", "sh", "yaml", "yml"
+)
+
 private fun resolveLocalBackingFile(file: FileReference): File? {
     file.metadata["localBackingPath"]?.takeIf { it.isNotBlank() }?.let { path ->
         val f = File(path)
@@ -152,19 +158,42 @@ private fun resolveFastThumbnailPath(file: FileReference): String? {
     return null
 }
 
+private val FileIconBadgeShape = RoundedCornerShape(10.dp)
+private val GridCardShape = RoundedCornerShape(12.dp)
+
+private class FastDateCache(private val capacity: Int = 128) {
+    private val keys = LongArray(capacity) { -1L }
+    private val values = arrayOfNulls<String>(capacity)
+
+    fun format(epochMs: Long, formatter: SimpleDateFormat): String {
+        if (epochMs <= 0L) return ""
+        val idx = ((epochMs xor (epochMs ushr 16)).toInt() and (capacity - 1))
+        if (keys[idx] == epochMs) {
+            val cached = values[idx]
+            if (cached != null) return cached
+        }
+        val formatted = formatter.format(Date(epochMs))
+        keys[idx] = epochMs
+        values[idx] = formatted
+        return formatted
+    }
+}
+
+private val dateCache = FastDateCache()
+
 @Composable
 fun FileIconBadge(
     file: FileReference,
     showThumbnails: Boolean,
-    isSelected: () -> Boolean,
-    modifier: Modifier = Modifier
+    isSelected: Boolean,
+    modifier: Modifier = Modifier,
+    context: android.content.Context = LocalContext.current
 ) {
-    if (isSelected()) {
+    if (isSelected) {
         Box(
             modifier = modifier
                 .size(42.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(MaterialTheme.colorScheme.primary),
+                .background(MaterialTheme.colorScheme.primary, FileIconBadgeShape),
             contentAlignment = Alignment.Center
         ) {
             Icon(
@@ -183,8 +212,7 @@ fun FileIconBadge(
     } else null
 
     if (thumbPath != null) {
-        val context = LocalContext.current
-        val imageRequest = remember(thumbPath) {
+        val imageRequest = remember(thumbPath, context) {
             ImageRequest.Builder(context)
                 .data(File(thumbPath))
                 .size(120, 120)
@@ -200,7 +228,7 @@ fun FileIconBadge(
             contentScale = ContentScale.Crop,
             modifier = modifier
                 .size(42.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .clip(FileIconBadgeShape)
         )
         return
     }
@@ -215,8 +243,7 @@ fun FileIconBadge(
             ext in FileCategory.AUDIO.extensions -> Icons.Filled.AudioFile to AudioPurple
             ext == "pdf" -> Icons.Filled.PictureAsPdf to VideoCoral
             ext == "apk" -> Icons.Filled.Android to ApkGreen
-            ext in setOf("kt", "java", "py", "js", "ts", "json", "xml", "html", "sh", "yaml", "yml") ->
-                Icons.Filled.Code to DocumentIndigo
+            ext in CodeExtensions -> Icons.Filled.Code to DocumentIndigo
             ext in FileCategory.DOCUMENTS.extensions -> Icons.Filled.Description to DocumentIndigo
             else -> Icons.AutoMirrored.Filled.InsertDriveFile to defaultSecondaryColor
         }
@@ -225,8 +252,7 @@ fun FileIconBadge(
     Box(
         modifier = modifier
             .size(42.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(tintColor.copy(alpha = 0.14f)),
+            .background(tintColor.copy(alpha = 0.14f), FileIconBadgeShape),
         contentAlignment = Alignment.Center
     ) {
         Icon(
@@ -304,8 +330,8 @@ private val rowDateFormat = object : ThreadLocal<SimpleDateFormat>() {
 @Composable
 fun FileItemRow(
     file: FileReference,
-    isSelected: () -> Boolean,
-    isBookmarked: () -> Boolean,
+    isSelected: Boolean,
+    isBookmarked: Boolean,
     showThumbnails: Boolean,
     showExtensions: Boolean,
     onClick: () -> Unit,
@@ -319,7 +345,8 @@ fun FileItemRow(
     onProperties: () -> Unit,
     onDownloadRemote: (() -> Unit)? = null,
     onOpenWith: (() -> Unit)? = null,
-    onQuickPreview: (() -> Unit)? = null
+    onQuickPreview: (() -> Unit)? = null,
+    context: android.content.Context = LocalContext.current
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val displayTitle = remember(file.displayName, file.isDirectory, showExtensions) {
@@ -331,51 +358,72 @@ fun FileItemRow(
     }
     val childCountMeta = file.metadata["childCount"]
     val permissionsMeta = file.metadata["permissions"]
+    val appLabelMeta = file.metadata["appLabel"]
+    val safMountedMeta = file.metadata["safMounted"]
+    val restrictedMeta = file.metadata["restrictedAppFolder"]
+    // Memoize the complete subtitle string — date formatting is relatively expensive
     val subtitleText = remember(
         file.isDirectory,
         file.sizeBytes,
         file.lastModifiedEpochMs,
         childCountMeta,
-        permissionsMeta
+        permissionsMeta,
+        appLabelMeta,
+        safMountedMeta,
+        restrictedMeta
     ) {
         val dateStr = if (file.lastModifiedEpochMs <= 0L) ""
-        else (rowDateFormat.get() ?: SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()))
-            .format(Date(file.lastModifiedEpochMs))
+        else dateCache.format(
+            file.lastModifiedEpochMs,
+            rowDateFormat.get() ?: SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+        )
+        // formattedSize and permissionsString are computed properties — evaluate once here
         val sizePart = file.formattedSize
         val permPart = file.permissionsString
+        val prefix = if (!appLabelMeta.isNullOrBlank()) "$appLabelMeta  •  " else ""
+        val statusSuffix = when {
+            safMountedMeta == "true" -> "  •  SAF Mounted"
+            restrictedMeta == "true" -> "  •  Tap to open / mount"
+            else -> ""
+        }
         if (dateStr.isEmpty()) {
-            "$sizePart  •  $permPart"
+            "$prefix$sizePart  •  $permPart$statusSuffix"
         } else {
-            "$sizePart  •  $dateStr  •  $permPart"
+            "$prefix$sizePart  •  $dateStr  •  $permPart$statusSuffix"
         }
     }
-    val selected = isSelected()
-    val bookmarked = isBookmarked()
+    val bookmarked = isBookmarked
+    val dividerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+    val selectedBgColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
 
-    Surface(
-        color = if (selected) {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-        } else {
-            Color.Transparent
-        },
+    Row(
         modifier = Modifier
             .fillMaxWidth()
+            .drawBehind {
+                if (isSelected) {
+                    drawRect(color = selectedBgColor)
+                }
+                val stroke = 1.dp.toPx()
+                drawLine(
+                    color = dividerColor,
+                    start = Offset(0f, size.height - stroke / 2),
+                    end = Offset(size.width, size.height - stroke / 2),
+                    strokeWidth = stroke
+                )
+            }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick
             )
-            .testTag("file_row_${file.displayName}")
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .testTag("file_row_${file.displayName}"),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
             FileIconBadge(
                 file = file,
                 showThumbnails = showThumbnails,
-                isSelected = isSelected
+                isSelected = isSelected,
+                context = context
             )
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
@@ -527,31 +575,31 @@ fun FileItemRow(
                 }
             }
         }
-    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FileItemGridCard(
     file: FileReference,
-    isSelected: () -> Boolean,
+    isSelected: Boolean,
     showThumbnails: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    onProperties: () -> Unit
+    onProperties: () -> Unit,
+    context: android.content.Context = LocalContext.current
 ) {
     val formattedSize = remember(file.isDirectory, file.sizeBytes, file.metadata["childCount"]) {
         file.formattedSize
     }
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelected()) {
+            containerColor = if (isSelected) {
                 MaterialTheme.colorScheme.primaryContainer
             } else {
                 MaterialTheme.colorScheme.surfaceContainerLow
             }
         ),
-        shape = RoundedCornerShape(12.dp),
+        shape = GridCardShape,
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
@@ -569,7 +617,8 @@ fun FileItemGridCard(
             FileIconBadge(
                 file = file,
                 showThumbnails = showThumbnails,
-                isSelected = isSelected
+                isSelected = isSelected,
+                context = context
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
@@ -747,7 +796,7 @@ fun FilePropertiesModalSheet(
                 }
             }
 
-            if (!file.isDirectory && resolveLocalBackingFile(file) != null) {
+            if (!file.isDirectory && resolveFastThumbnailPath(file) != null) {
                 HorizontalDivider()
                 Text(
                     text = "Integrity Checksums",
@@ -897,7 +946,7 @@ fun FilePreviewDialog(
                 ) {
                     when {
                         ext in FileCategory.IMAGES.extensions -> {
-                            val imgModel = resolveLocalBackingFile(file) ?: file.uriOrPath
+                            val imgModel = resolveFastThumbnailPath(file)?.let { File(it) } ?: file.uriOrPath
                             ZoomableImagePreview(imgModel, file.displayName)
                         }
                         ext == "pdf" -> {
@@ -998,12 +1047,12 @@ private fun ZoomableImagePreview(imageModel: Any, title: String) {
             contentDescription = title,
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer(
-                    scaleX = scale,
-                    scaleY = scale,
-                    translationX = offsetX,
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = offsetX
                     translationY = offsetY
-                )
+                }
         )
     }
 }
@@ -1299,7 +1348,11 @@ private fun TextAndCodePreview(
                         )
                         .padding(10.dp)
                 ) {
-                    items(contentLines.size) { index ->
+                    items(
+                        count = contentLines.size,
+                        key = { it },
+                        contentType = { "code_line" }
+                    ) { index ->
                         Row(modifier = Modifier.fillMaxWidth()) {
                             Text(
                                 text = "%4d  ".format(index + 1),

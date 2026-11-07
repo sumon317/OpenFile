@@ -22,6 +22,14 @@ class MainActivity : ComponentActivity() {
     internal val viewModel: OpenFileViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val initialThemeMode = viewModel.settingsStore.getInitialThemeMode()
+        val systemDark = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
+        val isDark = when (initialThemeMode) {
+            com.example.ui.theme.ThemeMode.LIGHT -> false
+            com.example.ui.theme.ThemeMode.DARK, com.example.ui.theme.ThemeMode.AMOLED -> true
+            com.example.ui.theme.ThemeMode.SYSTEM -> systemDark
+        }
+        window.decorView.setBackgroundColor(if (isDark) 0xFF111318.toInt() else 0xFFF9F9FF.toInt())
         super.onCreate(savedInstanceState)
         configureFastImageLoader()
         enableEdgeToEdge()
@@ -66,6 +74,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         viewModel.refreshStorageVolumes()
+        viewModel.onResumeCheckPendingUpdateInstall()
     }
 
     override fun onNewIntent(intent: Intent) {

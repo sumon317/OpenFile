@@ -5,10 +5,8 @@ import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -108,6 +106,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
     val propertiesFile by viewModel.propertiesFile.collectAsStateWithLifecycle()
     val activeWebCloudProvider by viewModel.activeWebCloudProvider.collectAsStateWithLifecycle()
     val showDriveFilePickerModal by viewModel.showDriveFilePickerModal.collectAsStateWithLifecycle()
+    val showAppUpdateDialog by viewModel.showAppUpdateDialog.collectAsStateWithLifecycle()
+    val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -128,6 +128,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
     val permissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) {
+        viewModel.refreshStorageVolumes()
+        viewModel.refreshCategoryCountsAndPrewarm(force = true)
         viewModel.refreshCurrentDirectory()
     }
 
@@ -148,7 +150,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
     LaunchedEffect(statusMessage) {
         val msg = statusMessage ?: return@LaunchedEffect
         snackbarHostState.currentSnackbarData?.dismiss()
-        snackbarHostState.showSnackbar(msg)
+        snackbarHostState.showSnackbar(msg.second)
         viewModel.clearStatusMessage()
     }
 
@@ -185,7 +187,11 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
     }
 
     val activeTransferCount = remember(transferJobs) {
-        transferJobs.count { it.status == "RUNNING" || it.status == "PAUSED" || it.status == "INTERRUPTED" }
+        var count = 0
+        for (job in transferJobs) {
+            if (job.status == "RUNNING" || job.status == "PAUSED" || job.status == "INTERRUPTED") count++
+        }
+        count
     }
 
     val onCycleThemeMode: () -> Unit = {
@@ -206,8 +212,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
         viewModel.showStatus("Theme: $modeLabel")
     }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val isExpandedTablet = maxWidth >= 600.dp
+    val isExpandedTablet = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600
+    Box(modifier = Modifier.fillMaxSize()) {
 
         if (isExpandedTablet) {
             // Canonical Tablet / Foldable Layout with persistent NavigationRail
@@ -268,7 +274,10 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                             viewModel = viewModel,
                             browserState = browserState,
                             settings = settings,
-                            onRequestSafAccess = { safTreeLauncher.launch(null) }
+                            onRequestSafAccess = { safTreeLauncher.launch(null) },
+                            onRequestSafForPath = { path ->
+                                safTreeLauncher.launch(viewModel.buildSafInitialUriForLocalPath(path))
+                            }
                         )
                     }
                 }
@@ -397,7 +406,10 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                         viewModel = viewModel,
                         browserState = browserState,
                         settings = settings,
-                        onRequestSafAccess = { safTreeLauncher.launch(null) }
+                        onRequestSafAccess = { safTreeLauncher.launch(null) },
+                        onRequestSafForPath = { path ->
+                            safTreeLauncher.launch(viewModel.buildSafInitialUriForLocalPath(path))
+                        }
                     )
                 }
             }
@@ -469,8 +481,10 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                 it.provider == com.example.core.cloud.CloudProviderKind.GOOGLE_DRIVE.name
             }
         if (googleAccount != null) {
-            val activeToken = remember(googleAccount) {
-                viewModel.retrieveCloudAccessToken(googleAccount)
+            val activeToken by produceState(initialValue = "", key1 = googleAccount) {
+                value = withContext(Dispatchers.IO) {
+                    viewModel.retrieveCloudAccessToken(googleAccount)
+                }
             }
             GoogleDriveFilePickerDialog(
                 account = googleAccount,
@@ -503,6 +517,97 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                 onStatusMessage = { viewModel.showStatus(it) }
             )
         }
+    }
+
+    // Native In-App GitHub Releases Auto-Update Modal Dialog
+    if (showAppUpdateDialog) {
+        val rel = appUpdateState.latestRelease
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = {
+                if (!appUpdateState.isDownloading) {
+                    viewModel.dismissAppUpdateDialog()
+                }
+            },
+            title = {
+                Text(
+                    text = if (rel != null) "Update Available: ${rel.tagName}" else "App Updates",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (rel != null) {
+                        Text(
+                            text = "${rel.releaseTitle} • Installed: v${appUpdateState.currentVersionName}",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Asset: ${rel.apkAssetName} (${com.example.core.model.formatByteSize(rel.apkSizeBytes)})",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        HorizontalDivider()
+                        Text(
+                            text = rel.changelog,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    } else {
+                        Text(
+                            text = appUpdateState.statusMessage ?: "You are running OpenFile v${appUpdateState.currentVersionName}.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    if (appUpdateState.isDownloading) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        androidx.compose.material3.LinearProgressIndicator(
+                            progress = { appUpdateState.downloadProgressFraction },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            text = "Downloading: ${(appUpdateState.downloadProgressFraction * 100).toInt()}% (${com.example.core.model.formatByteSize(appUpdateState.downloadedBytes)} / ${com.example.core.model.formatByteSize(appUpdateState.totalBytes)})",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    if (appUpdateState.errorMessage != null) {
+                        Text(
+                            text = appUpdateState.errorMessage!!,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (rel != null && appUpdateState.updateAvailable) {
+                    androidx.compose.material3.Button(
+                        onClick = { viewModel.downloadAndInstallAppUpdate() },
+                        enabled = !appUpdateState.isDownloading,
+                        modifier = Modifier.testTag("update_dialog_install_button")
+                    ) {
+                        Text(
+                            when {
+                                appUpdateState.isDownloading -> "Downloading..."
+                                appUpdateState.downloadedApkFile != null -> "Install Now"
+                                else -> "Download & Install"
+                            }
+                        )
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { viewModel.dismissAppUpdateDialog() },
+                    enabled = !appUpdateState.isDownloading
+                ) {
+                    Text("Close")
+                }
+            }
+        )
     }
 }
 
@@ -675,8 +780,10 @@ private fun DestinationRouter(
     viewModel: OpenFileViewModel,
     browserState: BrowserUiState,
     settings: com.example.core.datastore.AppSettingsState,
-    onRequestSafAccess: () -> Unit
+    onRequestSafAccess: () -> Unit,
+    onRequestSafForPath: (String?) -> Unit
 ) {
+    val hasAllFilesAccess by viewModel.hasAllFilesAccess.collectAsStateWithLifecycle()
     when (currentDest) {
         OpenFileDestination.HOME -> {
             val volumes by viewModel.storageVolumes.collectAsStateWithLifecycle()
@@ -686,6 +793,7 @@ private fun DestinationRouter(
             val cloudAccounts by viewModel.cloudAccounts.collectAsStateWithLifecycle()
             val ftpState by viewModel.ftpServerState.collectAsStateWithLifecycle()
             val categoryCounts by viewModel.categoryCounts.collectAsStateWithLifecycle()
+            val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
             HomeScreen(
                 volumes = volumes,
                 bookmarks = bookmarks,
@@ -695,6 +803,8 @@ private fun DestinationRouter(
                 cloudAccountsCount = cloudAccounts.size,
                 remoteProfilesCount = networkProfiles.size,
                 cloudAccounts = cloudAccounts,
+                hasAllFilesAccess = hasAllFilesAccess,
+                onRequestAllFilesAccess = { viewModel.requestAllFilesAccessInSettings() },
                 onOpenCloudAccount = { acc -> viewModel.openCloudDirectory(acc, "root") },
                 onVolumeClick = { vol ->
                     viewModel.openVolumeInBrowser(vol.rootReference)
@@ -704,7 +814,9 @@ private fun DestinationRouter(
                 onBookmarkClick = { bm -> viewModel.openBookmark(bm) },
                 onRecentFileClick = { recent -> viewModel.openRecentFile(recent) },
                 onOpenAccessFromPc = { viewModel.openNetworkTab(0) },
-                onOpenRemoteConnections = { viewModel.openNetworkTab(1) }
+                onOpenRemoteConnections = { viewModel.openNetworkTab(1) },
+                appUpdateState = appUpdateState,
+                onOpenUpdateDialog = { viewModel.openAppUpdateDialog() }
             )
         }
 
@@ -725,6 +837,10 @@ private fun DestinationRouter(
                 settings = settings,
                 bookmarks = bookmarks,
                 clipboard = clipboard,
+                hasAllFilesAccess = hasAllFilesAccess,
+                onRequestAllFilesAccess = { viewModel.requestAllFilesAccessInSettings() },
+                onToggleShowHidden = { viewModel.setShowHiddenFiles(!settings.showHiddenFiles) },
+                onRequestSafForPath = onRequestSafForPath,
                 onCrumbClick = { viewModel.openDirectory(it) },
                 onFileClick = { viewModel.onFileItemClicked(it) },
                 onFileLongClick = { viewModel.toggleSelection(it) },
@@ -895,7 +1011,9 @@ private fun DestinationRouter(
                 onTrustSshHostKey = { viewModel.trustAndPinSshHostKey(it) },
                 onDismissSshPrompt = { viewModel.dismissSshHostKeyPrompt() },
                 initialTab = selectedNetworkTab,
-                savedFtpPassword = remember(settings.ftpSecretAlias) { viewModel.getSavedFtpPassword() }
+                savedFtpPassword = produceState(initialValue = "openfile123", key1 = settings.ftpSecretAlias) {
+                    value = withContext(Dispatchers.IO) { viewModel.getSavedFtpPassword() }
+                }.value
             )
         }
 
@@ -949,6 +1067,7 @@ private fun DestinationRouter(
         OpenFileDestination.SETTINGS -> {
             val networkProfiles by viewModel.networkProfiles.collectAsStateWithLifecycle()
             val cloudAccounts by viewModel.cloudAccounts.collectAsStateWithLifecycle()
+            val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
             val vaultCount by produceState(
                 initialValue = 0,
                 networkProfiles,
@@ -980,7 +1099,12 @@ private fun DestinationRouter(
                 onMoveToTrashChange = { viewModel.setMoveToTrashByDefault(it) },
                 onVerifyChecksumChange = { viewModel.setVerifyChecksumAfterTransfer(it) },
                 onClearPrivacyData = { purgeVault -> viewModel.clearAllPrivacyHistoryAndCredentials(purgeVault) },
-                onMountSafFolder = onRequestSafAccess
+                onMountSafFolder = onRequestSafAccess,
+                appUpdateState = appUpdateState,
+                onAutoCheckUpdatesChange = { viewModel.setAutoCheckUpdates(it) },
+                onCheckForUpdatesNow = { viewModel.checkForAppUpdates(manualUserTrigger = true) },
+                onDownloadAndInstallUpdate = { viewModel.downloadAndInstallAppUpdate() },
+                onOpenReleasesInBrowser = { viewModel.appUpdateEngine.openReleasesPageInBrowser() }
             )
         }
     }

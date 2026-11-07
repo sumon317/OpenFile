@@ -164,5 +164,14 @@ object ChecksumAndDuplicateEngine {
         return md.digest().toHex()
     }
 
-    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+    private fun ByteArray.toHex(): String {
+        val hex = "0123456789abcdef"
+        val out = CharArray(size * 2)
+        for (i in indices) {
+            val v = this[i].toInt() and 0xFF
+            out[i * 2] = hex[v ushr 4]
+            out[i * 2 + 1] = hex[v and 0x0F]
+        }
+        return String(out)
+    }
 }

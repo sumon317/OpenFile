@@ -47,7 +47,6 @@ enum class ProviderCapability {
  * Structured, capability-aware reference to any file or directory across Local, SAF, MediaStore,
  * Archive, Network (FTP/FTPS/SFTP/SMB), or Cloud (Drive/OneDrive/Dropbox) providers.
  */
-@Immutable
 data class FileReference(
     val providerType: ProviderType,
     val uriOrPath: String,
@@ -62,88 +61,137 @@ data class FileReference(
     val capabilities: Set<ProviderCapability> = defaultCapabilitiesFor(providerType, isDirectory),
     val metadata: Map<String, String> = emptyMap()
 ) {
-    val formattedSize: String
-        get() = if (isDirectory) {
+    val formattedSize: String by lazy(LazyThreadSafetyMode.NONE) {
+        if (isDirectory) {
             val childCount = metadata["childCount"]
             if (childCount != null) "$childCount items" else "Folder"
         } else {
             formatByteSize(sizeBytes)
         }
+    }
 
-    val permissionsString: String
-        get() = metadata["permissions"] ?: if (isDirectory) "drwxr-xr-x" else "-rw-r--r--"
+    val permissionsString: String by lazy(LazyThreadSafetyMode.NONE) {
+        metadata["permissions"] ?: if (isDirectory) "drwxr-xr-x" else "-rw-r--r--"
+    }
 
     companion object {
+        private val LOCAL_FILE_CAPS: Set<ProviderCapability> = setOf(
+            ProviderCapability.STREAM_READ,
+            ProviderCapability.STREAM_WRITE,
+            ProviderCapability.RANDOM_ACCESS_READ,
+            ProviderCapability.ATOMIC_RENAME,
+            ProviderCapability.INTRA_PROVIDER_MOVE,
+            ProviderCapability.DELETE,
+            ProviderCapability.TRASH_IN_PLACE,
+            ProviderCapability.RESUME_TRANSFER,
+            ProviderCapability.CHECKSUM_CALCULATION,
+            ProviderCapability.POSIX_METADATA
+        )
+        private val LOCAL_DIR_CAPS: Set<ProviderCapability> = LOCAL_FILE_CAPS + setOf(
+            ProviderCapability.LIST_CHILDREN,
+            ProviderCapability.CREATE_DIR,
+            ProviderCapability.CREATE_FILE,
+            ProviderCapability.FAST_DIRECTORY_SIZE
+        )
+        private val LOCAL_READONLY_FILE_CAPS: Set<ProviderCapability> = setOf(
+            ProviderCapability.STREAM_READ,
+            ProviderCapability.RANDOM_ACCESS_READ,
+            ProviderCapability.INTRA_PROVIDER_MOVE,
+            ProviderCapability.TRASH_IN_PLACE,
+            ProviderCapability.RESUME_TRANSFER,
+            ProviderCapability.CHECKSUM_CALCULATION,
+            ProviderCapability.POSIX_METADATA
+        )
+        private val LOCAL_READONLY_DIR_CAPS: Set<ProviderCapability> = LOCAL_READONLY_FILE_CAPS + setOf(
+            ProviderCapability.LIST_CHILDREN,
+            ProviderCapability.FAST_DIRECTORY_SIZE
+        )
+
+        private val SAF_FILE_CAPS: Set<ProviderCapability> = setOf(
+            ProviderCapability.STREAM_READ,
+            ProviderCapability.STREAM_WRITE,
+            ProviderCapability.ATOMIC_RENAME,
+            ProviderCapability.DELETE,
+            ProviderCapability.CHECKSUM_CALCULATION
+        )
+        private val SAF_DIR_CAPS: Set<ProviderCapability> = SAF_FILE_CAPS + setOf(
+            ProviderCapability.LIST_CHILDREN,
+            ProviderCapability.CREATE_DIR,
+            ProviderCapability.CREATE_FILE
+        )
+        private val SAF_READONLY_FILE_CAPS: Set<ProviderCapability> = setOf(
+            ProviderCapability.STREAM_READ,
+            ProviderCapability.CHECKSUM_CALCULATION
+        )
+        private val SAF_READONLY_DIR_CAPS: Set<ProviderCapability> = SAF_READONLY_FILE_CAPS + setOf(
+            ProviderCapability.LIST_CHILDREN
+        )
+
+        private val MEDIA_STORE_CAPS: Set<ProviderCapability> = setOf(
+            ProviderCapability.STREAM_READ,
+            ProviderCapability.DELETE,
+            ProviderCapability.CHECKSUM_CALCULATION
+        )
+
+        private val ARCHIVE_FILE_CAPS: Set<ProviderCapability> = setOf(
+            ProviderCapability.STREAM_READ,
+            ProviderCapability.ARCHIVE_EXTRACT
+        )
+        private val ARCHIVE_DIR_CAPS: Set<ProviderCapability> = ARCHIVE_FILE_CAPS + setOf(
+            ProviderCapability.LIST_CHILDREN
+        )
+
+        private val NETWORK_FILE_CAPS: Set<ProviderCapability> = setOf(
+            ProviderCapability.STREAM_READ,
+            ProviderCapability.STREAM_WRITE,
+            ProviderCapability.ATOMIC_RENAME,
+            ProviderCapability.DELETE,
+            ProviderCapability.RESUME_TRANSFER
+        )
+        private val NETWORK_DIR_CAPS: Set<ProviderCapability> = NETWORK_FILE_CAPS + setOf(
+            ProviderCapability.LIST_CHILDREN,
+            ProviderCapability.CREATE_DIR
+        )
+
+        private val CLOUD_FILE_CAPS: Set<ProviderCapability> = setOf(
+            ProviderCapability.STREAM_READ,
+            ProviderCapability.STREAM_WRITE,
+            ProviderCapability.ATOMIC_RENAME,
+            ProviderCapability.INTRA_PROVIDER_MOVE,
+            ProviderCapability.DELETE,
+            ProviderCapability.REMOTE_TRASH,
+            ProviderCapability.CHECKSUM_CALCULATION
+        )
+        private val CLOUD_DIR_CAPS: Set<ProviderCapability> = CLOUD_FILE_CAPS + setOf(
+            ProviderCapability.LIST_CHILDREN,
+            ProviderCapability.CREATE_DIR,
+            ProviderCapability.CREATE_FILE
+        )
+
         fun defaultCapabilitiesFor(
             provider: ProviderType,
             isDirectory: Boolean
         ): Set<ProviderCapability> {
             return when (provider) {
-                ProviderType.LOCAL -> buildSet {
-                    add(ProviderCapability.STREAM_READ)
-                    add(ProviderCapability.STREAM_WRITE)
-                    add(ProviderCapability.RANDOM_ACCESS_READ)
-                    add(ProviderCapability.ATOMIC_RENAME)
-                    add(ProviderCapability.INTRA_PROVIDER_MOVE)
-                    add(ProviderCapability.DELETE)
-                    add(ProviderCapability.TRASH_IN_PLACE)
-                    add(ProviderCapability.RESUME_TRANSFER)
-                    add(ProviderCapability.CHECKSUM_CALCULATION)
-                    add(ProviderCapability.POSIX_METADATA)
-                    if (isDirectory) {
-                        add(ProviderCapability.LIST_CHILDREN)
-                        add(ProviderCapability.CREATE_DIR)
-                        add(ProviderCapability.CREATE_FILE)
-                        add(ProviderCapability.FAST_DIRECTORY_SIZE)
-                    }
-                }
-                ProviderType.SAF -> buildSet {
-                    add(ProviderCapability.STREAM_READ)
-                    add(ProviderCapability.STREAM_WRITE)
-                    add(ProviderCapability.ATOMIC_RENAME)
-                    add(ProviderCapability.DELETE)
-                    add(ProviderCapability.CHECKSUM_CALCULATION)
-                    if (isDirectory) {
-                        add(ProviderCapability.LIST_CHILDREN)
-                        add(ProviderCapability.CREATE_DIR)
-                        add(ProviderCapability.CREATE_FILE)
-                    }
-                }
-                ProviderType.MEDIA_STORE -> setOf(
-                    ProviderCapability.STREAM_READ,
-                    ProviderCapability.DELETE,
-                    ProviderCapability.CHECKSUM_CALCULATION
-                )
-                ProviderType.ARCHIVE_VIRTUAL -> buildSet {
-                    add(ProviderCapability.STREAM_READ)
-                    add(ProviderCapability.ARCHIVE_EXTRACT)
-                    if (isDirectory) add(ProviderCapability.LIST_CHILDREN)
-                }
-                ProviderType.FTP, ProviderType.FTPS, ProviderType.SFTP, ProviderType.SMB -> buildSet {
-                    add(ProviderCapability.STREAM_READ)
-                    add(ProviderCapability.STREAM_WRITE)
-                    add(ProviderCapability.ATOMIC_RENAME)
-                    add(ProviderCapability.DELETE)
-                    add(ProviderCapability.RESUME_TRANSFER)
-                    if (isDirectory) {
-                        add(ProviderCapability.LIST_CHILDREN)
-                        add(ProviderCapability.CREATE_DIR)
-                    }
-                }
-                ProviderType.GOOGLE_DRIVE, ProviderType.ONEDRIVE, ProviderType.DROPBOX -> buildSet {
-                    add(ProviderCapability.STREAM_READ)
-                    add(ProviderCapability.STREAM_WRITE)
-                    add(ProviderCapability.ATOMIC_RENAME)
-                    add(ProviderCapability.INTRA_PROVIDER_MOVE)
-                    add(ProviderCapability.DELETE)
-                    add(ProviderCapability.REMOTE_TRASH)
-                    add(ProviderCapability.CHECKSUM_CALCULATION)
-                    if (isDirectory) {
-                        add(ProviderCapability.LIST_CHILDREN)
-                        add(ProviderCapability.CREATE_DIR)
-                        add(ProviderCapability.CREATE_FILE)
-                    }
-                }
+                ProviderType.LOCAL -> if (isDirectory) LOCAL_DIR_CAPS else LOCAL_FILE_CAPS
+                ProviderType.SAF -> if (isDirectory) SAF_DIR_CAPS else SAF_FILE_CAPS
+                ProviderType.MEDIA_STORE -> MEDIA_STORE_CAPS
+                ProviderType.ARCHIVE_VIRTUAL -> if (isDirectory) ARCHIVE_DIR_CAPS else ARCHIVE_FILE_CAPS
+                ProviderType.FTP, ProviderType.FTPS, ProviderType.SFTP, ProviderType.SMB ->
+                    if (isDirectory) NETWORK_DIR_CAPS else NETWORK_FILE_CAPS
+                ProviderType.GOOGLE_DRIVE, ProviderType.ONEDRIVE, ProviderType.DROPBOX ->
+                    if (isDirectory) CLOUD_DIR_CAPS else CLOUD_FILE_CAPS
+            }
+        }
+
+        fun readOnlyCapabilitiesFor(
+            provider: ProviderType,
+            isDirectory: Boolean
+        ): Set<ProviderCapability> {
+            return when (provider) {
+                ProviderType.LOCAL -> if (isDirectory) LOCAL_READONLY_DIR_CAPS else LOCAL_READONLY_FILE_CAPS
+                ProviderType.SAF -> if (isDirectory) SAF_READONLY_DIR_CAPS else SAF_READONLY_FILE_CAPS
+                else -> defaultCapabilitiesFor(provider, isDirectory)
             }
         }
     }
@@ -174,12 +222,45 @@ enum class ConflictResolution(val label: String) {
 
 enum class FileCategory(val title: String, val extensions: Set<String>) {
     DOWNLOADS("Downloads", emptySet()),
-    IMAGES("Images", setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "svg", "heic", "raw")),
-    VIDEOS("Videos", setOf("mp4", "mkv", "webm", "avi", "mov", "3gp", "flv", "ts")),
-    AUDIO("Audio", setOf("mp3", "flac", "wav", "ogg", "m4a", "aac", "opus")),
-    DOCUMENTS("Documents", setOf("pdf", "txt", "md", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv", "json", "xml", "html", "kt", "java", "py", "sh", "log", "ini", "yaml", "yml")),
+    IMAGES(
+        "Images",
+        setOf(
+            "jpg", "jpeg", "png", "webp", "gif", "bmp", "svg", "heic", "heif",
+            "avif", "ico", "tif", "tiff", "raw", "dng", "cr2", "nef", "arw"
+        )
+    ),
+    VIDEOS(
+        "Videos",
+        setOf(
+            "mp4", "mkv", "webm", "avi", "mov", "3gp", "flv", "ts", "m2ts",
+            "mts", "m4v", "mpg", "mpeg", "wmv", "vob", "ogv"
+        )
+    ),
+    AUDIO(
+        "Audio",
+        setOf(
+            "mp3", "flac", "wav", "ogg", "oga", "m4a", "m4b", "aac", "opus",
+            "wma", "amr", "mid", "midi", "aiff", "ape", "alac"
+        )
+    ),
+    DOCUMENTS(
+        "Documents",
+        setOf(
+            "pdf", "txt", "md", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+            "odt", "ods", "odp", "rtf", "epub", "mobi", "csv", "json", "xml",
+            "html", "htm", "css", "js", "ts", "kt", "kts", "java", "py", "sh",
+            "c", "cpp", "h", "hpp", "rs", "go", "rb", "php", "sql", "log",
+            "ini", "conf", "cfg", "properties", "yaml", "yml", "toml", "gradle"
+        )
+    ),
     APPLICATIONS("Applications", setOf("apk", "apks", "xapk", "aab")),
-    ARCHIVES("Archives", setOf("zip", "tar", "gz", "tgz", "xz", "txz", "7z", "bz2")),
+    ARCHIVES(
+        "Archives",
+        setOf(
+            "zip", "rar", "tar", "gz", "tgz", "xz", "txz", "7z", "bz2",
+            "tbz2", "zst", "lz4", "iso", "cab"
+        )
+    ),
     LARGE_FILES("Large Files", emptySet()),
     RECENT_FILES("Recent Files", emptySet());
 
@@ -217,7 +298,6 @@ data class CategoryUsageBucket(
     val colorHex: Long
 )
 
-@Immutable
 data class StorageAnalysisReport(
     val rootPath: String,
     val totalBytes: Long,
@@ -232,7 +312,6 @@ data class StorageAnalysisReport(
     val duplicateGroups: List<DuplicateFileGroup>
 )
 
-@Immutable
 data class DuplicateFileGroup(
     val sha256Hash: String,
     val fileSizeBytes: Long,
@@ -258,7 +337,6 @@ data class InstalledAppInfo(
     val canShareApk: Boolean = apkPath.isNotEmpty()
 )
 
-@Immutable
 data class ApkArchiveInfo(
     val appName: String,
     val packageName: String,
@@ -270,10 +348,6 @@ data class ApkArchiveInfo(
     val fileReference: FileReference
 )
 
-private val byteDecimalFormat = object : ThreadLocal<DecimalFormat>() {
-    override fun initialValue(): DecimalFormat = DecimalFormat("#,##0.#")
-}
-
 private val BYTE_UNITS = arrayOf("B", "KB", "MB", "GB", "TB")
 
 fun formatByteSize(bytes: Long): String {
@@ -281,7 +355,13 @@ fun formatByteSize(bytes: Long): String {
     if (bytes < 1024L) return "$bytes B"
     val z = (63 - java.lang.Long.numberOfLeadingZeros(bytes)) / 10
     val unitIndex = z.coerceIn(0, BYTE_UNITS.lastIndex)
-    val value = bytes.toDouble() / (1L shl (unitIndex * 10)).toDouble()
-    val formatter = byteDecimalFormat.get() ?: DecimalFormat("#,##0.#")
-    return "${formatter.format(value)} ${BYTE_UNITS[unitIndex]}"
+    val divisor = 1L shl (unitIndex * 10)
+    val scaled10 = (bytes * 10L) / divisor
+    val whole = scaled10 / 10L
+    val frac = scaled10 % 10L
+    return if (frac == 0L || whole >= 100L) {
+        "$whole ${BYTE_UNITS[unitIndex]}"
+    } else {
+        "$whole.$frac ${BYTE_UNITS[unitIndex]}"
+    }
 }

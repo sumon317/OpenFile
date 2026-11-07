@@ -7,7 +7,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -116,6 +115,7 @@ import com.example.core.model.StorageVolumeInfo
 import com.example.core.model.ViewMode
 import com.example.core.model.formatByteSize
 import com.example.core.network.FtpServerRuntimeState
+import com.example.core.update.AppUpdateUiState
 import com.example.ui.BrowserUiState
 import com.example.ui.OpenFileDestination
 import com.example.ui.components.BreadcrumbBar
@@ -126,7 +126,26 @@ import com.example.ui.theme.FolderAmber
 import com.example.ui.theme.StorageDangerCrimson
 import com.example.ui.theme.StorageWarningOrange
 
+import androidx.compose.runtime.Immutable
 import com.example.core.database.CloudAccountEntity
+
+private val VolumeCardShape = RoundedCornerShape(18.dp)
+private val VolumeIconShape = RoundedCornerShape(14.dp)
+private val VolumeBadgeShape = RoundedCornerShape(8.dp)
+private val VolumeBarShape = RoundedCornerShape(4.dp)
+private val CategoryCardShape = RoundedCornerShape(16.dp)
+private val CategoryIconBadgeShape = RoundedCornerShape(14.dp)
+private val RecentFileCardShape = RoundedCornerShape(10.dp)
+
+@Immutable
+private data class HomeTileSpec(
+    val label: String,
+    val subtitle: String,
+    val icon: ImageVector,
+    val badgeColor: Color,
+    val testTag: String,
+    val onClick: () -> Unit
+)
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -144,10 +163,119 @@ fun HomeScreen(
     cloudAccountsCount: Int = 0,
     remoteProfilesCount: Int = 0,
     cloudAccounts: List<CloudAccountEntity> = emptyList(),
+    hasAllFilesAccess: Boolean = true,
+    onRequestAllFilesAccess: () -> Unit = {},
     onOpenCloudAccount: (CloudAccountEntity) -> Unit = {},
     onOpenAccessFromPc: () -> Unit = { onNavigateDestination(OpenFileDestination.NETWORK) },
-    onOpenRemoteConnections: () -> Unit = { onNavigateDestination(OpenFileDestination.NETWORK) }
+    onOpenRemoteConnections: () -> Unit = { onNavigateDestination(OpenFileDestination.NETWORK) },
+    appUpdateState: AppUpdateUiState? = null,
+    onOpenUpdateDialog: () -> Unit = {}
 ) {
+    val gridTiles = remember(categoryCounts, cloudAccountsCount, remoteProfilesCount, ftpState.isRunning) {
+        fun countLabel(cat: FileCategory, fallback: String): String {
+            val c = categoryCounts[cat]
+            return if (c != null) "$c items" else fallback
+        }
+        listOf(
+            HomeTileSpec(
+                label = "Downloads",
+                subtitle = countLabel(FileCategory.DOWNLOADS, "Folder"),
+                icon = Icons.Filled.Download,
+                badgeColor = Color(0xFF26A69A),
+                testTag = "shortcut_${OpenFileDestination.DOWNLOADS.route}",
+                onClick = { onNavigateDestination(OpenFileDestination.DOWNLOADS) }
+            ),
+            HomeTileSpec(
+                label = "Images",
+                subtitle = countLabel(FileCategory.IMAGES, "Photos"),
+                icon = Icons.Filled.Image,
+                badgeColor = Color(0xFFFF7043),
+                testTag = "shortcut_${OpenFileDestination.IMAGES.route}",
+                onClick = { onNavigateDestination(OpenFileDestination.IMAGES) }
+            ),
+            HomeTileSpec(
+                label = "Audio",
+                subtitle = countLabel(FileCategory.AUDIO, "Music"),
+                icon = Icons.Filled.AudioFile,
+                badgeColor = Color(0xFFAB47BC),
+                testTag = "shortcut_${OpenFileDestination.AUDIO.route}",
+                onClick = { onNavigateDestination(OpenFileDestination.AUDIO) }
+            ),
+            HomeTileSpec(
+                label = "Videos",
+                subtitle = countLabel(FileCategory.VIDEOS, "Movies"),
+                icon = Icons.Filled.VideoFile,
+                badgeColor = Color(0xFFEF5350),
+                testTag = "shortcut_${OpenFileDestination.VIDEOS.route}",
+                onClick = { onNavigateDestination(OpenFileDestination.VIDEOS) }
+            ),
+            HomeTileSpec(
+                label = "Documents",
+                subtitle = countLabel(FileCategory.DOCUMENTS, "PDF & Office"),
+                icon = Icons.Filled.Description,
+                badgeColor = Color(0xFF42A5F5),
+                testTag = "shortcut_${OpenFileDestination.DOCUMENTS.route}",
+                onClick = { onNavigateDestination(OpenFileDestination.DOCUMENTS) }
+            ),
+            HomeTileSpec(
+                label = "Apps & APKs",
+                subtitle = categoryCounts[FileCategory.APPLICATIONS]?.let { "$it apps" } ?: "Installed",
+                icon = Icons.Filled.Android,
+                badgeColor = ApkGreen,
+                testTag = "shortcut_${OpenFileDestination.APPLICATIONS.route}",
+                onClick = { onNavigateDestination(OpenFileDestination.APPLICATIONS) }
+            ),
+            HomeTileSpec(
+                label = "New Files",
+                subtitle = countLabel(FileCategory.RECENT_FILES, "Recent"),
+                icon = Icons.Filled.History,
+                badgeColor = Color(0xFF29B6F6),
+                testTag = "shortcut_${OpenFileDestination.RECENT_FILES.route}",
+                onClick = { onNavigateDestination(OpenFileDestination.RECENT_FILES) }
+            ),
+            HomeTileSpec(
+                label = "Archives",
+                subtitle = countLabel(FileCategory.ARCHIVES, "ZIP / 7Z"),
+                icon = Icons.Filled.FolderZip,
+                badgeColor = FolderAmber,
+                testTag = "shortcut_${OpenFileDestination.ARCHIVES.route}",
+                onClick = { onNavigateDestination(OpenFileDestination.ARCHIVES) }
+            ),
+            HomeTileSpec(
+                label = "Large Files",
+                subtitle = countLabel(FileCategory.LARGE_FILES, "> 25 MB"),
+                icon = Icons.Filled.Storage,
+                badgeColor = Color(0xFFEC407A),
+                testTag = "shortcut_${OpenFileDestination.LARGE_FILES.route}",
+                onClick = { onNavigateDestination(OpenFileDestination.LARGE_FILES) }
+            ),
+            HomeTileSpec(
+                label = "Cloud Drives",
+                subtitle = if (cloudAccountsCount > 0) "$cloudAccountsCount connected" else "Drive / OneDrive",
+                icon = Icons.Filled.Cloud,
+                badgeColor = Color(0xFF5C6BC0),
+                testTag = "home_cloud_button",
+                onClick = { onNavigateDestination(OpenFileDestination.CLOUD_STORAGE) }
+            ),
+            HomeTileSpec(
+                label = "Remote",
+                subtitle = if (remoteProfilesCount > 0) "$remoteProfilesCount server(s)" else "SMB / SFTP / FTP",
+                icon = Icons.Filled.Lan,
+                badgeColor = Color(0xFFFFA726),
+                testTag = "home_network_button",
+                onClick = onOpenRemoteConnections
+            ),
+            HomeTileSpec(
+                label = "Access from PC",
+                subtitle = if (ftpState.isRunning) "Server Active" else "Wi-Fi FTP",
+                icon = Icons.Filled.Computer,
+                badgeColor = Color(0xFF00ACC1),
+                testTag = "home_access_pc_button",
+                onClick = onOpenAccessFromPc
+            )
+        ).chunked(3)
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -155,9 +283,116 @@ fun HomeScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Full Storage Access (MANAGE_EXTERNAL_STORAGE) Banner when not yet granted on Android 11+
+        if (!hasAllFilesAccess) {
+            item(key = "all_files_access_banner", contentType = "permission_banner") {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    ),
+                    shape = VolumeCardShape,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("all_files_access_banner")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Filled.Warning,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = "Full File System Access Required",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                        Text(
+                            text = "Android hides non-media files (PDFs, ZIPs, APKs, Documents, and folders) unless 'All files access' is enabled. Grant access to see your complete file system.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Button(
+                            onClick = onRequestAllFilesAccess,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("grant_all_files_access_button")
+                        ) {
+                            Text("Grant All Files Access")
+                        }
+                    }
+                }
+            }
+        }
+
+        // In-App GitHub Release Update Available Banner
+        if (appUpdateState != null && appUpdateState.updateAvailable && appUpdateState.latestRelease != null) {
+            val rel = appUpdateState.latestRelease
+            item(key = "github_update_banner", contentType = "update_banner") {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    ),
+                    shape = VolumeCardShape,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenUpdateDialog() }
+                        .testTag("home_update_available_banner")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Download,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Update Available: ${rel.tagName}",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                Text(
+                                    text = "Tap to download & install directly from GitHub Releases (${formatByteSize(rel.apkSizeBytes)})",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = onOpenUpdateDialog,
+                            modifier = Modifier.testTag("home_update_now_button")
+                        ) {
+                            Text("Update")
+                        }
+                    }
+                }
+            }
+        }
+
         // Active Wi-Fi FTP Server Status Banner if running
         if (ftpState.isRunning) {
-            item {
+            item(key = "ftp_active_banner", contentType = "ftp_banner") {
                 Card(
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.tertiaryContainer
@@ -195,7 +430,7 @@ fun HomeScreen(
         }
 
         // Section 1: Storage Volumes (File Manager + Top Storage Cards)
-        item {
+        item(key = "storage_volumes_header", contentType = "section_header") {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -236,7 +471,7 @@ fun HomeScreen(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow
                 ),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
-                shape = RoundedCornerShape(18.dp),
+                shape = VolumeCardShape,
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("volume_card_${vol.id}")
@@ -256,10 +491,10 @@ fun HomeScreen(
                             Box(
                                 modifier = Modifier
                                     .size(44.dp)
-                                    .clip(RoundedCornerShape(14.dp))
                                     .background(
                                         if (vol.isSafGrantRevoked) MaterialTheme.colorScheme.error.copy(alpha = 0.16f)
-                                        else barColor.copy(alpha = 0.16f)
+                                        else barColor.copy(alpha = 0.16f),
+                                        VolumeIconShape
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -288,7 +523,7 @@ fun HomeScreen(
                         }
                         Surface(
                             color = barColor.copy(alpha = 0.14f),
-                            shape = RoundedCornerShape(8.dp)
+                            shape = VolumeBadgeShape
                         ) {
                             Text(
                                 text = "${(vol.usageFraction * 100).toInt()}%",
@@ -306,7 +541,7 @@ fun HomeScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(8.dp)
-                            .clip(RoundedCornerShape(4.dp))
+                            .clip(VolumeBarShape)
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -339,7 +574,7 @@ fun HomeScreen(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow
                 ),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
-                shape = RoundedCornerShape(18.dp),
+                shape = VolumeCardShape,
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("home_cloud_volume_${account.provider}")
@@ -358,8 +593,7 @@ fun HomeScreen(
                         Box(
                             modifier = Modifier
                                 .size(44.dp)
-                                .clip(RoundedCornerShape(14.dp))
-                                .background( Color(0xFF5C6BC0).copy(alpha = 0.16f) ),
+                                .background(Color(0xFF5C6BC0).copy(alpha = 0.16f), VolumeIconShape),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
@@ -387,7 +621,7 @@ fun HomeScreen(
                     }
                     Surface(
                         color = ApkGreen.copy(alpha = 0.14f),
-                        shape = RoundedCornerShape(8.dp)
+                        shape = VolumeBadgeShape
                     ) {
                         Text(
                             text = "Mounted",
@@ -402,151 +636,47 @@ fun HomeScreen(
         }
 
         // Section 2: File Manager + Symmetrical 3-Column Circular-Badge Grid
-        item(key = "home_categories_grid", contentType = "categories_grid") {
+        item(key = "home_categories_header") {
             Text(
                 text = "Categories & Quick Access",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
-            Spacer(modifier = Modifier.height(10.dp))
+        }
 
-            val gridTiles = remember(categoryCounts, cloudAccountsCount, remoteProfilesCount, ftpState.isRunning) {
-                fun countLabel(cat: FileCategory, fallback: String): String {
-                    val c = categoryCounts[cat]
-                    return if (c != null) "$c items" else fallback
-                }
-                listOf(
-                    HomeTileSpec(
-                        label = "Downloads",
-                        subtitle = countLabel(FileCategory.DOWNLOADS, "Folder"),
-                        icon = Icons.Filled.Download,
-                        badgeColor = Color(0xFF26A69A),
-                        testTag = "shortcut_${OpenFileDestination.DOWNLOADS.route}",
-                        onClick = { onNavigateDestination(OpenFileDestination.DOWNLOADS) }
-                    ),
-                    HomeTileSpec(
-                        label = "Images",
-                        subtitle = countLabel(FileCategory.IMAGES, "Photos"),
-                        icon = Icons.Filled.Image,
-                        badgeColor = Color(0xFFFF7043),
-                        testTag = "shortcut_${OpenFileDestination.IMAGES.route}",
-                        onClick = { onNavigateDestination(OpenFileDestination.IMAGES) }
-                    ),
-                    HomeTileSpec(
-                        label = "Audio",
-                        subtitle = countLabel(FileCategory.AUDIO, "Music"),
-                        icon = Icons.Filled.AudioFile,
-                        badgeColor = Color(0xFFAB47BC),
-                        testTag = "shortcut_${OpenFileDestination.AUDIO.route}",
-                        onClick = { onNavigateDestination(OpenFileDestination.AUDIO) }
-                    ),
-                    HomeTileSpec(
-                        label = "Videos",
-                        subtitle = countLabel(FileCategory.VIDEOS, "Movies"),
-                        icon = Icons.Filled.VideoFile,
-                        badgeColor = Color(0xFFEF5350),
-                        testTag = "shortcut_${OpenFileDestination.VIDEOS.route}",
-                        onClick = { onNavigateDestination(OpenFileDestination.VIDEOS) }
-                    ),
-                    HomeTileSpec(
-                        label = "Documents",
-                        subtitle = countLabel(FileCategory.DOCUMENTS, "PDF & Office"),
-                        icon = Icons.Filled.Description,
-                        badgeColor = Color(0xFF42A5F5),
-                        testTag = "shortcut_${OpenFileDestination.DOCUMENTS.route}",
-                        onClick = { onNavigateDestination(OpenFileDestination.DOCUMENTS) }
-                    ),
-                    HomeTileSpec(
-                        label = "Apps & APKs",
-                        subtitle = categoryCounts[FileCategory.APPLICATIONS]?.let { "$it apps" } ?: "Installed",
-                        icon = Icons.Filled.Android,
-                        badgeColor = ApkGreen,
-                        testTag = "shortcut_${OpenFileDestination.APPLICATIONS.route}",
-                        onClick = { onNavigateDestination(OpenFileDestination.APPLICATIONS) }
-                    ),
-                    HomeTileSpec(
-                        label = "New Files",
-                        subtitle = countLabel(FileCategory.RECENT_FILES, "Recent"),
-                        icon = Icons.Filled.History,
-                        badgeColor = Color(0xFF29B6F6),
-                        testTag = "shortcut_${OpenFileDestination.RECENT_FILES.route}",
-                        onClick = { onNavigateDestination(OpenFileDestination.RECENT_FILES) }
-                    ),
-                    HomeTileSpec(
-                        label = "Archives",
-                        subtitle = countLabel(FileCategory.ARCHIVES, "ZIP / 7Z"),
-                        icon = Icons.Filled.FolderZip,
-                        badgeColor = FolderAmber,
-                        testTag = "shortcut_${OpenFileDestination.ARCHIVES.route}",
-                        onClick = { onNavigateDestination(OpenFileDestination.ARCHIVES) }
-                    ),
-                    HomeTileSpec(
-                        label = "Large Files",
-                        subtitle = countLabel(FileCategory.LARGE_FILES, "> 25 MB"),
-                        icon = Icons.Filled.Storage,
-                        badgeColor = Color(0xFFEC407A),
-                        testTag = "shortcut_${OpenFileDestination.LARGE_FILES.route}",
-                        onClick = { onNavigateDestination(OpenFileDestination.LARGE_FILES) }
-                    ),
-                    HomeTileSpec(
-                        label = "Cloud Drives",
-                        subtitle = if (cloudAccountsCount > 0) "$cloudAccountsCount connected" else "Drive / OneDrive",
-                        icon = Icons.Filled.Cloud,
-                        badgeColor = Color(0xFF5C6BC0),
-                        testTag = "home_cloud_button",
-                        onClick = { onNavigateDestination(OpenFileDestination.CLOUD_STORAGE) }
-                    ),
-                    HomeTileSpec(
-                        label = "Remote",
-                        subtitle = if (remoteProfilesCount > 0) "$remoteProfilesCount server(s)" else "SMB / SFTP / FTP",
-                        icon = Icons.Filled.Lan,
-                        badgeColor = Color(0xFFFFA726),
-                        testTag = "home_network_button",
-                        onClick = onOpenRemoteConnections
-                    ),
-                    HomeTileSpec(
-                        label = "Access from PC",
-                        subtitle = if (ftpState.isRunning) "Server Active" else "Wi-Fi FTP",
-                        icon = Icons.Filled.Computer,
-                        badgeColor = Color(0xFF00ACC1),
-                        testTag = "home_access_pc_button",
-                        onClick = onOpenAccessFromPc
+        items(
+            items = gridTiles,
+            key = { row -> "cat_row_${row.first().label}" },
+            contentType = { "category_row" }
+        ) { rowItems ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                rowItems.forEach { tile ->
+                    CategoryShortcutCard(
+                        label = tile.label,
+                        subtitle = tile.subtitle,
+                        icon = tile.icon,
+                        badgeColor = tile.badgeColor,
+                        onClick = tile.onClick,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag(tile.testTag)
                     )
-                ).chunked(3)
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                gridTiles.forEach { rowItems ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        rowItems.forEach { tile ->
-                            CategoryShortcutCard(
-                                label = tile.label,
-                                subtitle = tile.subtitle,
-                                icon = tile.icon,
-                                badgeColor = tile.badgeColor,
-                                onClick = tile.onClick,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag(tile.testTag)
-                            )
-                        }
-                    }
                 }
             }
         }
 
         // Section 3: File Manager + Dedicated Storage Analysis Card
-        item {
+        item(key = "storage_analysis_card", contentType = "analysis_card") {
             Card(
                 onClick = { onNavigateDestination(OpenFileDestination.STORAGE_ANALYSIS) },
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow
                 ),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
-                shape = RoundedCornerShape(18.dp),
+                shape = VolumeCardShape,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -563,8 +693,7 @@ fun HomeScreen(
                         Box(
                             modifier = Modifier
                                 .size(44.dp)
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f), VolumeIconShape),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
@@ -599,7 +728,7 @@ fun HomeScreen(
 
         // Section 4: Bookmarks
         if (bookmarks.isNotEmpty()) {
-            item {
+            item(key = "pinned_bookmarks_section", contentType = "bookmarks_section") {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -637,7 +766,7 @@ fun HomeScreen(
         }
 
         // Section 5: Recently Accessed Files
-        item {
+        item(key = "recent_files_header", contentType = "section_header") {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -657,7 +786,7 @@ fun HomeScreen(
         }
 
         if (recentFiles.isEmpty()) {
-            item {
+            item(key = "recent_files_empty", contentType = "empty_hint") {
                 Text(
                     text = "Files you open or inspect will appear here for one-tap access.",
                     style = MaterialTheme.typography.bodySmall,
@@ -672,7 +801,7 @@ fun HomeScreen(
             ) { recent ->
                 Surface(
                     onClick = { onRecentFileClick(recent) },
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RecentFileCardShape,
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -710,15 +839,6 @@ fun HomeScreen(
     }
 }
 
-private data class HomeTileSpec(
-    val label: String,
-    val subtitle: String,
-    val icon: ImageVector,
-    val badgeColor: Color,
-    val testTag: String,
-    val onClick: () -> Unit
-)
-
 @Composable
 private fun CategoryShortcutCard(
     label: String,
@@ -728,13 +848,11 @@ private fun CategoryShortcutCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Card(
+    Surface(
         onClick = onClick,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-        ),
+        shape = CategoryCardShape,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
-        shape = RoundedCornerShape(16.dp),
         modifier = modifier
     ) {
         Column(
@@ -747,8 +865,7 @@ private fun CategoryShortcutCard(
             Box(
                 modifier = Modifier
                     .size(46.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(badgeColor.copy(alpha = 0.18f)),
+                    .background(badgeColor.copy(alpha = 0.18f), CategoryIconBadgeShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -816,7 +933,11 @@ fun FileBrowserScreen(
     onOpenCloudAccount: ((CloudAccountEntity) -> Unit)? = null,
     onReauthCloudAccount: ((CloudAccountEntity) -> Unit)? = null,
     onOpenDriveFilePicker: (() -> Unit)? = null,
-    onOpenCloudSection: ((CloudAccountEntity, String) -> Unit)? = null
+    onOpenCloudSection: ((CloudAccountEntity, String) -> Unit)? = null,
+    hasAllFilesAccess: Boolean = true,
+    onRequestAllFilesAccess: (() -> Unit)? = null,
+    onToggleShowHidden: (() -> Unit)? = null,
+    onRequestSafForPath: ((String?) -> Unit)? = null
 ) {
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var showNewFileDialog by remember { mutableStateOf(false) }
@@ -826,23 +947,26 @@ fun FileBrowserScreen(
     var deleteConfirmTargets by remember { mutableStateOf<List<FileReference>?>(null) }
     var extensionFilter by remember { mutableStateOf<String?>(null) }
 
-    val bookmarkedPaths = remember(bookmarks) { bookmarks.map { it.uriOrPath }.toSet() }
+    val bookmarkedPaths = remember(bookmarks) { bookmarks.map { it.uriOrPath }.toHashSet() }
 
+    // Fast path: skip filter engine entirely when there's no active query or extension filter
     val filteredItems = remember(
         browserState.items,
         browserState.searchQuery,
         extensionFilter,
         settings.showHiddenFiles
     ) {
-        if (browserState.searchQuery.isBlank() && extensionFilter == null) {
-            if (settings.showHiddenFiles) browserState.items
-            else browserState.items.filter { !it.isHidden }
-        } else {
-            FileSortAndFilterEngine.filterFiles(
+        val hasQuery = browserState.searchQuery.isNotBlank()
+        val hasExtFilter = extensionFilter != null
+        val showHidden = settings.showHiddenFiles
+        when {
+            !hasQuery && !hasExtFilter && showHidden -> browserState.items
+            !hasQuery && !hasExtFilter -> browserState.items.filter { !it.isHidden }
+            else -> FileSortAndFilterEngine.filterFiles(
                 files = browserState.items,
                 query = browserState.searchQuery,
                 extensionFilter = extensionFilter,
-                showHidden = settings.showHiddenFiles
+                showHidden = showHidden
             )
         }
     }
@@ -928,6 +1052,21 @@ fun FileBrowserScreen(
                             onClick = {
                                 showSortMenu = false
                                 onChangeSort(settings.defaultSortField, order)
+                            }
+                        )
+                    }
+                    if (onToggleShowHidden != null) {
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = if (settings.showHiddenFiles) "✓ Show Hidden Files (.dot)" else "Show Hidden Files (.dot)",
+                                    fontWeight = if (settings.showHiddenFiles) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            onClick = {
+                                showSortMenu = false
+                                onToggleShowHidden()
                             }
                         )
                     }
@@ -1132,6 +1271,100 @@ fun FileBrowserScreen(
 
         HorizontalDivider()
 
+        if (!hasAllFilesAccess &&
+            browserState.activeCloudAccount == null &&
+            browserState.activeRemoteProfile == null &&
+            onRequestAllFilesAccess != null
+        ) {
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("browser_all_files_access_banner")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Warning,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Grant 'All files access' to view all non-media files & folders",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = onRequestAllFilesAccess,
+                        modifier = Modifier.testTag("browser_grant_all_files_button")
+                    ) {
+                        Text("Allow", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+
+        // Restricted /Android/obb and /Android/data helper banner with 1-tap SAF mount
+        val currentLocalPath = browserState.currentDirectory?.uriOrPath.orEmpty().replace('\\', '/')
+        val isInsideRestrictedAndroidDir = browserState.currentDirectory?.providerType == ProviderType.LOCAL &&
+            (currentLocalPath.endsWith("/Android/obb", ignoreCase = true) ||
+                currentLocalPath.contains("/Android/obb/", ignoreCase = true) ||
+                currentLocalPath.endsWith("/Android/data", ignoreCase = true) ||
+                currentLocalPath.contains("/Android/data/", ignoreCase = true))
+
+        if (isInsideRestrictedAndroidDir && onRequestSafForPath != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("browser_restricted_saf_banner")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Android Scoped Storage: ${browserState.currentDirectory?.displayName}",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                        Text(
+                            text = "Select an app folder below or tap 'Mount SAF' to grant direct folder access.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    FilledTonalButton(
+                        onClick = { onRequestSafForPath(browserState.currentDirectory?.uriOrPath) },
+                        modifier = Modifier.testTag("browser_mount_saf_button")
+                    ) {
+                        Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Mount SAF", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+
         // Archive Virtual Contents Inspector (if user opened a .zip/.tar/.7z)
         if (browserState.inspectArchiveFile != null) {
             val archiveRef = browserState.inspectArchiveFile
@@ -1219,49 +1452,94 @@ fun FileBrowserScreen(
         }
 
         // Main File List or Grid + Optional Two-Pane Tablet Inspector
-        BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            val isWideDualPane = maxWidth >= 700.dp
-            val singleSelectedItem = remember(browserState.selectedUris, filteredItems) {
-                if (browserState.selectedUris.size == 1) {
-                    val uri = browserState.selectedUris.first()
-                    filteredItems.firstOrNull { it.uriOrPath == uri }
+        val isWideDualPane = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 700
+        val context = androidx.compose.ui.platform.LocalContext.current
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            val singleSelectedItem = remember(isWideDualPane, browserState.selectedUris, filteredItems) {
+                if (isWideDualPane && browserState.selectedUris.size == 1) {
+                    val targetUri = browserState.selectedUris.first()
+                    filteredItems.firstOrNull { it.uriOrPath == targetUri }
                 } else null
             }
 
             Row(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    if (browserState.isLoading && filteredItems.isNotEmpty()) {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(2.dp)
+                                .align(Alignment.TopCenter),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
                     when {
-                        browserState.isLoading -> {
-                            CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                        browserState.isLoading && filteredItems.isEmpty() -> {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator()
+                            }
                         }
                         browserState.errorMessage != null -> {
+                            val errMsg = browserState.errorMessage
+                            val isSafRequired = errMsg.startsWith("SAF_REQUIRED:")
+                            val targetRestrictedPath = if (isSafRequired) {
+                                errMsg.removePrefix("SAF_REQUIRED:")
+                            } else {
+                                browserState.currentDirectory?.uriOrPath
+                            }
                             Column(
                                 modifier = Modifier
-                                    .align(Alignment.Center)
+                                    .fillMaxSize()
                                     .padding(24.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                verticalArrangement = Arrangement.Center
                             ) {
                                 Icon(
-                                    Icons.Filled.Warning,
+                                    imageVector = if (isSafRequired) Icons.Filled.FolderOpen else Icons.Filled.Warning,
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(36.dp)
+                                    tint = if (isSafRequired) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(44.dp)
                                 )
+                                Spacer(modifier = Modifier.height(10.dp))
                                 Text(
-                                    text = browserState.errorMessage,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.error
+                                    text = if (isSafRequired) {
+                                        "Unlock '${browserState.currentDirectory?.displayName ?: "App Folder"}'"
+                                    } else {
+                                        errMsg
+                                    },
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isSafRequired) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error
                                 )
+                                if (isSafRequired) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = "Android 11+ requires a one-time Storage Access Framework (SAF) confirmation for this app's OBB/Data folder. Tap below and select 'Use this folder'.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    if (onRequestSafForPath != null) {
+                                        Spacer(modifier = Modifier.height(14.dp))
+                                        Button(
+                                            onClick = { onRequestSafForPath(targetRestrictedPath) },
+                                            modifier = Modifier.testTag("grant_targeted_saf_button")
+                                        ) {
+                                            Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Grant Folder Access (SAF)")
+                                        }
+                                    }
+                                }
                             }
                         }
                         filteredItems.isEmpty() -> {
                             Column(
                                 modifier = Modifier
-                                    .align(Alignment.Center)
+                                    .fillMaxSize()
                                     .padding(24.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                verticalArrangement = Arrangement.Center
                             ) {
                                 Icon(
                                     Icons.Filled.FolderOpen,
@@ -1269,6 +1547,7 @@ fun FileBrowserScreen(
                                     tint = MaterialTheme.colorScheme.outline,
                                     modifier = Modifier.size(48.dp)
                                 )
+                                Spacer(modifier = Modifier.height(8.dp))
                                 Text(
                                     text = if (browserState.searchQuery.isNotEmpty()) {
                                         "No files match '${browserState.searchQuery}'"
@@ -1278,6 +1557,7 @@ fun FileBrowserScreen(
                                     style = MaterialTheme.typography.titleMedium
                                 )
                                 if (browserState.currentDirectory != null) {
+                                    Spacer(modifier = Modifier.height(8.dp))
                                     OutlinedButton(onClick = { showNewFolderDialog = true }) {
                                         Icon(Icons.Filled.CreateNewFolder, contentDescription = null)
                                         Spacer(modifier = Modifier.width(6.dp))
@@ -1301,27 +1581,28 @@ fun FileBrowserScreen(
                                 ) { item ->
                                     FileItemGridCard(
                                         file = item,
-                                        isSelected = { item.uriOrPath in browserState.selectedUris },
+                                        isSelected = item.uriOrPath in browserState.selectedUris,
                                         showThumbnails = settings.showThumbnails,
                                         onClick = { onFileClick(item) },
                                         onLongClick = { onFileLongClick(item) },
-                                        onProperties = { onOpenProperties(item) }
+                                        onProperties = { onOpenProperties(item) },
+                                        context = context
                                     )
                                 }
                             }
                         }
                         else -> {
+                            val isRemote = browserState.activeRemoteProfile != null || browserState.activeCloudAccount != null
                             LazyColumn(modifier = Modifier.fillMaxSize().testTag("browser_list_view")) {
                                 items(
                                     items = filteredItems,
                                     key = { it.uriOrPath },
                                     contentType = { if (it.isDirectory) "dir" else "file" }
                                 ) { item ->
-                                    val isRemote = browserState.activeRemoteProfile != null || browserState.activeCloudAccount != null
                                     FileItemRow(
                                         file = item,
-                                        isSelected = { item.uriOrPath in browserState.selectedUris },
-                                        isBookmarked = { item.uriOrPath in bookmarkedPaths },
+                                        isSelected = item.uriOrPath in browserState.selectedUris,
+                                        isBookmarked = item.uriOrPath in bookmarkedPaths,
                                         showThumbnails = settings.showThumbnails,
                                         showExtensions = settings.showFileExtensions,
                                         onClick = { onFileClick(item) },
@@ -1341,9 +1622,9 @@ fun FileBrowserScreen(
                                         onProperties = { onOpenProperties(item) },
                                         onDownloadRemote = if (isRemote) ({ onDownloadRemoteItem(item) }) else null,
                                         onOpenWith = if (onOpenWithExternal != null && (browserState.activeRemoteProfile == null)) ({ onOpenWithExternal(item) }) else null,
-                                        onQuickPreview = if (onQuickPreview != null) ({ onQuickPreview(item) }) else null
+                                        onQuickPreview = if (onQuickPreview != null) ({ onQuickPreview(item) }) else null,
+                                        context = context
                                     )
-                                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                                 }
                             }
                         }
@@ -1410,6 +1691,7 @@ fun FileBrowserScreen(
 
         // File Manager + Contextual Bottom Selection Toolbar (Copy, Move, Rename, Delete, Share, Compress)
         if (browserState.isMultiSelectActive) {
+            // Use the already-computed filteredItemsByUri map for O(1) lookup instead of O(n) filter
             val selectedItemsList = remember(browserState.items, browserState.selectedUris) {
                 browserState.items.filter { it.uriOrPath in browserState.selectedUris }
             }

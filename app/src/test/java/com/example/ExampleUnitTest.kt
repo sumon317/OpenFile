@@ -198,4 +198,40 @@ class ExampleUnitTest {
         assertTrue("Expected 5,000-item multi-sort + filter < 400ms, took ${elapsedMs}ms", elapsedMs < 400)
         assertTrue(filtered.all { it.extension == "pdf" && it.displayName.contains("File_4") })
     }
+
+    @Test
+    fun `github releases auto-updater parses release JSON and compares semantic versions`() {
+        assertTrue(com.example.core.update.AppUpdateEngine.isNewerVersion("v1.0.1", "1.0.0"))
+        assertTrue(com.example.core.update.AppUpdateEngine.isNewerVersion("v2.0.0", "1.4.0"))
+        assertFalse(com.example.core.update.AppUpdateEngine.isNewerVersion("v1.0.0", "1.0.0"))
+        assertFalse(com.example.core.update.AppUpdateEngine.isNewerVersion("v1.0.0-beta", "1.0.0"))
+        assertTrue(com.example.core.update.AppUpdateEngine.isNewerVersion("v1.0.0", "1.0.0-rc1"))
+
+        val sampleReleaseJson = """
+            {
+              "tag_name": "v1.1.0",
+              "name": "OpenFile v1.1.0",
+              "body": "### What's New\n- Direct GitHub Releases Auto-Updater\n- Faster Compose scrolling",
+              "published_at": "2026-11-07T12:00:00Z",
+              "html_url": "https://github.com/sumon317/OpenFile/releases/tag/v1.1.0",
+              "draft": false,
+              "prerelease": false,
+              "assets": [
+                {
+                  "name": "OpenFile-v1.1.0-release.apk",
+                  "size": 14850000,
+                  "browser_download_url": "https://github.com/sumon317/OpenFile/releases/download/v1.1.0/OpenFile-v1.1.0-release.apk"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val parsed = com.example.core.update.AppUpdateEngine.parseReleaseJson(sampleReleaseJson)
+        org.junit.Assert.assertNotNull(parsed)
+        assertEquals("v1.1.0", parsed!!.tagName)
+        assertEquals("1.1.0", parsed.versionName)
+        assertEquals("OpenFile-v1.1.0-release.apk", parsed.apkAssetName)
+        assertEquals(14850000L, parsed.apkSizeBytes)
+        assertTrue(com.example.core.update.AppUpdateEngine.isNewerVersion(parsed.tagName, "1.0.0"))
+    }
 }

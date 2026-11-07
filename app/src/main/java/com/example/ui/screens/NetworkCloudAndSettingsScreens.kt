@@ -1187,9 +1187,11 @@ fun CloudStorageScreen(
 
         // Embedded Native Google Drive FilePicker when Google Drive is connected
         if (googleDriveAccount != null) {
-            item {
-                val activeToken = remember(googleDriveAccount) {
-                    onRetrieveOAuthToken(googleDriveAccount)
+            item(key = "embedded_drive_picker", contentType = "drive_picker") {
+                val activeToken by produceState(initialValue = "", key1 = googleDriveAccount) {
+                    value = withContext(Dispatchers.IO) {
+                        onRetrieveOAuthToken(googleDriveAccount)
+                    }
                 }
                 GoogleDriveFilePicker(
                     account = googleDriveAccount,
@@ -1219,7 +1221,11 @@ fun CloudStorageScreen(
         }
 
         // Provider Connector Cards
-        items(CloudProviderKind.entries) { provider ->
+        items(
+            items = CloudProviderKind.entries,
+            key = { it.id },
+            contentType = { "provider_card" }
+        ) { provider ->
             val connectedAccount = accounts.firstOrNull { it.provider == provider.name }
             val isConnected = connectedAccount != null
             Card(
@@ -1413,7 +1419,12 @@ fun SettingsScreen(
     onMoveToTrashChange: (Boolean) -> Unit,
     onVerifyChecksumChange: (Boolean) -> Unit,
     onClearPrivacyData: (Boolean) -> Unit,
-    onMountSafFolder: () -> Unit
+    onMountSafFolder: () -> Unit,
+    appUpdateState: com.example.core.update.AppUpdateUiState = com.example.core.update.AppUpdateUiState(),
+    onAutoCheckUpdatesChange: (Boolean) -> Unit = {},
+    onCheckForUpdatesNow: () -> Unit = {},
+    onDownloadAndInstallUpdate: () -> Unit = {},
+    onOpenReleasesInBrowser: () -> Unit = {}
 ) {
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -1545,6 +1556,137 @@ fun SettingsScreen(
         }
 
         item {
+            Text(
+                text = "App Updates (GitHub Releases)",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_app_updates_card")
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Installed Version: v${appUpdateState.currentVersionName} (Build ${appUpdateState.currentVersionCode})",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = appUpdateState.statusMessage
+                                    ?: "Direct self-update from github.com/sumon317/OpenFile/releases (no 3rd-party app needed)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (appUpdateState.errorMessage != null) {
+                                    MaterialTheme.colorScheme.error
+                                } else if (appUpdateState.updateAvailable) {
+                                    ApkGreen
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+                    }
+
+                    SettingsToggleRow(
+                        title = "Auto-Check for Updates on Startup",
+                        checked = settings.autoCheckUpdates,
+                        onCheckedChange = onAutoCheckUpdatesChange,
+                        testTag = "settings_toggle_auto_update"
+                    )
+
+                    if (appUpdateState.isDownloading) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            androidx.compose.material3.LinearProgressIndicator(
+                                progress = { appUpdateState.downloadProgressFraction },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text(
+                                text = "Downloading APK: ${(appUpdateState.downloadProgressFraction * 100).toInt()}% (${formatByteSize(appUpdateState.downloadedBytes)} / ${formatByteSize(appUpdateState.totalBytes)})",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
+                    if (appUpdateState.updateAvailable && appUpdateState.latestRelease != null) {
+                        val rel = appUpdateState.latestRelease
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = "New Release: ${rel.releaseTitle} (${rel.tagName})",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = rel.changelog,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 6,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
+                                Button(
+                                    onClick = onDownloadAndInstallUpdate,
+                                    enabled = !appUpdateState.isDownloading,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("settings_download_install_update_button")
+                                ) {
+                                    Text(
+                                        when {
+                                            appUpdateState.isDownloading -> "Downloading..."
+                                            appUpdateState.downloadedApkFile != null -> "Install Downloaded Update (${rel.tagName})"
+                                            else -> "Download & Install ${rel.tagName} (${formatByteSize(rel.apkSizeBytes)})"
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = onCheckForUpdatesNow,
+                            enabled = !appUpdateState.isChecking && !appUpdateState.isDownloading,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("settings_check_updates_button")
+                        ) {
+                            Text(if (appUpdateState.isChecking) "Checking..." else "Check for Updates")
+                        }
+                        OutlinedButton(
+                            onClick = onOpenReleasesInBrowser,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("settings_open_github_releases_button")
+                        ) {
+                            Text("GitHub Releases")
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
             Text("About OpenFile", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
             Card(
@@ -1552,9 +1694,12 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("OpenFile v1.2.0 (com.openfile.manager)", style = MaterialTheme.typography.titleSmall)
                     Text(
-                        text = "Architecture: Capability-based VirtualFileSystemProvider • Room + DataStore • Apache Commons Compress & XZ • Apache Commons Net (FTP/FTPS) • JSch (SFTP w/ SHA-256 Host-Key Pinning) • SMBJ (SMB2/3) • OAuth 2.0 PKCE Cloud Engine.",
+                        text = "OpenFile v${appUpdateState.currentVersionName} (com.openfile.manager)",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        text = "Architecture: Capability-based VirtualFileSystemProvider • Room + DataStore • Apache Commons Compress & XZ • Apache Commons Net (FTP/FTPS) • JSch (SFTP w/ SHA-256 Host-Key Pinning) • SMBJ (SMB2/3) • OAuth 2.0 PKCE Cloud Engine • Native GitHub Releases Self-Updater.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

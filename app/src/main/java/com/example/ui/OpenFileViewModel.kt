@@ -56,6 +56,8 @@ import com.example.core.network.RemoteNetworkClients
 import com.example.core.network.SshHostKeyVerificationRequiredException
 import com.example.core.security.KeystoreCredentialVault
 import com.example.core.storage.StorageAnalyzerEngine
+import com.example.core.update.AppUpdateEngine
+import com.example.core.update.AppUpdateUiState
 import com.example.ui.theme.ThemeMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -109,17 +111,36 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     val transferEngine = TransferQueueEngine(context, dao, localProvider, safProvider, viewModelScope, credentialVault)
     val storageAnalyzer = StorageAnalyzerEngine(localProvider)
     val appManager = AppManagerEngine(context, localProvider)
+    val appUpdateEngine = AppUpdateEngine(context)
+
+    // In-App GitHub Releases Auto-Update State
+    private val _appUpdateState = MutableStateFlow(
+        run {
+            val (vName, vCode) = appUpdateEngine.getCurrentVersionInfo()
+            AppUpdateUiState(currentVersionName = vName, currentVersionCode = vCode)
+        }
+    )
+    val appUpdateState: StateFlow<AppUpdateUiState> = _appUpdateState.asStateFlow()
+
+    private val _showAppUpdateDialog = MutableStateFlow(false)
+    val showAppUpdateDialog: StateFlow<Boolean> = _showAppUpdateDialog.asStateFlow()
+    private var updateDownloadJob: Job? = null
 
     // Navigation state
     private val _currentDestination = MutableStateFlow(OpenFileDestination.HOME)
     val currentDestination: StateFlow<OpenFileDestination> = _currentDestination.asStateFlow()
 
     // Global feedback message (Toast / Snackbar)
-    private val _statusMessage = MutableStateFlow<String?>(null)
-    val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
+    private val _statusMessage = MutableStateFlow<Pair<Long, String>?>(null)
+    val statusMessage: StateFlow<Pair<Long, String>?> = _statusMessage.asStateFlow()
 
-    // Reactive streams from Room & DataStore
-    private val _settings = MutableStateFlow(AppSettingsState())
+    // Reactive streams from Room & DataStore (pre-warmed with cached theme to eliminate startup flash)
+    private val _settings = MutableStateFlow(
+        AppSettingsState(
+            themeMode = settingsStore.getInitialThemeMode(),
+            useDynamicColor = settingsStore.getInitialDynamicColor()
+        )
+    )
     val settings: StateFlow<AppSettingsState> = _settings.asStateFlow()
 
     val bookmarks: StateFlow<List<BookmarkEntity>> = dao.observeBookmarks().stateIn(
@@ -170,9 +191,58 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         emptyList()
     )
 
+    private val _hasAllFilesAccess = MutableStateFlow(localProvider.hasAllFilesAccess())
+    val hasAllFilesAccess: StateFlow<Boolean> = _hasAllFilesAccess.asStateFlow()
+
     private val _volumeRefreshTrigger = MutableStateFlow(0L)
-    fun refreshStorageVolumes() {
-        _volumeRefreshTrigger.value = System.currentTimeMillis()
+    fun refreshStorageVolumes(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        val prevAccess = _hasAllFilesAccess.value
+        val currentAccess = localProvider.hasAllFilesAccess()
+        val accessChanged = prevAccess != currentAccess
+        if (!force && !accessChanged && now - _volumeRefreshTrigger.value < 5_000L) {
+            return
+        }
+        _hasAllFilesAccess.value = currentAccess
+        if (accessChanged || force) {
+            localProvider.invalidateRootCache()
+        }
+        _volumeRefreshTrigger.value = now
+
+        val currentDirPath = _browserState.value.currentDirectory?.uriOrPath
+        val wasInFallbackSandbox = currentDirPath != null && currentDirPath.contains("/files/InternalStorage")
+        if ((!prevAccess && currentAccess) || (currentAccess && wasInFallbackSandbox)) {
+            refreshCategoryCountsAndPrewarm(force = true)
+            if (wasInFallbackSandbox || _currentDestination.value == OpenFileDestination.INTERNAL_STORAGE) {
+                openPrimaryStorageRoot()
+            } else {
+                refreshCurrentDirectory()
+            }
+        }
+    }
+
+    fun requestAllFilesAccessInSettings() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val pkgUri = Uri.parse("package:${context.packageName}")
+            val specificIntent = Intent(
+                android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                pkgUri
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val fallbackIntent = Intent(
+                android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            runCatching {
+                context.startActivity(specificIntent)
+            }.recoverCatching {
+                context.startActivity(fallbackIntent)
+            }.onFailure { err ->
+                showStatus("Unable to open All Files Access settings: ${err.message}")
+            }
+        }
     }
 
     val storageVolumes: StateFlow<List<StorageVolumeInfo>> = combine(safGrants, _volumeRefreshTrigger) { grants, _ ->
@@ -198,6 +268,14 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     private val _browserState = MutableStateFlow(BrowserUiState())
     val browserState: StateFlow<BrowserUiState> = _browserState.asStateFlow()
     private var browseDirectoryJob: Job? = null
+    private var propertiesJob: Job? = null
+
+    private data class PropertyComputeResult(
+        val detailedRef: FileReference,
+        val dirSize: Long,
+        val apk: ApkArchiveInfo?,
+        val hashes: FileChecksums?
+    )
     private var searchDebounceJob: Job? = null
 
     // Preview & Properties modals
@@ -265,6 +343,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     private val _categoryCounts = MutableStateFlow<Map<FileCategory, Int>>(emptyMap())
     val categoryCounts: StateFlow<Map<FileCategory, Int>> = _categoryCounts.asStateFlow()
     private val categoryCache = java.util.concurrent.ConcurrentHashMap<FileCategory, List<FileReference>>()
+    private val categoryCacheAt = java.util.concurrent.ConcurrentHashMap<FileCategory, Long>()
 
     // Active tab inside NetworkScreen (0 = Access from PC / Wi-Fi FTP Server, 1 = Remote Connections)
     private val _selectedNetworkTab = MutableStateFlow(0)
@@ -280,10 +359,20 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch(Dispatchers.IO) {
             // Crash recovery: mark any stale RUNNING transfer jobs from a previous process death as INTERRUPTED
             dao.markRunningJobsAsInterrupted()
-            if (_browserState.value.currentDirectory == null && browseDirectoryJob == null) {
-                openPrimaryStorageRoot()
-            }
+        }
+        // Defer MediaStore category prewarm so it does not compete with the first frame
+        viewModelScope.launch(Dispatchers.IO) {
+            kotlinx.coroutines.delay(1200L)
             refreshCategoryCountsAndPrewarm()
+        }
+        // Automatically check GitHub Releases for app updates in the background on real devices
+        if (!Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) {
+            viewModelScope.launch(Dispatchers.IO) {
+                kotlinx.coroutines.delay(2500L)
+                if (_settings.value.autoCheckUpdates) {
+                    checkForAppUpdates(manualUserTrigger = false)
+                }
+            }
         }
     }
 
@@ -306,6 +395,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 FileCategory.AUDIO,
                 FileCategory.DOCUMENTS,
                 FileCategory.ARCHIVES,
+                FileCategory.APPLICATIONS,
                 FileCategory.LARGE_FILES,
                 FileCategory.RECENT_FILES
             ).forEach { cat ->
@@ -313,6 +403,10 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 runCatching {
                     val items = mediaStoreProvider.queryByCategory(cat, thresholdBytes)
                     categoryCache[cat] = items
+                    categoryCacheAt[cat] = System.currentTimeMillis()
+                    if (cat != FileCategory.APPLICATIONS) {
+                        _categoryCounts.value = _categoryCounts.value + (cat to items.size)
+                    }
                 }
             }
         }
@@ -324,7 +418,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun showStatus(message: String) {
-        _statusMessage.value = message
+        _statusMessage.value = System.nanoTime() to message
     }
 
     fun clearStatusMessage() {
@@ -394,11 +488,12 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
 
         browseDirectoryJob?.cancel()
+        val isRemoteOrEmpty = directory.providerType.isRemote || _browserState.value.items.isEmpty()
         _browserState.value = _browserState.value.copy(
             currentDirectory = directory,
             selectedUris = emptySet(),
             searchQuery = "",
-            isLoading = true,
+            isLoading = isRemoteOrEmpty,
             errorMessage = null,
             activeCategoryFilter = null,
             inspectArchiveFile = null,
@@ -408,88 +503,108 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         )
         browseDirectoryJob = viewModelScope.launch {
             val currentSettings = settings.value
-            val crumbs = withContext(Dispatchers.IO) { buildBreadcrumbs(directory) }
-            val result = when (directory.providerType) {
-                ProviderType.SAF -> safProvider.listChildren(directory, currentSettings.showHiddenFiles)
-                else -> localProvider.listChildren(directory, currentSettings.showHiddenFiles)
-            }
-            result.fold(
-                onSuccess = { rawItems ->
-                    val folderCount = rawItems.count { it.isDirectory }
-                    val itemsForInitialRender = if (directory.providerType == ProviderType.LOCAL && folderCount in 1..60) {
-                        withContext(Dispatchers.IO) {
-                            val enrichedRaw = rawItems.map { item ->
-                                if (item.isDirectory && item.metadata["childCount"] == null) {
-                                    val count = runCatching {
-                                        val list = File(item.uriOrPath).list()
-                                        if (currentSettings.showHiddenFiles) list?.size else list?.count { !it.startsWith(".") }
-                                    }.getOrNull()
-                                    if (count != null) {
-                                        item.copy(metadata = item.metadata + ("childCount" to count.toString()))
-                                    } else {
-                                        item
-                                    }
-                                } else {
-                                    item
+            // Run breadcrumbs + listing + sort + childCount all on IO/Default — one single pass
+            val (crumbs, sortedItems) = withContext(Dispatchers.IO) {
+                val crumbs = buildBreadcrumbs(directory)
+                val primaryRootPath = localProvider.getPrimaryRootDirectory().absolutePath
+                val isRestrictedLocal = directory.providerType == ProviderType.LOCAL &&
+                    localProvider.isRestrictedAndroidDirectory(File(directory.uriOrPath))
+                val grantedSafRef = if (isRestrictedLocal) {
+                    safProvider.findGrantedSafReferenceForLocalPath(directory.uriOrPath, primaryRootPath)
+                } else null
+
+                val listResult = when {
+                    directory.providerType == ProviderType.SAF ->
+                        safProvider.listChildren(directory, currentSettings.showHiddenFiles)
+                    grantedSafRef != null ->
+                        safProvider.listChildren(grantedSafRef, currentSettings.showHiddenFiles)
+                    else -> {
+                        val rawRes = localProvider.listChildren(directory, currentSettings.showHiddenFiles)
+                        if (isRestrictedLocal && localProvider.isTopRestrictedContainer(File(directory.uriOrPath))) {
+                            val childSafGrants = safProvider.findChildSafGrantsForParentLocalPath(directory.uriOrPath, primaryRootPath)
+                            rawRes.map { items ->
+                                items.map { item ->
+                                    if (item.displayName in childSafGrants || "*" in childSafGrants) {
+                                        item.copy(
+                                            metadata = (item.metadata - "restrictedAppFolder") + ("safMounted" to "true")
+                                        )
+                                    } else item
                                 }
                             }
-                            FileSortAndFilterEngine.sortFiles(
-                                files = enrichedRaw,
-                                field = currentSettings.defaultSortField,
-                                order = currentSettings.defaultSortOrder
-                            )
+                        } else {
+                            rawRes
+                        }
+                    }
+                }
+                val sorted = listResult.getOrNull()?.let { rawItems ->
+                    val sortedList = FileSortAndFilterEngine.sortFiles(
+                        files = rawItems,
+                        field = currentSettings.defaultSortField,
+                        order = currentSettings.defaultSortOrder
+                    )
+                    val folderCount = sortedList.count { it.isDirectory }
+                    if (directory.providerType == ProviderType.LOCAL && grantedSafRef == null && folderCount in 1..40) {
+                        sortedList.map { item ->
+                            if (item.isDirectory && item.metadata["childCount"] == null && item.metadata["restrictedAppFolder"] == null) {
+                                val count = runCatching {
+                                    val list = File(item.uriOrPath).list()
+                                    if (currentSettings.showHiddenFiles) list?.size else list?.count { !it.startsWith(".") }
+                                }.getOrNull()
+                                if (count != null) {
+                                    item.copy(metadata = item.metadata + ("childCount" to count.toString()))
+                                } else item
+                            } else item
                         }
                     } else {
-                        withContext(Dispatchers.Default) {
-                            FileSortAndFilterEngine.sortFiles(
-                                files = rawItems,
-                                field = currentSettings.defaultSortField,
-                                order = currentSettings.defaultSortOrder
-                            )
-                        }
+                        sortedList
                     }
-
-                    _browserState.value = _browserState.value.copy(
-                        currentDirectory = directory,
-                        breadcrumbs = crumbs,
-                        items = itemsForInitialRender,
-                        isLoading = false,
-                        errorMessage = null
-                    )
-
-                    // Only run a deferred second pass when a directory has > 60 subfolders
-                    if (directory.providerType == ProviderType.LOCAL && folderCount > 60) {
-                        val enriched = withContext(Dispatchers.IO) {
-                            itemsForInitialRender.map { item ->
-                                if (item.isDirectory && item.metadata["childCount"] == null) {
-                                    val count = runCatching {
-                                        val list = File(item.uriOrPath).list()
-                                        if (currentSettings.showHiddenFiles) list?.size else list?.count { !it.startsWith(".") }
-                                    }.getOrNull()
-                                    if (count != null) {
-                                        item.copy(metadata = item.metadata + ("childCount" to count.toString()))
-                                    } else {
-                                        item
-                                    }
-                                } else {
-                                    item
-                                }
-                            }
-                        }
-                        if (_browserState.value.currentDirectory?.uriOrPath == directory.uriOrPath) {
-                            _browserState.value = _browserState.value.copy(items = enriched)
-                        }
-                    }
-                },
-                onFailure = { err ->
-                    _browserState.value = _browserState.value.copy(
-                        currentDirectory = directory,
-                        breadcrumbs = crumbs,
-                        isLoading = false,
-                        errorMessage = err.message ?: "Unable to read directory"
-                    )
                 }
+                Pair(crumbs, sorted to listResult.exceptionOrNull())
+            }
+            val (itemsForInitialRender, listError) = sortedItems
+
+            if (listError != null || itemsForInitialRender == null) {
+                _browserState.value = _browserState.value.copy(
+                    currentDirectory = directory,
+                    breadcrumbs = crumbs,
+                    isLoading = false,
+                    errorMessage = listError?.message ?: "Unable to read directory"
+                )
+                return@launch
+            }
+
+            _browserState.value = _browserState.value.copy(
+                currentDirectory = directory,
+                breadcrumbs = crumbs,
+                items = itemsForInitialRender,
+                isLoading = false,
+                errorMessage = null
             )
+
+            // For huge directories (>40 folders), enrich child counts in the background
+            val folderCount = itemsForInitialRender.count { it.isDirectory }
+            if (directory.providerType == ProviderType.LOCAL && folderCount > 40) {
+                val enriched = withContext(Dispatchers.IO) {
+                    itemsForInitialRender.map { item ->
+                        if (item.isDirectory && item.metadata["childCount"] == null) {
+                            val count = runCatching {
+                                val list = File(item.uriOrPath).list()
+                                if (currentSettings.showHiddenFiles) list?.size else list?.count { !it.startsWith(".") }
+                            }.getOrNull()
+                            if (count != null) {
+                                item.copy(metadata = item.metadata + ("childCount" to count.toString()))
+                            } else {
+                                item
+                            }
+                        } else {
+                            item
+                        }
+                    }
+                }
+                if (_browserState.value.currentDirectory?.uriOrPath == directory.uriOrPath) {
+                    _browserState.value = _browserState.value.copy(items = enriched)
+                }
+            }
         }
     }
 
@@ -606,7 +721,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             return
         }
         browseDirectoryJob?.cancel()
-        val cached = categoryCache[category]
+        val nowMs = System.currentTimeMillis()
+        val cachedAt = categoryCacheAt[category] ?: 0L
+        val cached = categoryCache[category]?.takeIf { nowMs - cachedAt < 30_000L }
         _browserState.value = _browserState.value.copy(
             currentDirectory = null,
             breadcrumbs = emptyList(),
@@ -625,6 +742,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             val thresholdBytes = currentSettings.largeFileThresholdMb * 1024L * 1024L
             val indexedItems = mediaStoreProvider.queryByCategory(category, thresholdBytes)
             categoryCache[category] = indexedItems
+            categoryCacheAt[category] = System.currentTimeMillis()
             val combinedItems = if (category == FileCategory.RECENT_FILES) {
                 withContext(Dispatchers.IO) {
                     val openedRefs = recentFiles.value.mapNotNull { rec ->
@@ -725,7 +843,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             viewModelScope.launch {
                 val acc = resolveCloudAccountForRef(item)
                 if (acc != null) {
-                    val token = credentialVault.retrieveSecret(acc.tokenSecretAlias).orEmpty()
+                    val token = withContext(Dispatchers.IO) {
+                        credentialVault.retrieveSecret(acc.tokenSecretAlias).orEmpty()
+                    }
                     CloudStorageEngine.resolveLocalFileForPreviewOrOpen(acc, token, item, context)
                         .onSuccess { localFile ->
                             _previewFile.value = item.copy(
@@ -754,7 +874,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             if (isCloud) {
                 val acc = resolveCloudAccountForRef(item)
                 if (acc != null) {
-                    val token = credentialVault.retrieveSecret(acc.tokenSecretAlias).orEmpty()
+                    val token = withContext(Dispatchers.IO) {
+                        credentialVault.retrieveSecret(acc.tokenSecretAlias).orEmpty()
+                    }
                     CloudStorageEngine.writeCloudTextContent(acc, token, item, newContent, context)
                         .onSuccess { updated ->
                             _previewFile.value = updated
@@ -1131,45 +1253,52 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun openPropertiesSheet(item: FileReference) {
+        propertiesJob?.cancel()
         _propertiesFile.value = item
         _propertiesChecksums.value = null
         _propertiesApkInfo.value = null
+        val originalItem = item
 
-        viewModelScope.launch {
+        propertiesJob = viewModelScope.launch {
             if (item.providerType == ProviderType.LOCAL) {
-                val file = File(item.uriOrPath)
-                val detailedRef = localProvider.toFileReference(
-                    file = file,
-                    includeChildCount = true,
-                    includeCanonicalPath = true
-                )
-                if (file.isDirectory && file.canRead()) {
-                    val dirSize = localProvider.calculateDirectorySize(file)
-                    _propertiesFile.value = detailedRef.copy(sizeBytes = dirSize)
-                } else if (file.isFile && file.canRead()) {
-                    _propertiesFile.value = detailedRef
-                    if (item.extension == "apk") {
-                        _propertiesApkInfo.value = appManager.inspectApkFile(file).getOrNull()
-                    }
-                    if (file.length() <= 250L * 1024 * 1024) {
-                        val hashes = runCatching {
-                            file.inputStream().use { ChecksumAndDuplicateEngine.computeChecksums(it) }
-                        }.getOrNull()
-                        _propertiesChecksums.value = hashes
-                    }
+                val (detailedRef, dirSize, apk, hashes) = withContext(Dispatchers.IO) {
+                    val file = File(item.uriOrPath)
+                    val dr = localProvider.toFileReference(
+                        file = file,
+                        includeChildCount = true,
+                        includeCanonicalPath = true
+                    )
+                    val ds = if (file.isDirectory) runCatching { localProvider.calculateDirectorySize(file) }.getOrDefault(0L) else 0L
+                    val a = if (!file.isDirectory && item.extension == "apk") appManager.inspectApkFile(file).getOrNull() else null
+                    val h = if (file.isFile && file.length() <= 250L * 1024 * 1024) runCatching {
+                        file.inputStream().use { ChecksumAndDuplicateEngine.computeChecksums(it) }
+                    }.getOrNull() else null
+                    PropertyComputeResult(dr, ds, a, h)
                 }
+                if (detailedRef.isDirectory) {
+                    _propertiesFile.value = detailedRef.copy(sizeBytes = if (dirSize > 0) dirSize else detailedRef.sizeBytes)
+                } else {
+                    _propertiesFile.value = detailedRef
+                }
+                _propertiesApkInfo.value = apk
+                _propertiesChecksums.value = hashes
             } else if (item.providerType in setOf(ProviderType.GOOGLE_DRIVE, ProviderType.ONEDRIVE, ProviderType.DROPBOX)) {
-                val acc = resolveCloudAccountForRef(item) ?: return@launch
-                val token = credentialVault.retrieveSecret(acc.tokenSecretAlias).orEmpty()
-                CloudStorageEngine.resolveLocalFileForPreviewOrOpen(acc, token, item, context).onSuccess { file ->
-                    if (file.isDirectory && file.canRead()) {
-                        val dirSize = localProvider.calculateDirectorySize(file)
-                        _propertiesFile.value = item.copy(sizeBytes = dirSize)
-                    } else if (file.isFile && file.canRead() && file.length() <= 250L * 1024 * 1024) {
-                        val hashes = runCatching {
-                            file.inputStream().use { ChecksumAndDuplicateEngine.computeChecksums(it) }
-                        }.getOrNull()
-                        _propertiesChecksums.value = hashes
+                val (acc, token) = withContext(Dispatchers.IO) {
+                    Pair(resolveCloudAccountForRef(originalItem), "")
+                }
+                val actualAcc = acc
+                if (actualAcc != null) {
+                    val t = withContext(Dispatchers.IO) { credentialVault.retrieveSecret(actualAcc.tokenSecretAlias).orEmpty() }
+                    CloudStorageEngine.resolveLocalFileForPreviewOrOpen(actualAcc, t, item, context).onSuccess { file ->
+                        val data = withContext(Dispatchers.IO) {
+                            val dirSize = if (file.isDirectory) localProvider.calculateDirectorySize(file) else 0L
+                            val h = if (file.isFile && file.canRead() && file.length() <= 250L * 1024 * 1024) runCatching {
+                                file.inputStream().use { ChecksumAndDuplicateEngine.computeChecksums(it) }
+                            }.getOrNull() else null
+                            Pair(dirSize, h)
+                        }
+                        if (file.isDirectory) _propertiesFile.value = item.copy(sizeBytes = data.first)
+                        else _propertiesChecksums.value = data.second
                     }
                 }
             }
@@ -1177,6 +1306,8 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun closePropertiesSheet() {
+        propertiesJob?.cancel()
+        propertiesJob = null
         _propertiesFile.value = null
         _propertiesChecksums.value = null
         _propertiesApkInfo.value = null
@@ -1189,13 +1320,15 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     fun openBookmark(bm: BookmarkEntity) {
         when (bm.providerType) {
             ProviderType.SAF.name -> {
-                val uri = Uri.parse(bm.uriOrPath)
-                val ref = safProvider.fromTreeUri(uri, bm.title)
-                if (ref.isDirectory) {
-                    _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
-                    openDirectory(ref)
-                } else {
-                    onFileItemClicked(ref)
+                viewModelScope.launch {
+                    val uri = Uri.parse(bm.uriOrPath)
+                    val ref = withContext(Dispatchers.IO) { safProvider.fromTreeUri(uri, bm.title) }
+                    if (ref.isDirectory) {
+                        _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
+                        openDirectory(ref)
+                    } else {
+                        onFileItemClicked(ref)
+                    }
                 }
             }
             ProviderType.GOOGLE_DRIVE.name, ProviderType.ONEDRIVE.name, ProviderType.DROPBOX.name -> {
@@ -1311,9 +1444,27 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun buildSafInitialUriForLocalPath(targetLocalPath: String? = null): Uri? {
+        val path = targetLocalPath ?: _browserState.value.currentDirectory?.uriOrPath ?: return null
+        val file = File(path)
+        if (localProvider.isRestrictedAndroidDirectory(file)) {
+            runCatching {
+                if (!file.exists()) file.mkdirs()
+            }
+        }
+        return safProvider.buildInitialSafUriForLocalPath(
+            localPath = path,
+            primaryRootPath = localProvider.getPrimaryRootDirectory().absolutePath
+        )
+    }
+
     fun onSafTreeGranted(treeUri: Uri) {
         viewModelScope.launch {
-            val label = safProvider.persistTreePermission(treeUri)
+            val (label, ref) = withContext(Dispatchers.IO) {
+                val l = safProvider.persistTreePermission(treeUri)
+                val r = safProvider.fromTreeUri(treeUri, l)
+                l to r
+            }
             dao.upsertSafGrant(
                 SafGrantEntity(
                     treeUriString = treeUri.toString(),
@@ -1321,9 +1472,16 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                     isPermissionValid = true
                 )
             )
-            val ref = safProvider.fromTreeUri(treeUri, label)
             _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
-            openDirectory(ref)
+            val currentDir = _browserState.value.currentDirectory
+            if (currentDir != null &&
+                currentDir.providerType == ProviderType.LOCAL &&
+                localProvider.isRestrictedAndroidDirectory(File(currentDir.uriOrPath))
+            ) {
+                openDirectory(currentDir)
+            } else {
+                openDirectory(ref)
+            }
             showStatus("Granted SAF access to '$label'")
         }
     }
@@ -1499,11 +1657,16 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         analysisJob = viewModelScope.launch {
             _isAnalyzingStorage.value = true
             _analysisProgressText.value = "Scanning ${targetRoot.name}..."
+            var lastEmitTimeMs = 0L
             storageAnalyzer.analyzeDirectory(
                 rootDir = targetRoot,
                 includeDuplicateScan = true,
                 onProgress = { count, _, name ->
-                    _analysisProgressText.value = "Scanned $count files ($name)"
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (now - lastEmitTimeMs >= 100L) {
+                        lastEmitTimeMs = now
+                        _analysisProgressText.value = "Scanned $count files ($name)"
+                    }
                 }
             ).fold(
                 onSuccess = { report ->
@@ -1628,7 +1791,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     ) {
         viewModelScope.launch {
             val alias = if (!isAnonymous && passwordOrPrivateKey.isNotBlank()) {
-                credentialVault.storeSecret(null, passwordOrPrivateKey)
+                withContext(Dispatchers.IO) {
+                    credentialVault.storeSecret(null, passwordOrPrivateKey)
+                }
             } else null
 
             dao.upsertNetworkProfile(
@@ -1651,7 +1816,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     fun deleteNetworkProfile(profile: NetworkProfileEntity) {
         viewModelScope.launch {
-            credentialVault.deleteSecret(profile.secretAlias)
+            withContext(Dispatchers.IO) {
+                credentialVault.deleteSecret(profile.secretAlias)
+            }
             dao.deleteNetworkProfile(profile.id)
             showStatus("Deleted profile '${profile.displayName}'")
         }
@@ -1666,7 +1833,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 activeCloudAccount = null,
                 selectedUris = emptySet()
             )
-            val secret = credentialVault.retrieveSecret(profile.secretAlias).orEmpty()
+            val secret = withContext(Dispatchers.IO) {
+                credentialVault.retrieveSecret(profile.secretAlias).orEmpty()
+            }
             RemoteNetworkClients.listRemoteDirectory(profile, secret, remotePath).fold(
                 onSuccess = { items ->
                     val provider = when (profile.protocol.uppercase()) {
@@ -2383,6 +2552,164 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 credentialVault.clearAllSecrets()
             }
             showStatus(if (clearVault) "Cleared history and purged Keystore vault" else "Cleared search & recent history")
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // GitHub Releases Auto-Update Actions (https://github.com/sumon317/OpenFile/releases)
+    // ---------------------------------------------------------------------------------------------
+
+    fun setAutoCheckUpdates(enabled: Boolean) {
+        _settings.value = _settings.value.copy(autoCheckUpdates = enabled)
+        viewModelScope.launch { settingsStore.setAutoCheckUpdates(enabled) }
+    }
+
+    fun openAppUpdateDialog() {
+        _showAppUpdateDialog.value = true
+    }
+
+    fun dismissAppUpdateDialog() {
+        _showAppUpdateDialog.value = false
+    }
+
+    fun checkForAppUpdates(manualUserTrigger: Boolean = true) {
+        if (_appUpdateState.value.isChecking) return
+        val (currentVersion, currentCode) = appUpdateEngine.getCurrentVersionInfo()
+        _appUpdateState.value = _appUpdateState.value.copy(
+            currentVersionName = currentVersion,
+            currentVersionCode = currentCode,
+            isChecking = true,
+            errorMessage = null,
+            statusMessage = "Checking GitHub Releases..."
+        )
+        viewModelScope.launch {
+            appUpdateEngine.fetchLatestRelease().fold(
+                onSuccess = { release ->
+                    val isNewer = AppUpdateEngine.isNewerVersion(release.tagName, currentVersion)
+                    _appUpdateState.value = _appUpdateState.value.copy(
+                        isChecking = false,
+                        updateAvailable = isNewer,
+                        latestRelease = release,
+                        lastCheckedEpochMs = System.currentTimeMillis(),
+                        errorMessage = null,
+                        statusMessage = if (isNewer) {
+                            "Update available: ${release.tagName} (${release.apkAssetName})"
+                        } else {
+                            "You are on the latest version (v$currentVersion)"
+                        }
+                    )
+                    if (isNewer) {
+                        if (manualUserTrigger) {
+                            _showAppUpdateDialog.value = true
+                        }
+                        showStatus("New update available: ${release.tagName}")
+                    } else if (manualUserTrigger) {
+                        showStatus("OpenFile v$currentVersion is up to date!")
+                    }
+                },
+                onFailure = { err ->
+                    val msg = err.message ?: "Unable to check GitHub Releases"
+                    _appUpdateState.value = _appUpdateState.value.copy(
+                        isChecking = false,
+                        lastCheckedEpochMs = System.currentTimeMillis(),
+                        errorMessage = msg,
+                        statusMessage = msg
+                    )
+                    if (manualUserTrigger) {
+                        showStatus("Update check: $msg")
+                    }
+                }
+            )
+        }
+    }
+
+    fun downloadAndInstallAppUpdate() {
+        val release = _appUpdateState.value.latestRelease ?: return
+        if (_appUpdateState.value.isDownloading) return
+
+        val existingFile = _appUpdateState.value.downloadedApkFile
+        if (existingFile != null && existingFile.exists() && existingFile.length() > 0L) {
+            triggerApkInstallation(existingFile)
+            return
+        }
+
+        updateDownloadJob?.cancel()
+        _appUpdateState.value = _appUpdateState.value.copy(
+            isDownloading = true,
+            downloadProgressFraction = 0f,
+            downloadedBytes = 0L,
+            totalBytes = release.apkSizeBytes,
+            errorMessage = null,
+            statusMessage = "Downloading ${release.apkAssetName}..."
+        )
+        updateDownloadJob = viewModelScope.launch {
+            appUpdateEngine.downloadReleaseApk(
+                release = release,
+                onProgress = { downloaded, total ->
+                    val frac = if (total > 0L) (downloaded.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+                    _appUpdateState.value = _appUpdateState.value.copy(
+                        isDownloading = true,
+                        downloadedBytes = downloaded,
+                        totalBytes = total,
+                        downloadProgressFraction = frac
+                    )
+                }
+            ).fold(
+                onSuccess = { apkFile ->
+                    _appUpdateState.value = _appUpdateState.value.copy(
+                        isDownloading = false,
+                        downloadProgressFraction = 1f,
+                        downloadedBytes = apkFile.length(),
+                        totalBytes = apkFile.length(),
+                        downloadedApkFile = apkFile,
+                        statusMessage = "Downloaded ${release.apkAssetName}. Launching installer..."
+                    )
+                    triggerApkInstallation(apkFile)
+                },
+                onFailure = { err ->
+                    val msg = err.message ?: "Download failed"
+                    _appUpdateState.value = _appUpdateState.value.copy(
+                        isDownloading = false,
+                        errorMessage = msg,
+                        statusMessage = "Download failed: $msg"
+                    )
+                    showStatus("Update download failed: $msg")
+                }
+            )
+        }
+    }
+
+    fun triggerApkInstallation(apkFile: File? = _appUpdateState.value.downloadedApkFile) {
+        val target = apkFile ?: return
+        if (!target.exists()) {
+            showStatus("Downloaded APK file not found; please download again.")
+            _appUpdateState.value = _appUpdateState.value.copy(downloadedApkFile = null)
+            return
+        }
+        if (!appUpdateEngine.canRequestPackageInstalls()) {
+            _appUpdateState.value = _appUpdateState.value.copy(
+                waitingForInstallPermission = true,
+                statusMessage = "Grant 'Install unknown apps' permission to complete update."
+            )
+            showStatus("Allow 'Install unknown apps' for OpenFile to install the update")
+            appUpdateEngine.openInstallUnknownAppsSettings()
+            return
+        }
+        _appUpdateState.value = _appUpdateState.value.copy(waitingForInstallPermission = false)
+        appUpdateEngine.launchPackageInstaller(target).onFailure { err ->
+            showStatus("Failed to launch installer: ${err.message}")
+        }
+    }
+
+    fun onResumeCheckPendingUpdateInstall() {
+        val state = _appUpdateState.value
+        val apkFile = state.downloadedApkFile
+        if (state.waitingForInstallPermission && apkFile != null && apkFile.exists() && appUpdateEngine.canRequestPackageInstalls()) {
+            _appUpdateState.value = state.copy(
+                waitingForInstallPermission = false,
+                statusMessage = "Permission granted! Launching package installer..."
+            )
+            appUpdateEngine.launchPackageInstaller(apkFile)
         }
     }
 }

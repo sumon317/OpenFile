@@ -26,6 +26,8 @@ class KeystoreCredentialVault(context: Context) {
     private val fallbackKeyFile = File(context.filesDir, ".openfile_vault_fallback.key")
     private val lock = Any()
     private var cachedProperties: Properties? = null
+    private var cachedSecretKey: SecretKey? = null
+    private val retrievedSecretCache = linkedMapOf<String, String?>()
 
     companion object {
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
@@ -40,6 +42,7 @@ class KeystoreCredentialVault(context: Context) {
      */
     fun storeSecret(existingAlias: String? = null, plainTextSecret: String): String {
         synchronized(lock) {
+            retrievedSecretCache.clear()
             val alias = existingAlias?.takeIf { it.isNotBlank() } ?: "sec_${UUID.randomUUID()}"
             val secretKey = getOrCreateSecretKey()
             val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -55,6 +58,7 @@ class KeystoreCredentialVault(context: Context) {
             System.arraycopy(cipherBytes, 0, combined, 1 + iv.size, cipherBytes.size)
 
             val encoded = Base64.encodeToString(combined, Base64.NO_WRAP)
+            retrievedSecretCache.remove(alias)
             val props = loadProperties()
             props.setProperty(alias, encoded)
             saveProperties(props)
@@ -68,8 +72,9 @@ class KeystoreCredentialVault(context: Context) {
     fun retrieveSecret(secretAlias: String?): String? {
         if (secretAlias.isNullOrBlank()) return null
         synchronized(lock) {
+            retrievedSecretCache[secretAlias]?.let { return it }
             val props = loadProperties()
-            val encoded = props.getProperty(secretAlias) ?: return null
+            val encoded = props.getProperty(secretAlias) ?: return null.also { retrievedSecretCache[secretAlias] = null }
             return try {
                 val combined = Base64.decode(encoded, Base64.NO_WRAP)
                 if (combined.size < 2 + GCM_IV_LENGTH_BYTES) return null
@@ -96,6 +101,7 @@ class KeystoreCredentialVault(context: Context) {
     fun deleteSecret(secretAlias: String?) {
         if (secretAlias.isNullOrBlank()) return
         synchronized(lock) {
+            retrievedSecretCache.remove(secretAlias)
             val props = loadProperties()
             if (props.remove(secretAlias) != null) {
                 saveProperties(props)
@@ -109,6 +115,8 @@ class KeystoreCredentialVault(context: Context) {
     fun clearAllSecrets() {
         synchronized(lock) {
             cachedProperties = Properties()
+            retrievedSecretCache.clear()
+            cachedSecretKey = null
             if (vaultFile.exists()) vaultFile.delete()
             if (fallbackKeyFile.exists()) fallbackKeyFile.delete()
             try {
@@ -128,10 +136,12 @@ class KeystoreCredentialVault(context: Context) {
     }
 
     private fun getOrCreateSecretKey(): SecretKey {
+        cachedSecretKey?.let { return it }
         return try {
             val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             val existingEntry = keyStore.getEntry(MASTER_KEY_ALIAS, null) as? KeyStore.SecretKeyEntry
             if (existingEntry != null) {
+                cachedSecretKey = existingEntry.secretKey
                 existingEntry.secretKey
             } else {
                 val keyGenerator = KeyGenerator.getInstance(
@@ -147,20 +157,26 @@ class KeystoreCredentialVault(context: Context) {
                     .setKeySize(256)
                     .build()
                 keyGenerator.init(spec)
-                keyGenerator.generateKey()
+                val generated = keyGenerator.generateKey()
+                cachedSecretKey = generated
+                generated
             }
         } catch (_: Exception) {
             // Fallback for local JVM / Robolectric test environments where AndroidKeyStore provider is absent
             if (fallbackKeyFile.exists()) {
                 val keyBytes = fallbackKeyFile.readBytes()
                 if (keyBytes.size == 32) {
-                    return SecretKeySpec(keyBytes, "AES")
+                    val key = SecretKeySpec(keyBytes, "AES")
+                    cachedSecretKey = key
+                    return key
                 }
             }
             val randomBytes = ByteArray(32)
             SecureRandom().nextBytes(randomBytes)
             fallbackKeyFile.writeBytes(randomBytes)
-            SecretKeySpec(randomBytes, "AES")
+            val key = SecretKeySpec(randomBytes, "AES")
+            cachedSecretKey = key
+            key
         }
     }
 

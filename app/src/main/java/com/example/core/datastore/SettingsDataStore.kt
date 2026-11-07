@@ -42,10 +42,22 @@ data class AppSettingsState(
     val ftpAllowWrite: Boolean = true,
     val ftpUseExplicitTls: Boolean = false,
     val ftpIdleTimeoutMinutes: Int = 15,
-    val ftpRootPath: String = ""
+    val ftpRootPath: String = "",
+    val autoCheckUpdates: Boolean = true
 )
 
 class SettingsDataStore(private val context: Context) {
+
+    private val themeCache = context.getSharedPreferences("openfile_theme_cache", Context.MODE_PRIVATE)
+
+    fun getInitialThemeMode(): ThemeMode {
+        val saved = themeCache.getString("theme_mode", null) ?: return ThemeMode.SYSTEM
+        return runCatching { ThemeMode.valueOf(saved) }.getOrDefault(ThemeMode.SYSTEM)
+    }
+
+    fun getInitialDynamicColor(): Boolean {
+        return themeCache.getBoolean("dynamic_color", false)
+    }
 
     private object Keys {
         val THEME_MODE = stringPreferencesKey("theme_mode")
@@ -71,14 +83,22 @@ class SettingsDataStore(private val context: Context) {
         val FTP_USE_TLS = booleanPreferencesKey("ftp_use_tls")
         val FTP_TIMEOUT_MIN = intPreferencesKey("ftp_timeout_min")
         val FTP_ROOT_PATH = stringPreferencesKey("ftp_root_path")
+        val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
     }
 
     val settingsFlow: Flow<AppSettingsState> = context.openFileDataStore.data.map { prefs ->
+        val resolvedThemeMode = runCatching {
+            ThemeMode.valueOf(prefs[Keys.THEME_MODE] ?: ThemeMode.SYSTEM.name)
+        }.getOrDefault(ThemeMode.SYSTEM)
+        val resolvedDynamicColor = prefs[Keys.DYNAMIC_COLOR] ?: false
+        themeCache.edit()
+            .putString("theme_mode", resolvedThemeMode.name)
+            .putBoolean("dynamic_color", resolvedDynamicColor)
+            .apply()
+
         AppSettingsState(
-            themeMode = runCatching {
-                ThemeMode.valueOf(prefs[Keys.THEME_MODE] ?: ThemeMode.SYSTEM.name)
-            }.getOrDefault(ThemeMode.SYSTEM),
-            useDynamicColor = prefs[Keys.DYNAMIC_COLOR] ?: false,
+            themeMode = resolvedThemeMode,
+            useDynamicColor = resolvedDynamicColor,
             defaultViewMode = runCatching {
                 ViewMode.valueOf(prefs[Keys.VIEW_MODE] ?: ViewMode.LIST.name)
             }.getOrDefault(ViewMode.LIST),
@@ -104,15 +124,18 @@ class SettingsDataStore(private val context: Context) {
             ftpAllowWrite = prefs[Keys.FTP_ALLOW_WRITE] ?: true,
             ftpUseExplicitTls = prefs[Keys.FTP_USE_TLS] ?: false,
             ftpIdleTimeoutMinutes = prefs[Keys.FTP_TIMEOUT_MIN] ?: 15,
-            ftpRootPath = prefs[Keys.FTP_ROOT_PATH] ?: ""
+            ftpRootPath = prefs[Keys.FTP_ROOT_PATH] ?: "",
+            autoCheckUpdates = prefs[Keys.AUTO_CHECK_UPDATES] ?: true
         )
     }
 
     suspend fun setThemeMode(mode: ThemeMode) {
+        themeCache.edit().putString("theme_mode", mode.name).apply()
         context.openFileDataStore.edit { it[Keys.THEME_MODE] = mode.name }
     }
 
     suspend fun setDynamicColor(enabled: Boolean) {
+        themeCache.edit().putBoolean("dynamic_color", enabled).apply()
         context.openFileDataStore.edit { it[Keys.DYNAMIC_COLOR] = enabled }
     }
 
@@ -179,5 +202,9 @@ class SettingsDataStore(private val context: Context) {
             it[Keys.FTP_TIMEOUT_MIN] = idleTimeoutMinutes.coerceIn(1, 240)
             it[Keys.FTP_ROOT_PATH] = rootPath
         }
+    }
+
+    suspend fun setAutoCheckUpdates(enabled: Boolean) {
+        context.openFileDataStore.edit { it[Keys.AUTO_CHECK_UPDATES] = enabled }
     }
 }

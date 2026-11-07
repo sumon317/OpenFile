@@ -719,8 +719,8 @@ fun GoogleDriveFilePicker(
                                 val isBookmarked = bookmarkedPaths.contains(item.uriOrPath)
                                 FileItemRow(
                                     file = item,
-                                    isSelected = { selectedUris.contains(item.uriOrPath) },
-                                    isBookmarked = { bookmarkedPaths.contains(item.uriOrPath) },
+                                    isSelected = isSelected,
+                                    isBookmarked = isBookmarked,
                                     showThumbnails = settings.showThumbnails,
                                     showExtensions = true,
                                     onClick = {
@@ -745,10 +745,6 @@ fun GoogleDriveFilePicker(
                                     onToggleBookmark = { onToggleBookmark(item) },
                                     onDownloadRemote = { onDownloadToLocal(item) }
                                 )
-                                HorizontalDivider(
-                                    modifier = Modifier.padding(start = 66.dp),
-                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                                )
                             }
                         }
                     }
@@ -770,7 +766,7 @@ fun GoogleDriveFilePicker(
                                 val isSelected = selectedUris.contains(item.uriOrPath)
                                 FileItemGridCard(
                                     file = item,
-                                    isSelected = { selectedUris.contains(item.uriOrPath) },
+                                    isSelected = selectedUris.contains(item.uriOrPath),
                                     showThumbnails = settings.showThumbnails,
                                     onClick = {
                                         if (selectedUris.isNotEmpty()) {

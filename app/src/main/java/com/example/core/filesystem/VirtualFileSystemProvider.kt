@@ -58,6 +58,21 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
     @Volatile
     private var cachedPrimaryRoot: File? = null
 
+    private val appLabelCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    fun hasAllFilesAccess(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            val ext = Environment.getExternalStorageDirectory()
+            ext != null && ext.exists() && ext.canRead()
+        }
+    }
+
+    fun invalidateRootCache() {
+        cachedPrimaryRoot = null
+    }
+
     /**
      * Returns the primary accessible internal root directory.
      * If shared external storage is readable and populated, returns `/storage/emulated/0`;
@@ -65,21 +80,24 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
      * local file management always works out of the box even before runtime permissions.
      */
     fun getPrimaryRootDirectory(): File {
-        cachedPrimaryRoot?.let { if (it.exists()) return it }
+        cachedPrimaryRoot?.let { if (it.exists() && it.canRead()) return it }
         val externalRoot = Environment.getExternalStorageDirectory()
-        if (externalRoot != null && externalRoot.exists() && externalRoot.canRead()) {
-            val hasStandardFolder = File(externalRoot, "Download").exists() ||
-                File(externalRoot, "Android").exists() ||
-                File(externalRoot, "DCIM").exists() ||
-                !externalRoot.list().isNullOrEmpty()
-            if (hasStandardFolder) {
-                cachedPrimaryRoot = externalRoot
-                return externalRoot
+        if (externalRoot != null && externalRoot.exists()) {
+            if (hasAllFilesAccess() || externalRoot.canRead()) {
+                val hasStandardFolder = File(externalRoot, "Download").exists() ||
+                    File(externalRoot, "Android").exists() ||
+                    File(externalRoot, "DCIM").exists() ||
+                    !externalRoot.list().isNullOrEmpty()
+                if (hasStandardFolder || hasAllFilesAccess()) {
+                    cachedPrimaryRoot = externalRoot
+                    return externalRoot
+                }
             }
         }
         val workspaceRoot = File(context.getExternalFilesDir(null) ?: context.filesDir, "InternalStorage")
         ensureInitialWorkspaceStructure(workspaceRoot)
-        cachedPrimaryRoot = workspaceRoot
+        // Do NOT cache workspaceRoot in cachedPrimaryRoot so that as soon as storage permission
+        // is granted, getPrimaryRootDirectory() immediately switches to real /storage/emulated/0.
         return workspaceRoot
     }
 
@@ -144,7 +162,8 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
         includeCanonicalPath: Boolean = false
     ): FileReference {
         val isDir = file.isDirectory
-        val name = file.name.ifEmpty { file.absolutePath }
+        val path = file.absolutePath
+        val name = file.name.ifEmpty { path }
         val ext = if (isDir) "" else name.substringAfterLast('.', "").lowercase()
         val mime = if (isDir) {
             "inode/directory"
@@ -156,6 +175,26 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
                 MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: guessed
             }
         }
+
+        val isRestricted = isRestrictedAndroidDirectory(file)
+        // Fast path for normal directory listings: avoid 3 extra POSIX access() syscalls per file
+        if (!includeChildCount && !includeCanonicalPath && !isRestricted) {
+            return FileReference(
+                providerType = ProviderType.LOCAL,
+                uriOrPath = path,
+                displayName = name,
+                parentUriOrPath = file.parent,
+                isDirectory = isDir,
+                sizeBytes = if (isDir) 0L else file.length(),
+                lastModifiedEpochMs = file.lastModified(),
+                mimeType = mime,
+                extension = ext,
+                isHidden = name.startsWith("."),
+                capabilities = FileReference.defaultCapabilitiesFor(ProviderType.LOCAL, isDir),
+                metadata = if (isDir) DefaultDirMetadata else DefaultFileMetadata
+            )
+        }
+
         val canRead = file.canRead()
         val canWrite = file.canWrite()
         val perms = buildString(4) {
@@ -171,32 +210,25 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
         val metadata = buildMap {
             put("permissions", perms)
             if (includeCanonicalPath) {
-                put("canonicalPath", runCatching { file.canonicalPath }.getOrDefault(file.absolutePath))
+                put("canonicalPath", runCatching { file.canonicalPath }.getOrDefault(path))
             }
             if (childCount != null) put("childCount", childCount)
-            if (isRestrictedAndroidDirectory(file)) {
+            if (isRestricted) {
                 put("scopedRestriction", "Protected by Android 11+ Scoped Storage. Use SAF if supported.")
             }
         }
 
-        val defaultCaps = FileReference.defaultCapabilitiesFor(ProviderType.LOCAL, isDir)
         val capabilities = if (canWrite) {
-            defaultCaps
+            FileReference.defaultCapabilitiesFor(ProviderType.LOCAL, isDir)
         } else {
-            defaultCaps.toMutableSet().apply {
-                remove(ProviderCapability.STREAM_WRITE)
-                remove(ProviderCapability.CREATE_DIR)
-                remove(ProviderCapability.CREATE_FILE)
-                remove(ProviderCapability.DELETE)
-                remove(ProviderCapability.ATOMIC_RENAME)
-            }
+            FileReference.readOnlyCapabilitiesFor(ProviderType.LOCAL, isDir)
         }
 
         return FileReference(
             providerType = ProviderType.LOCAL,
-            uriOrPath = file.absolutePath,
+            uriOrPath = path,
             displayName = name,
-            parentUriOrPath = file.parentFile?.absolutePath,
+            parentUriOrPath = file.parent,
             isDirectory = isDir,
             sizeBytes = if (isDir) 0L else file.length(),
             lastModifiedEpochMs = file.lastModified(),
@@ -210,11 +242,112 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
 
     fun isRestrictedAndroidDirectory(file: File): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
-        val normalized = file.absolutePath.replace('\\', '/')
-        return normalized.endsWith("/Android/data") ||
-            normalized.contains("/Android/data/") ||
-            normalized.endsWith("/Android/obb") ||
-            normalized.contains("/Android/obb/")
+        val normalized = file.absolutePath.replace('\\', '/').trimEnd('/')
+        return normalized.endsWith("/Android/data", ignoreCase = true) ||
+            normalized.contains("/Android/data/", ignoreCase = true) ||
+            normalized.endsWith("/Android/obb", ignoreCase = true) ||
+            normalized.contains("/Android/obb/", ignoreCase = true)
+    }
+
+    fun isTopRestrictedContainer(file: File): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        val normalized = file.absolutePath.replace('\\', '/').trimEnd('/')
+        return normalized.endsWith("/Android/data", ignoreCase = true) ||
+            normalized.endsWith("/Android/obb", ignoreCase = true)
+    }
+
+    private fun tryListViaRoot(dir: File, showHidden: Boolean): List<FileReference>? {
+        return runCatching {
+            val suBinary = listOf("/system/bin/su", "/system/xbin/su", "/sbin/su", "/debug_ramdisk/su")
+                .firstOrNull { File(it).exists() } ?: return null
+            val escapedPath = dir.absolutePath.replace("'", "'\\''")
+            val process = ProcessBuilder(suBinary, "-c", "ls -1Ap '$escapedPath'")
+                .redirectErrorStream(true)
+                .start()
+            val exitCode = process.waitFor()
+            if (exitCode != 0) {
+                process.destroy()
+                return null
+            }
+            val lines = process.inputStream.bufferedReader().readLines()
+            lines.mapNotNull { rawLine ->
+                val trimmed = rawLine.trim()
+                if (trimmed.isEmpty()) return@mapNotNull null
+                val isDir = trimmed.endsWith("/")
+                val name = trimmed.trimEnd('/')
+                if (name.isEmpty() || name == "." || name == "..") return@mapNotNull null
+                if (!showHidden && name.startsWith(".")) return@mapNotNull null
+                val childFile = File(dir, name)
+                FileReference(
+                    providerType = ProviderType.LOCAL,
+                    uriOrPath = childFile.absolutePath,
+                    displayName = name,
+                    parentUriOrPath = dir.absolutePath,
+                    isDirectory = isDir,
+                    sizeBytes = if (isDir) 0L else childFile.length(),
+                    lastModifiedEpochMs = childFile.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis(),
+                    mimeType = if (isDir) "inode/directory" else guessMimeType(name.substringAfterLast('.', "")),
+                    extension = if (isDir) "" else name.substringAfterLast('.', "").lowercase(),
+                    isHidden = name.startsWith("."),
+                    metadata = mapOf("permissions" to if (isDir) "drwxr-xr-x" else "-rw-r--r--", "rootResolved" to "true")
+                )
+            }
+        }.getOrNull()
+    }
+
+    private fun discoverPackageFoldersForRestrictedContainer(
+        containerDir: File,
+        showHidden: Boolean,
+        safMountedChildNames: Set<String> = emptySet()
+    ): List<FileReference> {
+        runCatching {
+            // Ensure our own app's external data and obb dirs are materialized on disk
+            context.obbDirs
+            context.getExternalFilesDirs(null)
+        }
+        val pm = context.packageManager
+        val installedApps = runCatching { pm.getInstalledApplications(0) }.getOrDefault(emptyList())
+        val results = LinkedHashMap<String, FileReference>()
+
+        for (appInfo in installedApps) {
+            val pkg = appInfo.packageName ?: continue
+            if (!showHidden && pkg.startsWith(".")) continue
+            val isUserApp = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) == 0 ||
+                (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+            val pkgDir = File(containerDir, pkg)
+            val existsDirectly = runCatching { pkgDir.exists() }.getOrDefault(false)
+            val isSafMounted = pkg in safMountedChildNames
+
+            if (existsDirectly || isSafMounted || isUserApp) {
+                val appLabel = appLabelCache.getOrPut(pkg) {
+                    runCatching { pm.getApplicationLabel(appInfo).toString() }.getOrDefault(pkg)
+                }
+                val canListDirectly = existsDirectly && runCatching { pkgDir.list() != null }.getOrDefault(false)
+                val meta = buildMap {
+                    put("permissions", if (canListDirectly || isSafMounted) "drwxrwx---" else "drwx------")
+                    put("appLabel", appLabel)
+                    if (isSafMounted) {
+                        put("safMounted", "true")
+                    } else if (!canListDirectly && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        put("restrictedAppFolder", "true")
+                    }
+                }
+                results[pkg] = FileReference(
+                    providerType = ProviderType.LOCAL,
+                    uriOrPath = pkgDir.absolutePath,
+                    displayName = pkg,
+                    parentUriOrPath = containerDir.absolutePath,
+                    isDirectory = true,
+                    sizeBytes = 0L,
+                    lastModifiedEpochMs = pkgDir.lastModified().takeIf { it > 0L } ?: 0L,
+                    mimeType = "inode/directory",
+                    extension = "",
+                    isHidden = pkg.startsWith("."),
+                    metadata = meta
+                )
+            }
+        }
+        return results.values.toList()
     }
 
     override suspend fun listChildren(
@@ -223,17 +356,69 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
     ): Result<List<FileReference>> = withContext(Dispatchers.IO) {
         runCatching {
             val dir = File(directory.uriOrPath)
-            if (!dir.exists()) throw IllegalArgumentException("Directory does not exist: ${directory.displayName}")
-            if (isRestrictedAndroidDirectory(dir) && !dir.canRead()) {
-                throw SecurityException("Android 11+ restricts direct access to ${dir.name}. Use Storage Access Framework (SAF) where supported.")
+            val isRestricted = isRestrictedAndroidDirectory(dir)
+            val isTopContainer = isTopRestrictedContainer(dir)
+
+            if (isTopContainer && !dir.exists()) {
+                runCatching { dir.mkdirs() }
             }
-            val rawChildren = dir.listFiles()
+
+            if (!dir.exists() && !isRestricted) {
+                throw IllegalArgumentException("Directory does not exist: ${directory.displayName}")
+            }
+
+            val rawChildren = if (dir.exists()) dir.listFiles() else null
+
+            if (isRestricted) {
+                // 1. If direct File.listFiles() returned items and it's not a top container, return them
+                if (!rawChildren.isNullOrEmpty() && !isTopContainer) {
+                    return@runCatching rawChildren.asSequence()
+                        .filter { showHidden || !it.name.startsWith(".") }
+                        .map { toFileReference(it) }
+                        .toList()
+                }
+
+                // 2. Try root (su) fallback if available
+                val rootItems = tryListViaRoot(dir, showHidden)
+                if (!rootItems.isNullOrEmpty()) {
+                    return@runCatching rootItems
+                }
+
+                // 3. If this is /Android/obb or /Android/data, merge any direct items with installed app package folders
+                if (isTopContainer) {
+                    val merged = LinkedHashMap<String, FileReference>()
+                    rawChildren?.forEach { file ->
+                        if (showHidden || !file.name.startsWith(".")) {
+                            merged[file.name] = toFileReference(file)
+                        }
+                    }
+                    val pkgFolders = discoverPackageFoldersForRestrictedContainer(dir, showHidden)
+                    for (pkgRef in pkgFolders) {
+                        val existing = merged[pkgRef.displayName]
+                        if (existing != null) {
+                            merged[pkgRef.displayName] = existing.copy(
+                                metadata = existing.metadata + pkgRef.metadata
+                            )
+                        } else {
+                            merged[pkgRef.displayName] = pkgRef
+                        }
+                    }
+                    return@runCatching merged.values.toList()
+                }
+
+                // 4. Specific package folder inside /Android/obb/<pkg> or /Android/data/<pkg> that requires SAF grant
+                if (rawChildren == null) {
+                    throw SecurityException("SAF_REQUIRED:${dir.absolutePath}")
+                }
+            }
+
+            val effectiveChildren = rawChildren
                 ?: if (!dir.canRead()) {
                     throw SecurityException("Permission denied reading ${directory.displayName}")
                 } else {
                     emptyArray()
                 }
-            rawChildren.asSequence()
+            effectiveChildren.asSequence()
                 .filter { showHidden || !it.name.startsWith(".") }
                 .map { toFileReference(it) }
                 .toList()
@@ -464,6 +649,9 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
     }
 
     companion object {
+        private val DefaultDirMetadata = mapOf("permissions" to "drwxr-xr-x")
+        private val DefaultFileMetadata = mapOf("permissions" to "-rw-r--r--")
+
         fun sanitizeFileName(raw: String): String {
             val trimmed = raw.trim()
             require(trimmed.isNotEmpty()) { "File name cannot be empty." }
@@ -571,17 +759,99 @@ class SafDocumentProvider(private val context: Context) : VirtualFileSystemProvi
         }
     }
 
+    /**
+     * Builds the initial Document URI for `Intent.ACTION_OPEN_DOCUMENT_TREE` (`EXTRA_INITIAL_URI`)
+     * targeting a specific local directory (such as `/storage/emulated/0/Android/obb` or `/Android/obb/<pkg>`).
+     */
+    fun buildInitialSafUriForLocalPath(localPath: String, primaryRootPath: String): Uri? {
+        return runCatching {
+            val normPath = localPath.replace('\\', '/').trimEnd('/')
+            val normRoot = primaryRootPath.replace('\\', '/').trimEnd('/')
+            val relPath = if (normPath.startsWith("$normRoot/")) {
+                normPath.removePrefix("$normRoot/")
+            } else if (normPath == normRoot) {
+                ""
+            } else {
+                return null
+            }
+            val docId = if (relPath.isEmpty()) "primary:" else "primary:$relPath"
+            DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", docId)
+        }.getOrNull()
+    }
+
+    /**
+     * Checks if any persisted SAF tree permission covers [localPath] (either directly or via an ancestor tree grant like `primary:Android/obb`)
+     * and returns a ready-to-list [FileReference] backed by [ProviderType.SAF].
+     */
+    fun findGrantedSafReferenceForLocalPath(localPath: String, primaryRootPath: String): FileReference? {
+        return runCatching {
+            val normPath = localPath.replace('\\', '/').trimEnd('/')
+            val normRoot = primaryRootPath.replace('\\', '/').trimEnd('/')
+            if (!normPath.startsWith("$normRoot/")) return null
+            val relPath = normPath.removePrefix("$normRoot/")
+            val targetDocId = "primary:$relPath"
+
+            val persisted = context.contentResolver.persistedUriPermissions.filter { it.isReadPermission }
+            for (perm in persisted) {
+                val treeDocId = runCatching { DocumentsContract.getTreeDocumentId(perm.uri) }.getOrNull() ?: continue
+                if (targetDocId.equals(treeDocId, ignoreCase = true)) {
+                    val doc = DocumentFile.fromTreeUri(context, perm.uri)
+                    if (doc != null && doc.canRead()) {
+                        return toFileReference(doc, parentUri = null).copy(
+                            displayName = normPath.substringAfterLast('/'),
+                            metadata = mapOf("localBackingPath" to normPath, "safMounted" to "true")
+                        )
+                    }
+                } else if (targetDocId.startsWith("$treeDocId/", ignoreCase = true)) {
+                    val childDocUri = DocumentsContract.buildDocumentUriUsingTree(perm.uri, targetDocId)
+                    val doc = DocumentFile.fromTreeUri(context, childDocUri)
+                    if (doc != null && doc.canRead()) {
+                        return toFileReference(doc, parentUri = null).copy(
+                            displayName = normPath.substringAfterLast('/'),
+                            metadata = mapOf("localBackingPath" to normPath, "safMounted" to "true")
+                        )
+                    }
+                }
+            }
+            null
+        }.getOrNull()
+    }
+
+    /**
+     * Returns the set of direct child folder names under [parentLocalPath] that already have a persisted SAF tree grant.
+     */
+    fun findChildSafGrantsForParentLocalPath(parentLocalPath: String, primaryRootPath: String): Set<String> {
+        return runCatching {
+            val normPath = parentLocalPath.replace('\\', '/').trimEnd('/')
+            val normRoot = primaryRootPath.replace('\\', '/').trimEnd('/')
+            if (!normPath.startsWith("$normRoot/")) return emptySet()
+            val relPath = normPath.removePrefix("$normRoot/")
+            val parentDocIdPrefix = "primary:$relPath/"
+
+            val result = mutableSetOf<String>()
+            val persisted = context.contentResolver.persistedUriPermissions.filter { it.isReadPermission }
+            for (perm in persisted) {
+                val treeDocId = runCatching { DocumentsContract.getTreeDocumentId(perm.uri) }.getOrNull() ?: continue
+                if (treeDocId.equals("primary:$relPath", ignoreCase = true)) {
+                    result.add("*")
+                } else if (treeDocId.startsWith(parentDocIdPrefix, ignoreCase = true)) {
+                    val remainder = treeDocId.substring(parentDocIdPrefix.length)
+                    val childName = remainder.substringBefore('/')
+                    if (childName.isNotEmpty()) result.add(childName)
+                }
+            }
+            result
+        }.getOrDefault(emptySet())
+    }
+
     private fun toFileReference(doc: DocumentFile, parentUri: String?): FileReference {
         val name = doc.name ?: doc.uri.lastPathSegment ?: "Document"
         val isDir = doc.isDirectory
         val ext = if (isDir) "" else name.substringAfterLast('.', "").lowercase()
-        val caps = FileReference.defaultCapabilitiesFor(ProviderType.SAF, isDir).toMutableSet()
-        if (!doc.canWrite()) {
-            caps.remove(ProviderCapability.STREAM_WRITE)
-            caps.remove(ProviderCapability.CREATE_DIR)
-            caps.remove(ProviderCapability.CREATE_FILE)
-            caps.remove(ProviderCapability.DELETE)
-            caps.remove(ProviderCapability.ATOMIC_RENAME)
+        val caps = if (doc.canWrite()) {
+            FileReference.defaultCapabilitiesFor(ProviderType.SAF, isDir)
+        } else {
+            FileReference.readOnlyCapabilitiesFor(ProviderType.SAF, isDir)
         }
         return FileReference(
             providerType = ProviderType.SAF,
@@ -801,30 +1071,34 @@ class MediaStoreProvider(
             }
         }
 
-        // 2. Also inspect standard accessible directories (Download, Documents, DCIM, etc.) if directly readable
+        // 2. Supplement with a single shared pass over accessible directories on primary storage
+        // so files not yet indexed by MediaStore (APKs, Archives, Documents, Downloads, etc.)
+        // are discovered without walking the filesystem 8 separate times.
         runCatching {
             val primaryRoot = localProvider.getPrimaryRootDirectory()
-            val foldersToInspect = when (category) {
-                FileCategory.DOWNLOADS -> listOf(File(primaryRoot, "Download"))
-                FileCategory.DOCUMENTS -> listOf(File(primaryRoot, "Documents"), File(primaryRoot, "Download"))
-                FileCategory.IMAGES -> listOf(File(primaryRoot, "DCIM"), File(primaryRoot, "Pictures"))
-                FileCategory.VIDEOS -> listOf(File(primaryRoot, "Movies"), File(primaryRoot, "DCIM"))
-                FileCategory.AUDIO -> listOf(File(primaryRoot, "Music"), File(primaryRoot, "Audio"), File(primaryRoot, "Recordings"))
-                FileCategory.ARCHIVES -> listOf(File(primaryRoot, "Download"), File(primaryRoot, "Documents"))
-                FileCategory.APPLICATIONS -> listOf(File(primaryRoot, "Download"))
-                else -> emptyList()
+            val fourteenDaysAgoMs = System.currentTimeMillis() - 14L * 24 * 3600 * 1000L
+            val supplementalFiles = if (category == FileCategory.DOWNLOADS) {
+                val dlDir = File(primaryRoot, "Download")
+                dlDir.listFiles()
+                    ?.asSequence()
+                    ?.filter { !it.isDirectory && !it.name.startsWith(".") }
+                    ?.map { localProvider.toFileReference(it) }
+                    ?.toList()
+                    .orEmpty()
+            } else {
+                getOrScanSupplementalFiles(primaryRoot)
             }
-            for (folder in foldersToInspect) {
-                if (!folder.exists() || !folder.canRead()) continue
-                folder.listFiles()?.forEach { file ->
-                    if (!file.isDirectory && !file.name.startsWith(".")) {
-                        val ext = file.name.substringAfterLast('.', "").lowercase()
-                        val matches = ext in category.extensions
-                        if (matches) {
-                            val ref = localProvider.toFileReference(file)
-                            results[ref.uriOrPath] = ref
-                        }
-                    }
+
+            for (ref in supplementalFiles) {
+                if (results.containsKey(ref.uriOrPath)) continue
+                val matches = when (category) {
+                    FileCategory.LARGE_FILES -> ref.sizeBytes >= largeFileThresholdBytes
+                    FileCategory.RECENT_FILES -> ref.lastModifiedEpochMs >= fourteenDaysAgoMs
+                    FileCategory.DOWNLOADS -> true
+                    else -> ref.extension in category.extensions
+                }
+                if (matches) {
+                    results[ref.uriOrPath] = ref
                 }
             }
         }
@@ -834,6 +1108,66 @@ class MediaStoreProvider(
             FileCategory.RECENT_FILES -> results.values.sortedByDescending { it.lastModifiedEpochMs }
             else -> results.values.sortedByDescending { it.lastModifiedEpochMs }
         }
+    }
+
+    @Volatile
+    private var cachedSupplementalFiles: List<FileReference> = emptyList()
+
+    @Volatile
+    private var cachedSupplementalAtMs: Long = 0L
+
+    @Volatile
+    private var cachedSupplementalRootPath: String = ""
+
+    @Synchronized
+    private fun getOrScanSupplementalFiles(primaryRoot: File): List<FileReference> {
+        val now = System.currentTimeMillis()
+        val rootPath = primaryRoot.absolutePath
+        if (rootPath == cachedSupplementalRootPath &&
+            now - cachedSupplementalAtMs < 30_000L &&
+            cachedSupplementalFiles.isNotEmpty()
+        ) {
+            return cachedSupplementalFiles
+        }
+
+        val collected = ArrayList<FileReference>(256)
+        val topDirs = primaryRoot.listFiles()?.filter { dir ->
+            dir.isDirectory &&
+                !dir.name.startsWith(".") &&
+                !dir.name.equals("Android", ignoreCase = true)
+        }.orEmpty()
+
+        primaryRoot.listFiles()?.forEach { file ->
+            if (!file.isDirectory && !file.name.startsWith(".")) {
+                collected.add(localProvider.toFileReference(file))
+            }
+        }
+
+        fun scanDirRecursive(dir: File, depth: Int) {
+            if (depth > 3 || collected.size >= 1200) return
+            val children = dir.listFiles() ?: return
+            for (file in children) {
+                if (file.name.startsWith(".")) continue
+                if (file.isDirectory) {
+                    if (!file.name.equals("data", ignoreCase = true) && !file.name.equals("obb", ignoreCase = true)) {
+                        scanDirRecursive(file, depth + 1)
+                    }
+                } else {
+                    collected.add(localProvider.toFileReference(file))
+                    if (collected.size >= 1200) return
+                }
+            }
+        }
+
+        for (folder in topDirs) {
+            scanDirRecursive(folder, 1)
+            if (collected.size >= 1200) break
+        }
+
+        cachedSupplementalFiles = collected
+        cachedSupplementalAtMs = System.currentTimeMillis()
+        cachedSupplementalRootPath = rootPath
+        return collected
     }
 
     private fun queryMediaCollection(
@@ -868,14 +1202,24 @@ class MediaStoreProvider(
                 val dateSec = cursor.getLong(dateCol)
                 val mime = cursor.getString(mimeCol) ?: "application/octet-stream"
                 val rawPath = if (dataCol >= 0) cursor.getString(dataCol) else null
-                val rawFile = rawPath?.let { File(it) }
+                val ext = name.substringAfterLast('.', "").lowercase()
 
-                if (rawFile != null && rawFile.exists() && rawFile.canRead()) {
-                    val ref = localProvider.toFileReference(rawFile)
-                    sink[ref.uriOrPath] = ref
+                if (!rawPath.isNullOrBlank() && rawPath.startsWith("/")) {
+                    val parentPath = rawPath.substringBeforeLast('/', "").ifEmpty { null }
+                    sink[rawPath] = FileReference(
+                        providerType = ProviderType.LOCAL,
+                        uriOrPath = rawPath,
+                        displayName = name,
+                        parentUriOrPath = parentPath,
+                        isDirectory = false,
+                        sizeBytes = size,
+                        lastModifiedEpochMs = dateSec * 1000L,
+                        mimeType = mime,
+                        extension = ext,
+                        isHidden = name.startsWith(".")
+                    )
                 } else {
                     val contentUri = ContentUris.withAppendedId(collectionUri, id)
-                    val ext = name.substringAfterLast('.', "").lowercase()
                     sink[contentUri.toString()] = FileReference(
                         providerType = ProviderType.MEDIA_STORE,
                         uriOrPath = contentUri.toString(),
@@ -966,20 +1310,21 @@ object FileSortAndFilterEngine {
         field: SortField,
         order: SortOrder
     ): List<FileReference> {
+        if (files.size <= 1) return files
         val comparator = Comparator<FileReference> { a, b ->
             if (a.isDirectory != b.isDirectory) {
                 return@Comparator if (a.isDirectory) -1 else 1
             }
             val rawCompare = when (field) {
-                SortField.NAME -> a.displayName.lowercase().compareTo(b.displayName.lowercase())
+                SortField.NAME -> a.displayName.compareTo(b.displayName, ignoreCase = true)
                 SortField.SIZE -> a.sizeBytes.compareTo(b.sizeBytes).let {
-                    if (it == 0) a.displayName.lowercase().compareTo(b.displayName.lowercase()) else it
+                    if (it == 0) a.displayName.compareTo(b.displayName, ignoreCase = true) else it
                 }
                 SortField.DATE -> a.lastModifiedEpochMs.compareTo(b.lastModifiedEpochMs).let {
-                    if (it == 0) a.displayName.lowercase().compareTo(b.displayName.lowercase()) else it
+                    if (it == 0) a.displayName.compareTo(b.displayName, ignoreCase = true) else it
                 }
-                SortField.TYPE -> a.extension.compareTo(b.extension).let {
-                    if (it == 0) a.displayName.lowercase().compareTo(b.displayName.lowercase()) else it
+                SortField.TYPE -> a.extension.compareTo(b.extension, ignoreCase = true).let {
+                    if (it == 0) a.displayName.compareTo(b.displayName, ignoreCase = true) else it
                 }
             }
             if (order == SortOrder.ASCENDING) rawCompare else -rawCompare
@@ -997,11 +1342,11 @@ object FileSortAndFilterEngine {
         modifiedAfterEpochMs: Long? = null,
         showHidden: Boolean = true
     ): List<FileReference> {
-        val trimmedQuery = query.trim().lowercase()
+        val trimmedQuery = query.trim()
         val trimmedExt = extensionFilter?.trim()?.removePrefix(".")?.lowercase()
         return files.filter { file ->
             if (!showHidden && file.isHidden) return@filter false
-            if (trimmedQuery.isNotEmpty() && !file.displayName.lowercase().contains(trimmedQuery)) {
+            if (trimmedQuery.isNotEmpty() && !file.displayName.contains(trimmedQuery, ignoreCase = true)) {
                 return@filter false
             }
             if (!trimmedExt.isNullOrEmpty() && file.extension != trimmedExt) {

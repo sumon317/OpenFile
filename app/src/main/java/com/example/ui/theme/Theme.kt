@@ -119,43 +119,6 @@ private val AmoledColorScheme = DarkColorScheme.copy(
 )
 
 @Composable
-private fun animateColor(targetValue: Color): Color =
-    animateColorAsState(
-        targetValue = targetValue,
-        animationSpec = tween(durationMillis = 280),
-        label = "m3_color_transition"
-    ).value
-
-@Composable
-private fun ColorScheme.animated(): ColorScheme = copy(
-    primary = animateColor(primary),
-    onPrimary = animateColor(onPrimary),
-    primaryContainer = animateColor(primaryContainer),
-    onPrimaryContainer = animateColor(onPrimaryContainer),
-    secondary = animateColor(secondary),
-    onSecondary = animateColor(onSecondary),
-    secondaryContainer = animateColor(secondaryContainer),
-    onSecondaryContainer = animateColor(onSecondaryContainer),
-    tertiary = animateColor(tertiary),
-    onTertiary = animateColor(onTertiary),
-    tertiaryContainer = animateColor(tertiaryContainer),
-    onTertiaryContainer = animateColor(onTertiaryContainer),
-    background = animateColor(background),
-    onBackground = animateColor(onBackground),
-    surface = animateColor(surface),
-    onSurface = animateColor(onSurface),
-    surfaceVariant = animateColor(surfaceVariant),
-    onSurfaceVariant = animateColor(onSurfaceVariant),
-    surfaceContainerLowest = animateColor(surfaceContainerLowest),
-    surfaceContainerLow = animateColor(surfaceContainerLow),
-    surfaceContainer = animateColor(surfaceContainer),
-    surfaceContainerHigh = animateColor(surfaceContainerHigh),
-    surfaceContainerHighest = animateColor(surfaceContainerHighest),
-    outline = animateColor(outline),
-    outlineVariant = animateColor(outlineVariant)
-)
-
-@Composable
 fun OpenFileTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
     dynamicColor: Boolean = false,
@@ -194,7 +157,7 @@ fun OpenFileTheme(
         baseScheme
     }
 
-    val animatedScheme = targetScheme.animated()
+    val animatedScheme = targetScheme
 
     val view = LocalView.current
     if (!view.isInEditMode) {
