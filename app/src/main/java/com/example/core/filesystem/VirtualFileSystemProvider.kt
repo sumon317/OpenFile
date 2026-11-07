@@ -1171,13 +1171,10 @@ class MediaStoreProvider(
                     )
                 }
                 FileCategory.RECENT_FILES -> {
-                    val fourteenDaysAgoSec = (System.currentTimeMillis() - 14L * 24 * 3600 * 1000) / 1000L
-                    val selection = "${MediaStore.MediaColumns.DATE_MODIFIED} >= ?"
-                    val selectionArgs = arrayOf(fourteenDaysAgoSec.toString())
+                    val selection = "${MediaStore.MediaColumns.SIZE} > 0"
                     queryMediaCollection(
                         collectionUri = MediaStore.Files.getContentUri("external"),
                         selection = selection,
-                        selectionArgs = selectionArgs,
                         sink = results
                     )
                 }
@@ -1198,7 +1195,6 @@ class MediaStoreProvider(
         // are discovered without walking the filesystem 8 separate times.
         runCatching {
             val primaryRoot = localProvider.getPrimaryRootDirectory()
-            val fourteenDaysAgoMs = System.currentTimeMillis() - 14L * 24 * 3600 * 1000L
             val supplementalFiles = if (category == FileCategory.DOWNLOADS) {
                 val dlDir = File(primaryRoot, "Download")
                 dlDir.listFiles()
@@ -1215,7 +1211,7 @@ class MediaStoreProvider(
                 if (results.containsKey(ref.uriOrPath)) continue
                 val matches = when (category) {
                     FileCategory.LARGE_FILES -> ref.sizeBytes >= largeFileThresholdBytes
-                    FileCategory.RECENT_FILES -> ref.lastModifiedEpochMs >= fourteenDaysAgoMs
+                    FileCategory.RECENT_FILES -> !ref.isDirectory
                     FileCategory.DOWNLOADS -> true
                     else -> ref.extension in category.extensions
                 }
@@ -1228,6 +1224,8 @@ class MediaStoreProvider(
         when (category) {
             FileCategory.LARGE_FILES -> results.values.sortedByDescending { it.sizeBytes }
             FileCategory.RECENT_FILES -> results.values.sortedByDescending { it.lastModifiedEpochMs }
+            FileCategory.IMAGES -> results.values.sortedByDescending { it.lastModifiedEpochMs }
+            FileCategory.AUDIO, FileCategory.VIDEOS, FileCategory.DOCUMENTS -> results.values.sortedBy { it.displayName.lowercase() }
             else -> results.values.sortedByDescending { it.lastModifiedEpochMs }
         }
     }

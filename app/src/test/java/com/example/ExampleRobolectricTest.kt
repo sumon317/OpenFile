@@ -17,8 +17,11 @@ import com.example.core.filesystem.ClipboardMode
 import com.example.core.filesystem.LocalFileSystemProvider
 import com.example.core.filesystem.SafDocumentProvider
 import com.example.core.filesystem.TransferQueueEngine
+import com.example.core.model.FileCategory
 import com.example.core.model.FileReference
 import com.example.core.model.ProviderType
+import com.example.core.model.SortField
+import com.example.core.model.SortOrder
 import com.example.core.model.StorageVolumeInfo
 import com.example.core.network.FtpServerConfig
 import com.example.ui.screens.adaptiveStorageDeviceName
@@ -830,5 +833,37 @@ class ExampleRobolectricTest {
         assertEquals("Internal Shared Storage", adaptiveStorageDeviceName(internalVolume, screenWidthDp = 800))
         assertEquals("Physical SD Card (1234-5678)", adaptiveStorageDeviceName(sdCardVolume, screenWidthDp = 800))
         assertEquals("USB Storage Device (OTG)", adaptiveStorageDeviceName(usbVolume, screenWidthDp = 800))
+    }
+
+    @Test
+    fun `quick access categories apply requested default sorting`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+        val settings = viewModel.settings.value
+
+        assertEquals(SortField.DATE to SortOrder.DESCENDING, viewModel.defaultSortForCategory(FileCategory.IMAGES, settings))
+        assertEquals(SortField.NAME to SortOrder.ASCENDING, viewModel.defaultSortForCategory(FileCategory.AUDIO, settings))
+        assertEquals(SortField.NAME to SortOrder.ASCENDING, viewModel.defaultSortForCategory(FileCategory.VIDEOS, settings))
+        assertEquals(SortField.NAME to SortOrder.ASCENDING, viewModel.defaultSortForCategory(FileCategory.DOCUMENTS, settings))
+        assertEquals(SortField.DATE to SortOrder.DESCENDING, viewModel.defaultSortForCategory(FileCategory.RECENT_FILES, settings))
+        assertEquals(SortField.SIZE to SortOrder.DESCENDING, viewModel.defaultSortForCategory(FileCategory.LARGE_FILES, settings))
+
+        composeTestRule.runOnUiThread {
+            viewModel.openCategoryOrSpecialFolder(FileCategory.IMAGES)
+        }
+        assertEquals(SortField.DATE, viewModel.browserState.value.currentSortField)
+        assertEquals(SortOrder.DESCENDING, viewModel.browserState.value.currentSortOrder)
+
+        composeTestRule.runOnUiThread {
+            viewModel.openCategoryOrSpecialFolder(FileCategory.AUDIO)
+        }
+        assertEquals(SortField.NAME, viewModel.browserState.value.currentSortField)
+        assertEquals(SortOrder.ASCENDING, viewModel.browserState.value.currentSortOrder)
+
+        composeTestRule.runOnUiThread {
+            viewModel.openCategoryOrSpecialFolder(FileCategory.RECENT_FILES)
+        }
+        assertEquals(SortField.DATE, viewModel.browserState.value.currentSortField)
+        assertEquals(SortOrder.DESCENDING, viewModel.browserState.value.currentSortOrder)
     }
 }

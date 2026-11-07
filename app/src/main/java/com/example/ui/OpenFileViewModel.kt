@@ -80,7 +80,9 @@ data class BrowserUiState(
     val activeCategoryFilter: FileCategory? = null,
     val inspectArchiveFile: FileReference? = null,
     val archiveEntries: List<ArchiveEntryItem> = emptyList(),
-    val activeRemoteProfile: NetworkProfileEntity? = null
+    val activeRemoteProfile: NetworkProfileEntity? = null,
+    val currentSortField: SortField = SortField.NAME,
+    val currentSortOrder: SortOrder = SortOrder.ASCENDING
 ) {
     val isMultiSelectActive: Boolean get() = selectedUris.isNotEmpty()
 }
@@ -449,6 +451,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
         browseDirectoryJob?.cancel()
         val isRemoteOrEmpty = directory.providerType.isRemote || _browserState.value.items.isEmpty()
+        val currentSettings = settings.value
         _browserState.value = _browserState.value.copy(
             currentDirectory = directory,
             selectedUris = emptySet(),
@@ -458,10 +461,11 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             activeCategoryFilter = null,
             inspectArchiveFile = null,
             archiveEntries = emptyList(),
-            activeRemoteProfile = null
+            activeRemoteProfile = null,
+            currentSortField = currentSettings.defaultSortField,
+            currentSortOrder = currentSettings.defaultSortOrder
         )
         browseDirectoryJob = viewModelScope.launch {
-            val currentSettings = settings.value
             // Run breadcrumbs + listing + sort + childCount all on IO/Default — one single pass
             val (crumbs, sortedItems) = withContext(Dispatchers.IO) {
                 val crumbs = buildBreadcrumbs(directory)
@@ -575,7 +579,11 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 openRemoteNetworkDirectory(state.activeRemoteProfile, path)
             }
             state.activeCategoryFilter != null -> {
-                openCategoryOrSpecialFolder(state.activeCategoryFilter)
+                openCategoryOrSpecialFolder(
+                    state.activeCategoryFilter,
+                    state.currentSortField,
+                    state.currentSortOrder
+                )
             }
             state.currentDirectory != null -> {
                 openDirectory(state.currentDirectory)
@@ -652,7 +660,23 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         return crumbs
     }
 
-    fun openCategoryOrSpecialFolder(category: FileCategory) {
+    fun defaultSortForCategory(category: FileCategory?, currentSettings: AppSettingsState): Pair<SortField, SortOrder> {
+        return when (category) {
+            FileCategory.IMAGES -> SortField.DATE to SortOrder.DESCENDING
+            FileCategory.AUDIO -> SortField.NAME to SortOrder.ASCENDING
+            FileCategory.VIDEOS -> SortField.NAME to SortOrder.ASCENDING
+            FileCategory.DOCUMENTS -> SortField.NAME to SortOrder.ASCENDING
+            FileCategory.RECENT_FILES -> SortField.DATE to SortOrder.DESCENDING
+            FileCategory.LARGE_FILES -> SortField.SIZE to SortOrder.DESCENDING
+            else -> currentSettings.defaultSortField to currentSettings.defaultSortOrder
+        }
+    }
+
+    fun openCategoryOrSpecialFolder(
+        category: FileCategory,
+        overrideSortField: SortField? = null,
+        overrideSortOrder: SortOrder? = null
+    ) {
         if (category == FileCategory.DOWNLOADS) {
             _currentDestination.value = OpenFileDestination.DOWNLOADS
             viewModelScope.launch(Dispatchers.IO) {
@@ -663,23 +687,35 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             return
         }
         browseDirectoryJob?.cancel()
+        val currentSettings = settings.value
+        val (sortField, sortOrder) = if (overrideSortField != null && overrideSortOrder != null) {
+            overrideSortField to overrideSortOrder
+        } else {
+            defaultSortForCategory(category, currentSettings)
+        }
         val nowMs = System.currentTimeMillis()
         val cachedAt = categoryCacheAt[category] ?: 0L
         val cached = categoryCache[category]?.takeIf { nowMs - cachedAt < 30_000L }
+        val initialItems = if (cached != null) {
+            FileSortAndFilterEngine.sortFiles(cached, sortField, sortOrder)
+        } else {
+            emptyList()
+        }
         _browserState.value = _browserState.value.copy(
             currentDirectory = null,
             breadcrumbs = emptyList(),
-            items = cached ?: emptyList(),
+            items = initialItems,
             isLoading = cached == null,
             selectedUris = emptySet(),
             searchQuery = "",
             activeCategoryFilter = category,
             inspectArchiveFile = null,
             activeRemoteProfile = null,
-            errorMessage = null
+            errorMessage = null,
+            currentSortField = sortField,
+            currentSortOrder = sortOrder
         )
         browseDirectoryJob = viewModelScope.launch {
-            val currentSettings = settings.value
             val thresholdBytes = currentSettings.largeFileThresholdMb * 1024L * 1024L
             val indexedItems = mediaStoreProvider.queryByCategory(category, thresholdBytes)
             categoryCache[category] = indexedItems
@@ -688,7 +724,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 withContext(Dispatchers.IO) {
                     val openedRefs = recentFiles.value.mapNotNull { rec ->
                         val f = File(rec.uriOrPath)
-                        if (f.exists() && f.canRead()) localProvider.toFileReference(f) else null
+                        if (f.exists() && f.canRead() && !f.isDirectory) localProvider.toFileReference(f) else null
                     }
                     (openedRefs + indexedItems).distinctBy { it.uriOrPath }
                 }
@@ -698,15 +734,17 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             val sorted = withContext(Dispatchers.Default) {
                 FileSortAndFilterEngine.sortFiles(
                     combinedItems,
-                    if (category == FileCategory.LARGE_FILES) SortField.SIZE else currentSettings.defaultSortField,
-                    if (category == FileCategory.LARGE_FILES) SortOrder.DESCENDING else currentSettings.defaultSortOrder
+                    sortField,
+                    sortOrder
                 )
             }
             _browserState.value = _browserState.value.copy(
                 currentDirectory = null,
                 breadcrumbs = emptyList(),
                 items = sorted,
-                isLoading = false
+                isLoading = false,
+                currentSortField = sortField,
+                currentSortOrder = sortOrder
             )
         }
     }
@@ -1863,18 +1901,27 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setSorting(field: SortField, order: SortOrder) {
-        _settings.value = _settings.value.copy(defaultSortField = field, defaultSortOrder = order)
+        val isCategory = _browserState.value.activeCategoryFilter != null
+        if (!isCategory) {
+            _settings.value = _settings.value.copy(defaultSortField = field, defaultSortOrder = order)
+            viewModelScope.launch { settingsStore.setSorting(field, order) }
+        }
         viewModelScope.launch {
-            settingsStore.setSorting(field, order)
             val currentItems = _browserState.value.items
             if (currentItems.isNotEmpty()) {
                 val resorted = withContext(Dispatchers.Default) {
                     FileSortAndFilterEngine.sortFiles(currentItems, field, order)
                 }
-                _browserState.value = _browserState.value.copy(items = resorted)
-            }
-            if (_browserState.value.currentDirectory != null) {
-                refreshCurrentDirectory()
+                _browserState.value = _browserState.value.copy(
+                    items = resorted,
+                    currentSortField = field,
+                    currentSortOrder = order
+                )
+            } else {
+                _browserState.value = _browserState.value.copy(
+                    currentSortField = field,
+                    currentSortOrder = order
+                )
             }
         }
     }

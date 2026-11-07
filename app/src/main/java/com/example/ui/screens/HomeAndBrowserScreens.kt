@@ -940,10 +940,12 @@ fun FileBrowserScreen(
                     expanded = showSortMenu,
                     onDismissRequest = { showSortMenu = false }
                 ) {
+                    val activeSortField = browserState.currentSortField
+                    val activeSortOrder = browserState.currentSortOrder
                     SortField.entries.forEach { field ->
                         DropdownMenuItem(
                             text = {
-                                val active = settings.defaultSortField == field
+                                val active = activeSortField == field
                                 Text(
                                     text = if (active) "✓ Sort by ${field.label}" else "Sort by ${field.label}",
                                     fontWeight = if (active) FontWeight.Bold else FontWeight.Normal
@@ -951,7 +953,7 @@ fun FileBrowserScreen(
                             },
                             onClick = {
                                 showSortMenu = false
-                                onChangeSort(field, settings.defaultSortOrder)
+                                onChangeSort(field, activeSortOrder)
                             }
                         )
                     }
@@ -959,7 +961,7 @@ fun FileBrowserScreen(
                     SortOrder.entries.forEach { order ->
                         DropdownMenuItem(
                             text = {
-                                val active = settings.defaultSortOrder == order
+                                val active = activeSortOrder == order
                                 Text(
                                     text = if (active) "✓ ${order.label}" else order.label,
                                     fontWeight = if (active) FontWeight.Bold else FontWeight.Normal
@@ -967,7 +969,7 @@ fun FileBrowserScreen(
                             },
                             onClick = {
                                 showSortMenu = false
-                                onChangeSort(settings.defaultSortField, order)
+                                onChangeSort(activeSortField, order)
                             }
                         )
                     }
@@ -1669,7 +1671,7 @@ fun FileBrowserScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = "${settings.defaultSortField.label} (${if (settings.defaultSortOrder == SortOrder.ASCENDING) "↑" else "↓"})",
+                    text = "${browserState.currentSortField.label} (${if (browserState.currentSortOrder == SortOrder.ASCENDING) "↑" else "↓"})",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary
                 )

@@ -234,4 +234,51 @@ class ExampleUnitTest {
         assertEquals(14850000L, parsed.apkSizeBytes)
         assertTrue(com.example.core.update.AppUpdateEngine.isNewerVersion(parsed.tagName, "1.0.0"))
     }
+
+    @Test
+    fun `default sorting for quick access categories matches requirements`() {
+        // Images: recent at the top
+        val images = listOf(
+            FileReference(ProviderType.LOCAL, "/storage/old.jpg", "old.jpg", "/storage", false, lastModifiedEpochMs = 1000L),
+            FileReference(ProviderType.LOCAL, "/storage/new.jpg", "new.jpg", "/storage", false, lastModifiedEpochMs = 5000L),
+            FileReference(ProviderType.LOCAL, "/storage/mid.jpg", "mid.jpg", "/storage", false, lastModifiedEpochMs = 3000L)
+        )
+        val sortedImages = FileSortAndFilterEngine.sortFiles(images, SortField.DATE, SortOrder.DESCENDING)
+        assertEquals(listOf("new.jpg", "mid.jpg", "old.jpg"), sortedImages.map { it.displayName })
+
+        // Audio: alphabetical ascending
+        val audio = listOf(
+            FileReference(ProviderType.LOCAL, "/storage/z_track.mp3", "z_track.mp3", "/storage", false),
+            FileReference(ProviderType.LOCAL, "/storage/a_song.mp3", "a_song.mp3", "/storage", false),
+            FileReference(ProviderType.LOCAL, "/storage/m_podcast.mp3", "m_podcast.mp3", "/storage", false)
+        )
+        val sortedAudio = FileSortAndFilterEngine.sortFiles(audio, SortField.NAME, SortOrder.ASCENDING)
+        assertEquals(listOf("a_song.mp3", "m_podcast.mp3", "z_track.mp3"), sortedAudio.map { it.displayName })
+
+        // Videos: alphabetical ascending
+        val videos = listOf(
+            FileReference(ProviderType.LOCAL, "/storage/clip_z.mp4", "clip_z.mp4", "/storage", false),
+            FileReference(ProviderType.LOCAL, "/storage/clip_a.mp4", "clip_a.mp4", "/storage", false)
+        )
+        val sortedVideos = FileSortAndFilterEngine.sortFiles(videos, SortField.NAME, SortOrder.ASCENDING)
+        assertEquals(listOf("clip_a.mp4", "clip_z.mp4"), sortedVideos.map { it.displayName })
+
+        // Documents: alphabetical ascending
+        val docs = listOf(
+            FileReference(ProviderType.LOCAL, "/storage/summary.pdf", "summary.pdf", "/storage", false),
+            FileReference(ProviderType.LOCAL, "/storage/agenda.docx", "agenda.docx", "/storage", false)
+        )
+        val sortedDocs = FileSortAndFilterEngine.sortFiles(docs, SortField.NAME, SortOrder.ASCENDING)
+        assertEquals(listOf("agenda.docx", "summary.pdf"), sortedDocs.map { it.displayName })
+
+        // New files: any file type, most recent at the top
+        val anyFiles = listOf(
+            FileReference(ProviderType.LOCAL, "/storage/document.pdf", "document.pdf", "/storage", false, lastModifiedEpochMs = 1500L),
+            FileReference(ProviderType.LOCAL, "/storage/app.apk", "app.apk", "/storage", false, lastModifiedEpochMs = 9000L),
+            FileReference(ProviderType.LOCAL, "/storage/backup.zip", "backup.zip", "/storage", false, lastModifiedEpochMs = 4000L),
+            FileReference(ProviderType.LOCAL, "/storage/voice.m4a", "voice.m4a", "/storage", false, lastModifiedEpochMs = 2000L)
+        )
+        val sortedNewFiles = FileSortAndFilterEngine.sortFiles(anyFiles, SortField.DATE, SortOrder.DESCENDING)
+        assertEquals(listOf("app.apk", "backup.zip", "voice.m4a", "document.pdf"), sortedNewFiles.map { it.displayName })
+    }
 }
