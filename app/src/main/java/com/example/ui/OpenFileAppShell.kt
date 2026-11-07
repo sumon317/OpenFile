@@ -724,6 +724,7 @@ private fun DestinationRouter(
             val ftpState by viewModel.ftpServerState.collectAsStateWithLifecycle()
             val categoryCounts by viewModel.categoryCounts.collectAsStateWithLifecycle()
             val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
+            val homeBrowserState by viewModel.browserState.collectAsStateWithLifecycle()
             HomeScreen(
                 volumes = volumes,
                 bookmarks = bookmarks,
@@ -731,6 +732,12 @@ private fun DestinationRouter(
                 ftpState = ftpState,
                 categoryCounts = categoryCounts,
                 remoteProfilesCount = networkProfiles.size,
+                remoteProfiles = networkProfiles,
+                activeRemoteProfileId = homeBrowserState.activeRemoteProfile?.id,
+                onRemoteProfileClick = {
+                    viewModel.showStatus("Connecting to ${it.displayName}...")
+                    viewModel.openRemoteNetworkDirectory(it)
+                },
                 hasAllFilesAccess = hasAllFilesAccess,
                 onRequestAllFilesAccess = { viewModel.requestAllFilesAccessInSettings() },
                 onVolumeClick = { vol ->

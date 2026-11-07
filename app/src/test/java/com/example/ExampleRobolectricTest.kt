@@ -35,6 +35,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -833,6 +834,36 @@ class ExampleRobolectricTest {
         assertEquals("Internal Shared Storage", adaptiveStorageDeviceName(internalVolume, screenWidthDp = 800))
         assertEquals("Physical SD Card (1234-5678)", adaptiveStorageDeviceName(sdCardVolume, screenWidthDp = 800))
         assertEquals("USB Storage Device (OTG)", adaptiveStorageDeviceName(usbVolume, screenWidthDp = 800))
+    }
+
+    @Test
+    fun `saved server keeps encrypted credentials for one tap reconnect and failed connects are not persisted`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+
+        // A connection that fails (nothing listens on port 1) must not leave a broken shortcut behind.
+        composeTestRule.runOnUiThread {
+            viewModel.saveNetworkProfile("Bad", "FTP", "127.0.0.1", 1, "u", "wrong", "/", "", false, true, true)
+        }
+        // Pump the main looper so viewModelScope work (save -> connect -> rollback) can run.
+        repeat(40) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            Thread.sleep(100)
+        }
+        assertTrue(viewModel.dao.observeNetworkProfiles().first().none { it.port == 1 })
+
+        // A saved server keeps its password in the vault so it can be re-opened without prompting.
+        composeTestRule.runOnUiThread {
+            viewModel.saveNetworkProfile("Phone", "FTP", "127.0.0.1", 2, "u", "s3cret", "/", "", false, true, false)
+        }
+        composeTestRule.waitUntil(timeoutMillis = 10_000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            runBlocking { viewModel.dao.observeNetworkProfiles().first().any { it.port == 2 } }
+        }
+        val saved = viewModel.dao.observeNetworkProfiles().first().firstOrNull { it.port == 2 }
+        assertNotNull(saved)
+        assertEquals("s3cret", viewModel.credentialVault.retrieveSecret(saved!!.secretAlias))
+        viewModel.deleteNetworkProfile(saved)
     }
 
     @Test

@@ -106,6 +106,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.core.archive.ArchiveCreationFormat
 import com.example.core.database.BookmarkEntity
+import com.example.core.database.NetworkProfileEntity
 import com.example.core.database.RecentFileEntity
 import com.example.core.datastore.AppSettingsState
 import com.example.core.filesystem.ClipboardMode
@@ -165,6 +166,9 @@ fun HomeScreen(
     onRecentFileClick: (RecentFileEntity) -> Unit,
     categoryCounts: Map<FileCategory, Int> = emptyMap(),
     remoteProfilesCount: Int = 0,
+    remoteProfiles: List<NetworkProfileEntity> = emptyList(),
+    activeRemoteProfileId: Long? = null,
+    onRemoteProfileClick: (NetworkProfileEntity) -> Unit = {},
     hasAllFilesAccess: Boolean = true,
     onRequestAllFilesAccess: () -> Unit = {},
     onOpenAccessFromPc: () -> Unit = { onNavigateDestination(OpenFileDestination.NETWORK) },
@@ -574,6 +578,78 @@ fun HomeScreen(
                             text = "${formatByteSize(vol.availableBytes)} free",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+
+        // Saved network devices (FTP / SFTP / SMB) are listed with the storage devices for one-tap access.
+        items(
+            items = remoteProfiles,
+            key = { "remote_profile_${it.id}" },
+            contentType = { "remote_device_card" }
+        ) { profile ->
+            val isConnected = profile.id == activeRemoteProfileId
+            val accent = if (isConnected) ApkGreen else MaterialTheme.colorScheme.primary
+            Card(
+                onClick = { onRemoteProfileClick(profile) },
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+                shape = VolumeCardShape,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("remote_device_card_${profile.id}")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .background(accent.copy(alpha = 0.16f), VolumeIconShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Lan,
+                            contentDescription = null,
+                            tint = accent,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = profile.displayName,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${profile.protocol} • ${profile.host}:${profile.port}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        color = accent.copy(alpha = 0.14f),
+                        shape = VolumeBadgeShape
+                    ) {
+                        Text(
+                            text = if (isConnected) "Connected" else "Tap to open",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = accent,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
                     }
                 }

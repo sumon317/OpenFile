@@ -50,6 +50,7 @@ import com.example.core.network.FtpServerForegroundService
 import com.example.core.network.FtpServerRuntimeState
 import com.example.core.network.RemoteNetworkClients
 import com.example.core.network.SshHostKeyVerificationRequiredException
+import com.example.core.network.isAuthenticationFailureMessage
 import com.example.core.security.KeystoreCredentialVault
 import com.example.core.storage.StorageAnalyzerEngine
 import com.example.core.update.AppUpdateEngine
@@ -1712,6 +1713,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                     it.port == port &&
                     it.protocol.equals(protocol, ignoreCase = true)
             }
+            val previousSecret = withContext(Dispatchers.IO) {
+                credentialVault.retrieveSecret(existing?.secretAlias)
+            }
             val alias = if (!isAnonymous && passwordOrPrivateKey.isNotBlank()) {
                 withContext(Dispatchers.IO) {
                     credentialVault.storeSecret(existing?.secretAlias, passwordOrPrivateKey)
@@ -1740,7 +1744,26 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             val rowId = dao.upsertNetworkProfile(entity)
             val savedProfile = entity.copy(id = if (entity.id != 0L) entity.id else rowId)
             if (connectImmediately) {
-                openRemoteNetworkDirectory(savedProfile)
+                showStatus("Connecting to $resolvedName...")
+                openRemoteNetworkDirectory(savedProfile, savedProfile.remoteInitialPath) { err ->
+                    // Only keep credentials that actually worked (or that await SSH host-key trust),
+                    // so a typo never turns into a broken one-tap shortcut.
+                    if (err !is SshHostKeyVerificationRequiredException) {
+                        viewModelScope.launch {
+                            if (existing == null) {
+                                withContext(Dispatchers.IO) { credentialVault.deleteSecret(savedProfile.secretAlias) }
+                                dao.deleteNetworkProfile(savedProfile.id)
+                            } else {
+                                dao.upsertNetworkProfile(existing)
+                                if (previousSecret != null && existing.secretAlias != null) {
+                                    withContext(Dispatchers.IO) {
+                                        credentialVault.storeSecret(existing.secretAlias, previousSecret)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             } else {
                 showStatus("Saved network profile '$resolvedName'")
             }
@@ -1757,12 +1780,44 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun openRemoteNetworkDirectory(profile: NetworkProfileEntity, remotePath: String = profile.remoteInitialPath) {
+    private fun buildRemoteBreadcrumbs(
+        profile: NetworkProfileEntity,
+        provider: ProviderType,
+        path: String
+    ): List<FileReference> {
+        val crumbs = mutableListOf(
+            FileReference(
+                providerType = provider,
+                uriOrPath = "/",
+                displayName = profile.displayName,
+                parentUriOrPath = null,
+                isDirectory = true
+            )
+        )
+        var acc = ""
+        path.split('/').filter { it.isNotBlank() }.forEach { segment ->
+            acc = "$acc/$segment"
+            crumbs += FileReference(
+                providerType = provider,
+                uriOrPath = acc,
+                displayName = segment,
+                parentUriOrPath = acc.substringBeforeLast('/').ifEmpty { "/" },
+                isDirectory = true
+            )
+        }
+        return crumbs
+    }
+
+    fun openRemoteNetworkDirectory(
+        profile: NetworkProfileEntity,
+        remotePath: String = profile.remoteInitialPath,
+        onConnectFailed: (Throwable) -> Unit = {}
+    ) {
         viewModelScope.launch {
+            val previousRemoteProfile = _browserState.value.activeRemoteProfile
             _browserState.value = _browserState.value.copy(
                 isLoading = true,
                 errorMessage = null,
-                activeRemoteProfile = profile,
                 selectedUris = emptySet()
             )
             val secret = withContext(Dispatchers.IO) {
@@ -1776,25 +1831,38 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                         "SMB" -> ProviderType.SMB
                         else -> ProviderType.FTP
                     }
-                    val dirRef = FileReference(
-                        providerType = provider,
-                        uriOrPath = remotePath,
-                        displayName = "${profile.displayName} ($remotePath)",
-                        parentUriOrPath = remotePath.trimEnd('/').substringBeforeLast('/').ifEmpty { "/" },
-                        isDirectory = true
-                    )
+                    val normalizedPath = remotePath.ifBlank { "/" }
+                    val crumbs = buildRemoteBreadcrumbs(profile, provider, normalizedPath)
+                    val dirRef = crumbs.last().let {
+                        if (it.uriOrPath == "/") it.copy(displayName = "${profile.displayName} (/)") else it
+                    }
+                    val currentSettings = settings.value
                     _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
                     _browserState.value = _browserState.value.copy(
                         currentDirectory = dirRef,
-                        breadcrumbs = listOf(dirRef),
-                        items = FileSortAndFilterEngine.sortFiles(items, SortField.NAME, SortOrder.ASCENDING),
-                        isLoading = false
+                        breadcrumbs = crumbs,
+                        items = FileSortAndFilterEngine.sortFiles(
+                            items,
+                            currentSettings.defaultSortField,
+                            currentSettings.defaultSortOrder
+                        ),
+                        isLoading = false,
+                        errorMessage = null,
+                        activeRemoteProfile = profile,
+                        activeCategoryFilter = null,
+                        searchQuery = "",
+                        inspectArchiveFile = null,
+                        archiveEntries = emptyList(),
+                        currentSortField = currentSettings.defaultSortField,
+                        currentSortOrder = currentSettings.defaultSortOrder
                     )
                 },
                 onFailure = { err ->
+                    // Never leave the browser bound to a remote profile it could not actually open.
                     _browserState.value = _browserState.value.copy(
                         isLoading = false,
-                        errorMessage = err.message
+                        errorMessage = err.message,
+                        activeRemoteProfile = previousRemoteProfile
                     )
                     if (err is SshHostKeyVerificationRequiredException) {
                         _sshHostKeyPrompt.value = SshHostKeyPrompt(
@@ -1804,8 +1872,15 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                             isMismatchWarning = err.mismatchWithPinned
                         )
                     } else {
-                        showStatus("Connection failed: ${err.message}")
+                        val reason = err.message ?: err::class.java.simpleName
+                        val hint = if (isAuthenticationFailureMessage(reason)) {
+                            " — saved password may have changed. Edit the server in Remote Connections to update it."
+                        } else {
+                            ""
+                        }
+                        showStatus("Connection failed: $reason$hint")
                     }
+                    onConnectFailed(err)
                 }
             )
         }

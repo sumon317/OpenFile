@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Key
@@ -174,7 +175,27 @@ fun NetworkScreen(
                 onConnectProfile = onConnectProfile,
                 onDeleteProfile = onDeleteProfile,
                 onScanLan = onScanLan,
-                onSelectDiscoveredHost = { selectedDiscoveredHost = it }
+                onSelectDiscoveredHost = { host ->
+                    // One-tap reconnect: reuse stored credentials instead of prompting again.
+                    val saved = profiles.firstOrNull {
+                        it.host.equals(host.ipAddress, ignoreCase = true) && it.port == host.port
+                    }
+                    if (saved != null && (saved.isAnonymous || !saved.secretAlias.isNullOrBlank())) {
+                        onConnectProfile(saved)
+                    } else {
+                        selectedDiscoveredHost = host
+                    }
+                },
+                onEditDiscoveredHost = { selectedDiscoveredHost = it },
+                onEditProfile = { p ->
+                    selectedDiscoveredHost = DiscoveredLanHost(
+                        ipAddress = p.host,
+                        port = p.port,
+                        protocolGuess = p.protocol,
+                        bannerOrName = p.displayName,
+                        protocol = p.protocol.uppercase()
+                    )
+                }
             )
         }
     }
@@ -202,12 +223,14 @@ fun NetworkScreen(
             initialUsername = existingProfile?.username?.ifBlank { "openfile" } ?: "openfile",
             initialShareName = existingProfile?.shareName.orEmpty(),
             initialAnonymous = existingProfile?.isAnonymous ?: false,
+            hasSavedPassword = existingProfile?.secretAlias != null,
             onDismiss = { selectedDiscoveredHost = null },
             onConnect = { username, password, shareName, isAnonymous ->
-                val proto = hostToConnect.protocolGuess.uppercase().let {
+                val proto = hostToConnect.protocol.uppercase().let {
                     if (it in setOf("FTP", "FTPS", "SFTP", "SMB")) it else "FTP"
                 }
-                val displayName = hostToConnect.bannerOrName.ifBlank { "$proto://${hostToConnect.ipAddress}:${hostToConnect.port}" }
+                val displayName = existingProfile?.displayName
+                    ?: hostToConnect.bannerOrName.ifBlank { "$proto://${hostToConnect.ipAddress}:${hostToConnect.port}" }
                 onConnectDiscoveredHost(
                     displayName,
                     proto,
@@ -796,7 +819,9 @@ private fun RemoteClientsTab(
     onConnectProfile: (NetworkProfileEntity) -> Unit,
     onDeleteProfile: (NetworkProfileEntity) -> Unit,
     onScanLan: () -> Unit,
-    onSelectDiscoveredHost: (DiscoveredLanHost) -> Unit = {}
+    onSelectDiscoveredHost: (DiscoveredLanHost) -> Unit = {},
+    onEditDiscoveredHost: (DiscoveredLanHost) -> Unit = {},
+    onEditProfile: (NetworkProfileEntity) -> Unit = {}
 ) {
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -957,6 +982,21 @@ private fun RemoteClientsTab(
                                     color = ApkGreen
                                 )
                             }
+                            Text(
+                                text = if (profile.isAnonymous || !profile.secretAlias.isNullOrBlank()) {
+                                    "Credentials saved • tap to connect"
+                                } else {
+                                    "No saved password • tap edit to add one"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        IconButton(
+                            onClick = { onEditProfile(profile) },
+                            modifier = Modifier.testTag("network_edit_profile_${profile.id}")
+                        ) {
+                            Icon(Icons.Filled.Edit, contentDescription = "Edit credentials")
                         }
                         IconButton(onClick = { onDeleteProfile(profile) }) {
                             Icon(Icons.Filled.Delete, contentDescription = "Delete profile", tint = MaterialTheme.colorScheme.error)
@@ -995,10 +1035,22 @@ private fun RemoteClientsTab(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(host.bannerOrName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                             Text("${host.ipAddress}:${host.port}", style = MaterialTheme.typography.labelSmall, fontFamily = JetBrainsMonoFamily)
+                            val isSaved = profiles.any {
+                                it.host.equals(host.ipAddress, ignoreCase = true) && it.port == host.port &&
+                                    (it.isAnonymous || !it.secretAlias.isNullOrBlank())
+                            }
+                            if (isSaved) {
+                                Text("Saved • one-tap connect", style = MaterialTheme.typography.labelSmall, color = ApkGreen)
+                            }
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(host.protocolGuess, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                             Spacer(modifier = Modifier.width(6.dp))
+                            if (profiles.any { it.host.equals(host.ipAddress, ignoreCase = true) && it.port == host.port }) {
+                                IconButton(onClick = { onEditDiscoveredHost(host) }) {
+                                    Icon(Icons.Filled.Edit, contentDescription = "Edit credentials for ${host.ipAddress}")
+                                }
+                            }
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                 contentDescription = "Connect to ${host.ipAddress}",
@@ -1018,6 +1070,7 @@ private fun ConnectDiscoveredHostDialog(
     initialUsername: String = "openfile",
     initialShareName: String = "",
     initialAnonymous: Boolean = false,
+    hasSavedPassword: Boolean = false,
     onDismiss: () -> Unit,
     onConnect: (username: String, password: String, shareName: String, isAnonymous: Boolean) -> Unit
 ) {
@@ -1026,8 +1079,8 @@ private fun ConnectDiscoveredHostDialog(
     var passwordVisible by remember { mutableStateOf(false) }
     var shareName by remember(host) { mutableStateOf(initialShareName) }
     var isAnonymous by remember(host) { mutableStateOf(initialAnonymous) }
-    val isSmb = host.protocolGuess.equals("SMB", ignoreCase = true)
-    val isSftp = host.protocolGuess.equals("SFTP", ignoreCase = true)
+    val isSmb = host.protocol.equals("SMB", ignoreCase = true)
+    val isSftp = host.protocol.equals("SFTP", ignoreCase = true)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1041,7 +1094,7 @@ private fun ConnectDiscoveredHostDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "${host.protocolGuess} • ${host.ipAddress}:${host.port}",
+                    text = "${host.protocol} • ${host.ipAddress}:${host.port} • credentials are stored encrypted on this device",
                     style = MaterialTheme.typography.labelMedium,
                     fontFamily = JetBrainsMonoFamily,
                     color = MaterialTheme.colorScheme.primary
@@ -1077,7 +1130,13 @@ private fun ConnectDiscoveredHostDialog(
                         value = password,
                         onValueChange = { password = it },
                         label = {
-                            Text(if (isSftp) "Password or PEM Private Key" else "Password")
+                            Text(
+                                when {
+                                    hasSavedPassword -> "Password (leave blank to keep saved)"
+                                    isSftp -> "Password or PEM Private Key"
+                                    else -> "Password"
+                                }
+                            )
                         },
                         visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                         trailingIcon = {

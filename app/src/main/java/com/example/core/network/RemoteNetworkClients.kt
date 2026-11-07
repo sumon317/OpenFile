@@ -7,6 +7,7 @@ import com.hierynomus.msdtyp.AccessMask
 import com.hierynomus.mssmb2.SMB2CreateDisposition
 import com.hierynomus.mssmb2.SMB2ShareAccess
 import com.hierynomus.smbj.SMBClient
+import com.hierynomus.smbj.SmbConfig
 import com.hierynomus.smbj.auth.AuthenticationContext
 import com.hierynomus.smbj.share.DiskShare
 import com.jcraft.jsch.ChannelSftp
@@ -30,6 +31,7 @@ import java.security.MessageDigest
 import java.util.EnumSet
 import java.util.Properties
 import java.util.Vector
+import java.util.concurrent.TimeUnit
 
 /**
  * Thrown when an SFTP server presents an SSH host key whose SHA-256 fingerprint has not yet
@@ -54,8 +56,17 @@ data class DiscoveredLanHost(
     val ipAddress: String,
     val port: Int,
     val protocolGuess: String,
-    val bannerOrName: String
+    val bannerOrName: String,
+    /** Normalised connection protocol: FTP, FTPS, SFTP or SMB. */
+    val protocol: String = "FTP"
 )
+
+/** Returns true when [message] looks like a wrong username / password failure for any protocol. */
+fun isAuthenticationFailureMessage(message: String?): Boolean {
+    val m = message?.lowercase() ?: return false
+    return "login failed" in m || "auth fail" in m || "authentication" in m ||
+        "logon_failure" in m || "access_denied" in m || "not logged in" in m
+}
 
 /**
  * Real remote network client engine for FTP, FTPS, SFTP (JSch with strict host-key verification),
@@ -223,7 +234,8 @@ object RemoteNetworkClients {
         block: (FTPClient) -> T
     ): T {
         val client: FTPClient = if (profile.protocol.equals("FTPS", ignoreCase = true)) {
-            FTPSClient(false)
+            // Port 990 is the IANA implicit-FTPS port; everything else uses explicit AUTH TLS.
+            FTPSClient(profile.port == 990)
         } else {
             FTPClient()
         }
@@ -264,6 +276,9 @@ object RemoteNetworkClients {
     ): List<FileReference> = withFtpClient(profile, decryptedSecret) { client ->
         val normalized = remotePath.ifBlank { "/" }
         val files = client.listFiles(normalized) ?: emptyArray()
+        if (files.isEmpty() && !FTPReply.isPositiveCompletion(client.replyCode)) {
+            throw IllegalStateException("FTP cannot list '$normalized': ${client.replyString.trim()}")
+        }
         val provider = if (profile.protocol.equals("FTPS", true)) ProviderType.FTPS else ProviderType.FTP
         files.filter { it.name != "." && it.name != ".." }.map { ftpFile ->
             val fullPath = if (normalized.endsWith("/")) "$normalized${ftpFile.name}" else "$normalized/${ftpFile.name}"
@@ -392,19 +407,22 @@ object RemoteNetworkClients {
         decryptedSecret: String,
         remotePath: String
     ): List<FileReference> = withSftpChannel(profile, decryptedSecret) { channel ->
-        val normalized = remotePath.ifBlank { "/" }
+        val normalized = remotePath.ifBlank { runCatching { channel.home }.getOrNull() ?: "/" }
         @Suppress("UNCHECKED_CAST")
         val rawVector = channel.ls(normalized) as Vector<ChannelSftp.LsEntry>
         rawVector.filter { it.filename != "." && it.filename != ".." }.map { entry ->
             val attrs = entry.attrs
             val fullPath = if (normalized.endsWith("/")) "$normalized${entry.filename}" else "$normalized/${entry.filename}"
+            // Symlinked folders report isDir=false; resolve the target so they stay browsable.
+            val isDirectory = attrs.isDir ||
+                (attrs.isLink && runCatching { channel.stat(fullPath).isDir }.getOrDefault(false))
             FileReference(
                 providerType = ProviderType.SFTP,
                 uriOrPath = fullPath,
                 displayName = entry.filename,
                 parentUriOrPath = normalized,
-                isDirectory = attrs.isDir,
-                sizeBytes = if (attrs.isDir) 0L else attrs.size,
+                isDirectory = isDirectory,
+                sizeBytes = if (isDirectory) 0L else attrs.size,
                 lastModifiedEpochMs = attrs.mTime * 1000L,
                 metadata = mapOf("permissions" to attrs.permissionsString)
             )
@@ -445,7 +463,11 @@ object RemoteNetworkClients {
         val shareName = profile.shareName.ifBlank {
             profile.remoteInitialPath.trim('/').substringBefore('/').ifBlank { "Public" }
         }
-        val client = SMBClient()
+        val smbConfig = SmbConfig.builder()
+            .withTimeout(15, TimeUnit.SECONDS)
+            .withSoTimeout(30, TimeUnit.SECONDS)
+            .build()
+        val client = SMBClient(smbConfig)
         try {
             val connection = client.connect(profile.host, profile.port)
             val authContext = if (profile.isAnonymous) {
@@ -571,13 +593,19 @@ object RemoteNetworkClients {
 
     private fun probeHostPorts(ip: String, timeoutMs: Int = 250): List<DiscoveredLanHost> {
         val found = mutableListOf<DiscoveredLanHost>()
+        // port, protocol label, normalised protocol, friendly name
         val targetPorts = listOf(
-            2121 to "FTP (OpenFile / Alt)",
-            21 to "FTP",
-            22 to "SFTP / SSH",
-            445 to "SMB2/3 Share"
+            listOf(2121, "FTP (OpenFile / Alt)", "FTP", "OpenFile FTP"),
+            listOf(21, "FTP", "FTP", "FTP Server"),
+            listOf(22, "SFTP / SSH", "SFTP", "SFTP Server"),
+            listOf(8022, "SFTP / SSH (Termux)", "SFTP", "SFTP Server"),
+            listOf(445, "SMB2/3 Share", "SMB", "SMB Share")
         )
-        for ((port, proto) in targetPorts) {
+        for (entry in targetPorts) {
+            val port = entry[0] as Int
+            val label = entry[1] as String
+            val protocol = entry[2] as String
+            val friendly = entry[3] as String
             try {
                 Socket().use { socket ->
                     socket.connect(InetSocketAddress(ip, port), timeoutMs)
@@ -585,8 +613,9 @@ object RemoteNetworkClients {
                         DiscoveredLanHost(
                             ipAddress = ip,
                             port = port,
-                            protocolGuess = proto,
-                            bannerOrName = "$proto on $ip:$port"
+                            protocolGuess = label,
+                            bannerOrName = "$friendly • $ip",
+                            protocol = protocol
                         )
                     )
                 }
