@@ -278,6 +278,85 @@ class ExampleRobolectricTest {
     }
 
     @Test
+    fun `FTP lists folders with dash tokens in the name and copies remote files into local storage via transfer queue`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = OpenFileDatabase.getInstance(context)
+        val localProvider = LocalFileSystemProvider(context)
+        val safProvider = SafDocumentProvider(context)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val vault = KeystoreCredentialVault(context)
+        val engine = TransferQueueEngine(context, db.dao(), localProvider, safProvider, scope, vault)
+
+        val serverRoot = Files.createTempDirectory("ftp_dash_root").toFile()
+        val localDest = Files.createTempDirectory("ftp_dash_dest").toFile()
+        val freePort = ServerSocket(0).use { it.localPort }
+        try {
+            val showDir = File(serverRoot, "Kaguya Sama - Love Is War").apply { mkdirs() }
+            File(showDir, "ep01.mkv").writeText("episode-one-bytes")
+
+            val startRes = FtpServerEngine.startServer(
+                FtpServerConfig(
+                    bindAddress = "127.0.0.1",
+                    port = freePort,
+                    passivePortStart = 51050,
+                    passivePortEnd = 51070,
+                    rootDirectory = serverRoot,
+                    username = "admin",
+                    password = "secret99",
+                    allowAnonymous = false,
+                    allowWrite = true
+                )
+            )
+            assertTrue(startRes.isSuccess)
+
+            val alias = vault.storeSecret(plainTextSecret = "secret99")
+            val unsaved = NetworkProfileEntity(
+                displayName = "Dash FTP",
+                protocol = "FTP",
+                host = "127.0.0.1",
+                port = freePort,
+                username = "admin",
+                secretAlias = alias,
+                remoteInitialPath = "/",
+                usePassiveMode = true
+            )
+            val profile = unsaved.copy(id = db.dao().upsertNetworkProfile(unsaved))
+
+            // 1. A folder whose name contains a standalone "-" must list (previously 550 Directory not found)
+            val listing = RemoteNetworkClients.listRemoteDirectory(
+                profile,
+                "secret99",
+                "/Kaguya Sama - Love Is War"
+            ).getOrThrow()
+            val episode = listing.first { it.displayName == "ep01.mkv" }
+
+            // 2. Copying that remote file into local storage must stream over FTP (previously ENOENT)
+            engine.copyToClipboard(listOf(episode), ClipboardMode.COPY)
+            var done = false
+            var outcome: Result<String>? = null
+            engine.enqueuePasteFromClipboard(
+                destinationDir = localProvider.toFileReference(localDest),
+                verifyChecksum = false,
+                onComplete = {
+                    outcome = it
+                    done = true
+                }
+            )
+            var attempts = 0
+            while (!done && attempts < 200) {
+                delay(50)
+                attempts++
+            }
+            assertTrue("Remote -> local copy failed: ${outcome?.exceptionOrNull()?.message}", outcome?.isSuccess == true)
+            assertEquals("episode-one-bytes", File(localDest, "ep01.mkv").readText())
+        } finally {
+            FtpServerEngine.stopServer()
+            serverRoot.deleteRecursively()
+            localDest.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `embedded FTP server exposes device and sdcard virtual mounts like File Manager Plus`() = runBlocking {
         val tempDeviceRoot = Files.createTempDirectory("ftp_device_root").toFile()
         val tempSdCardRoot = Files.createTempDirectory("ftp_sdcard_root").toFile()

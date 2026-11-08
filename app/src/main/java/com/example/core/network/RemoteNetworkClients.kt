@@ -74,6 +74,9 @@ fun isAuthenticationFailureMessage(message: String?): Boolean {
  */
 object RemoteNetworkClients {
 
+    /** FileReference.metadata key carrying the saved [NetworkProfileEntity.id] a remote item belongs to. */
+    const val REMOTE_PROFILE_ID_KEY = "remoteProfileId"
+
     /**
      * Lists a remote directory on an FTP, FTPS, SFTP, or SMB2/3 server using [profile] and [decryptedSecret].
      */
@@ -262,6 +265,7 @@ object RemoteNetworkClients {
                 client.enterLocalActiveMode()
             }
             client.setFileType(FTP.BINARY_FILE_TYPE)
+            client.bufferSize = 256 * 1024
             return block(client)
         } finally {
             runCatching { if (client.isConnected) client.logout() }
@@ -275,7 +279,13 @@ object RemoteNetworkClients {
         remotePath: String
     ): List<FileReference> = withFtpClient(profile, decryptedSecret) { client ->
         val normalized = remotePath.ifBlank { "/" }
-        val files = client.listFiles(normalized) ?: emptyArray()
+        // CWD + argument-less LIST avoids servers misreading dashes/spaces in the path as ls options.
+        val rawFiles = if (client.changeWorkingDirectory(normalized)) {
+            client.listFiles()
+        } else {
+            client.listFiles(normalized)
+        }
+        val files = (rawFiles ?: emptyArray()).filterNotNull()
         if (files.isEmpty() && !FTPReply.isPositiveCompletion(client.replyCode)) {
             throw IllegalStateException("FTP cannot list '$normalized': ${client.replyString.trim()}")
         }
@@ -289,7 +299,8 @@ object RemoteNetworkClients {
                 parentUriOrPath = normalized,
                 isDirectory = ftpFile.isDirectory,
                 sizeBytes = if (ftpFile.isDirectory) 0L else ftpFile.size.coerceAtLeast(0L),
-                lastModifiedEpochMs = ftpFile.timestamp?.timeInMillis ?: 0L
+                lastModifiedEpochMs = ftpFile.timestamp?.timeInMillis ?: 0L,
+                metadata = mapOf(REMOTE_PROFILE_ID_KEY to profile.id.toString())
             )
         }
     }
@@ -424,7 +435,10 @@ object RemoteNetworkClients {
                 isDirectory = isDirectory,
                 sizeBytes = if (isDirectory) 0L else attrs.size,
                 lastModifiedEpochMs = attrs.mTime * 1000L,
-                metadata = mapOf("permissions" to attrs.permissionsString)
+                metadata = mapOf(
+                    "permissions" to attrs.permissionsString,
+                    REMOTE_PROFILE_ID_KEY to profile.id.toString()
+                )
             )
         }
     }
@@ -513,7 +527,8 @@ object RemoteNetworkClients {
                 parentUriOrPath = remotePath.ifBlank { "/" },
                 isDirectory = isDir,
                 sizeBytes = if (isDir) 0L else info.endOfFile,
-                lastModifiedEpochMs = info.changeTime.toEpochMillis()
+                lastModifiedEpochMs = info.lastWriteTime.toEpochMillis(),
+                metadata = mapOf(REMOTE_PROFILE_ID_KEY to profile.id.toString())
             )
         }
     }

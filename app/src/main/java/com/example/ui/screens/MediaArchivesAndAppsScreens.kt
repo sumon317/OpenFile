@@ -26,6 +26,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Android
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -42,6 +44,8 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestoreFromTrash
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.SdStorage
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -99,6 +103,7 @@ import com.example.core.model.ProviderType
 import com.example.core.model.SortField
 import com.example.core.model.SortOrder
 import com.example.core.model.StorageAnalysisReport
+import com.example.core.model.StorageVolumeInfo
 import com.example.core.model.formatByteSize
 import com.example.ui.components.FileItemRow
 import com.example.ui.theme.ApkGreen
@@ -140,7 +145,9 @@ fun StorageAnalysisScreen(
     onOpenParentFolder: (FileReference) -> Unit = {},
     onOpenWithExternal: ((FileReference) -> Unit)? = null,
     onQuickPreview: ((FileReference) -> Unit)? = null,
-    onCompressItems: (List<FileReference>, String, ArchiveCreationFormat) -> Unit = { _, _, _ -> }
+    onCompressItems: (List<FileReference>, String, ArchiveCreationFormat) -> Unit = { _, _, _ -> },
+    volumes: List<StorageVolumeInfo> = emptyList(),
+    activeRootPath: String? = null
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     val tabs = listOf("Overview", "Largest Files", "Largest Folders", "Duplicates")
@@ -290,6 +297,65 @@ fun StorageAnalysisScreen(
                     Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("Rescan")
+                }
+            }
+        }
+
+        // Storage selector: analyze internal storage, SD card, USB OTG or any other mounted volume.
+        val selectableVolumes = remember(volumes) {
+            volumes.filter { it.rootReference.providerType == ProviderType.LOCAL && !it.isSafGrantRevoked }
+        }
+        if (selectableVolumes.isNotEmpty()) {
+            var showVolumeMenu by remember { mutableStateOf(false) }
+            val currentRoot = activeRootPath ?: report?.rootPath
+            val activeVolume = selectableVolumes.firstOrNull { it.rootReference.uriOrPath == currentRoot }
+                ?: selectableVolumes.first()
+            Box(modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp)) {
+                OutlinedButton(
+                    onClick = { showVolumeMenu = true },
+                    modifier = Modifier.testTag("analyzer_storage_selector")
+                ) {
+                    Icon(
+                        if (activeVolume.isRemovable) Icons.Filled.SdStorage else Icons.Filled.Storage,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Storage: ${activeVolume.title}", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Icon(Icons.Filled.ArrowDropDown, contentDescription = "Choose storage")
+                }
+                DropdownMenu(expanded = showVolumeMenu, onDismissRequest = { showVolumeMenu = false }) {
+                    selectableVolumes.forEach { vol ->
+                        val isActive = vol.rootReference.uriOrPath == activeVolume.rootReference.uriOrPath
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(vol.title, fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal)
+                                    Text(
+                                        text = "${formatByteSize(vol.usedBytes)} used of ${formatByteSize(vol.totalBytes)} • ${vol.subtitle}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    if (vol.isRemovable) Icons.Filled.SdStorage else Icons.Filled.Storage,
+                                    contentDescription = null
+                                )
+                            },
+                            trailingIcon = {
+                                if (isActive) Icon(Icons.Filled.Check, contentDescription = "Selected")
+                            },
+                            onClick = {
+                                showVolumeMenu = false
+                                selectedUris = emptySet()
+                                onRefreshScan(File(vol.rootReference.uriOrPath))
+                            }
+                        )
+                    }
                 }
             }
         }

@@ -285,6 +285,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     // Storage Analyzer state
     private val _analysisReport = MutableStateFlow<StorageAnalysisReport?>(null)
+    /** The storage root (internal, SD card, USB OTG...) the analyzer is currently targeting. */
+    private val _analysisTargetRoot = MutableStateFlow<File?>(null)
+    val analysisTargetRoot: StateFlow<File?> = _analysisTargetRoot.asStateFlow()
     val analysisReport: StateFlow<StorageAnalysisReport?> = _analysisReport.asStateFlow()
 
     private val _isAnalyzingStorage = MutableStateFlow(false)
@@ -418,6 +421,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             OpenFileDestination.RECENT_FILES -> openCategoryOrSpecialFolder(FileCategory.RECENT_FILES)
             OpenFileDestination.APPLICATIONS -> loadApplications(_includeSystemApps.value)
             OpenFileDestination.STORAGE_ANALYSIS -> {
+                refreshStorageVolumes(force = true)
                 if (_analysisReport.value == null && !_isAnalyzingStorage.value) {
                     runStorageAnalysis()
                 }
@@ -1502,11 +1506,16 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     // Storage Analyzer & Duplicate Cleanup
     // ---------------------------------------------------------------------------------------------
 
-    fun runStorageAnalysis(targetRoot: File = localProvider.getPrimaryRootDirectory()) {
+    fun runStorageAnalysis(targetRoot: File = _analysisTargetRoot.value ?: localProvider.getPrimaryRootDirectory()) {
         analysisJob?.cancel()
+        _analysisTargetRoot.value = targetRoot
+        // Drop a stale report that belongs to a different storage so the UI never mixes volumes.
+        if (_analysisReport.value?.rootPath != targetRoot.absolutePath) {
+            _analysisReport.value = null
+        }
         analysisJob = viewModelScope.launch {
             _isAnalyzingStorage.value = true
-            _analysisProgressText.value = "Scanning ${targetRoot.name}..."
+            _analysisProgressText.value = "Scanning ${targetRoot.absolutePath}..."
             var lastEmitTimeMs = 0L
             storageAnalyzer.analyzeDirectory(
                 rootDir = targetRoot,
@@ -1785,13 +1794,16 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         provider: ProviderType,
         path: String
     ): List<FileReference> {
+        // Tag every crumb with its server so paste / copy / move can reach the right remote profile.
+        val profileMeta = mapOf(RemoteNetworkClients.REMOTE_PROFILE_ID_KEY to profile.id.toString())
         val crumbs = mutableListOf(
             FileReference(
                 providerType = provider,
                 uriOrPath = "/",
                 displayName = profile.displayName,
                 parentUriOrPath = null,
-                isDirectory = true
+                isDirectory = true,
+                metadata = profileMeta
             )
         )
         var acc = ""
@@ -1802,7 +1814,8 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 uriOrPath = acc,
                 displayName = segment,
                 parentUriOrPath = acc.substringBeforeLast('/').ifEmpty { "/" },
-                isDirectory = true
+                isDirectory = true,
+                metadata = profileMeta
             )
         }
         return crumbs

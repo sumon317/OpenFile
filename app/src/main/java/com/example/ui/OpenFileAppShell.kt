@@ -813,15 +813,20 @@ private fun DestinationRouter(
             val analysisProgress by viewModel.analysisProgressText.collectAsStateWithLifecycle()
             val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
             val clipboard by viewModel.clipboard.collectAsStateWithLifecycle()
+            val analysisVolumes by viewModel.storageVolumes.collectAsStateWithLifecycle()
+            val analysisTarget by viewModel.analysisTargetRoot.collectAsStateWithLifecycle()
             StorageAnalysisScreen(
                 report = analysisReport,
+                volumes = analysisVolumes,
+                activeRootPath = analysisTarget?.absolutePath,
                 isScanning = isAnalyzing,
                 progressText = analysisProgress,
                 settings = settings,
                 bookmarks = bookmarks,
                 clipboard = clipboard,
                 onRefreshScan = { customDir ->
-                    viewModel.runStorageAnalysis(customDir ?: viewModel.localProvider.getPrimaryRootDirectory())
+                    // null = rescan whichever storage is currently selected
+                    if (customDir != null) viewModel.runStorageAnalysis(customDir) else viewModel.runStorageAnalysis()
                 },
                 onCancelScan = { viewModel.cancelStorageAnalysis() },
                 onOpenFileOrDirectory = { ref ->

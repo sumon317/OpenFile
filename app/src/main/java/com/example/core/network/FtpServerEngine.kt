@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.BufferedInputStream
@@ -18,6 +19,7 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.io.PrintWriter
@@ -340,6 +342,7 @@ object FtpServerEngine {
                 val cmd = (if (spaceIdx > 0) rawLine.substring(0, spaceIdx) else rawLine).uppercase(Locale.ROOT)
                 val arg = if (spaceIdx > 0) rawLine.substring(spaceIdx + 1).trim() else ""
 
+                try {
                 when (cmd) {
                     "FEAT" -> {
                         writer.print("211-Features:\r\n UTF8\r\n PASV\r\n EPSV\r\n SIZE\r\n MDTM\r\n REST STREAM\r\n TVFS\r\n211 End\r\n")
@@ -447,11 +450,14 @@ object FtpServerEngine {
                                     reply(425, "Use PASV or EPSV first")
                                     continue
                                 }
-                                // Strip option flags like -a, -l, -la while preserving directory path arguments
-                                val cleanArg = arg.split(' ')
-                                    .filter { !it.startsWith("-") }
-                                    .joinToString(" ")
-                                    .trim()
+                                // Strip only LEADING ls-style option flags (-a, -l, -la, -lah). Anything after them is
+                                // the path verbatim, so folders like "Show - Season 1" or "-backup" keep their dashes.
+                                var cleanArg = arg.trim()
+                                val optionFlag = Regex("^-[A-Za-z]+(\\s+|$)")
+                                while (true) {
+                                    val match = optionFlag.find(cleanArg) ?: break
+                                    cleanArg = cleanArg.substring(match.value.length)
+                                }
                                 val listTargetPath = cleanArg.ifBlank { "." }
                                 val resolved = runCatching {
                                     resolveTargetForConfig(config, currentVirtualDir, listTargetPath)
@@ -470,7 +476,7 @@ object FtpServerEngine {
                                                 } else {
                                                     val perms = if (config.allowWrite && mountDir.canWrite()) "drwxrwxr-x" else "drwxr-xr-x"
                                                     val lastMod = mountDir.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
-                                                    val dateStr = dateFmt.format(Date(lastMod))
+                                                    val dateStr = lsDate(lastMod, dateFmt)
                                                     dataWriter.print("$perms 1 openfile openfile 4096 $dateStr $mountName\r\n")
                                                 }
                                             }
@@ -503,7 +509,7 @@ object FtpServerEngine {
                                                         append("r-x")
                                                     }
                                                     val lastMod = child.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
-                                                    val dateStr = dateFmt.format(Date(lastMod))
+                                                    val dateStr = lsDate(lastMod, dateFmt)
                                                     val size = if (child.isDirectory) 4096L else child.length()
                                                     dataWriter.print("$perms 1 openfile openfile $size $dateStr ${child.name}\r\n")
                                                 }
@@ -704,6 +710,14 @@ object FtpServerEngine {
                         }
                     }
                 }
+                } catch (e: IOException) {
+                    // A data-connection timeout or client abort must not kill the whole control session.
+                    runCatching { passiveServer?.close() }
+                    passiveServer = null
+                    restartByteOffset = 0L
+                    appendLog(clientAddr, "Data transfer aborted: ${e.message ?: "I/O error"}", isWarning = true)
+                    reply(425, "Can't open data connection or transfer aborted")
+                }
             }
         } catch (e: Exception) {
             appendLog(clientAddr, "Session closed: ${e.message ?: "disconnected"}")
@@ -722,23 +736,36 @@ object FtpServerEngine {
         return if (rel.isEmpty()) "/" else if (rel.startsWith("/")) rel else "/$rel"
     }
 
+    /** Unix `ls -l` date: "MMM dd HH:mm" for recent files, "MMM dd  yyyy" for files older than ~6 months. */
+    private fun lsDate(lastModifiedMs: Long, recentFormat: SimpleDateFormat): String {
+        val ageMs = System.currentTimeMillis() - lastModifiedMs
+        return if (ageMs in 0L..(180L * 24 * 60 * 60 * 1000)) {
+            recentFormat.format(Date(lastModifiedMs))
+        } else {
+            SimpleDateFormat("MMM dd  yyyy", Locale.US).format(Date(lastModifiedMs))
+        }
+    }
+
+    // Atomic updates: several client sessions touch the shared state concurrently.
     private fun touchActivity() {
-        _state.value = _state.value.copy(lastActivityEpochMs = System.currentTimeMillis())
+        _state.update { it.copy(lastActivityEpochMs = System.currentTimeMillis()) }
     }
 
     private fun updateClientCount() {
-        _state.value = _state.value.copy(activeClientsCount = activeClientSockets.size)
+        _state.update { it.copy(activeClientsCount = activeClientSockets.size) }
     }
 
     private fun recordTransferredBytes(delta: Long) {
-        _state.value = _state.value.copy(
-            bytesTransferred = _state.value.bytesTransferred + delta,
-            lastActivityEpochMs = System.currentTimeMillis()
-        )
+        _state.update {
+            it.copy(
+                bytesTransferred = it.bytesTransferred + delta,
+                lastActivityEpochMs = System.currentTimeMillis()
+            )
+        }
     }
 
     fun appendLog(client: String, message: String, isWarning: Boolean = false) {
-        val updated = (listOf(FtpLogEntry(clientAddress = client, message = message, isWarning = isWarning)) + _state.value.logs).take(60)
-        _state.value = _state.value.copy(logs = updated)
+        val entry = FtpLogEntry(clientAddress = client, message = message, isWarning = isWarning)
+        _state.update { it.copy(logs = (listOf(entry) + it.logs).take(60)) }
     }
 }

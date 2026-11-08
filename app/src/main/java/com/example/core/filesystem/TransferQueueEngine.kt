@@ -8,6 +8,7 @@ import com.example.core.database.TrashItemEntity
 import com.example.core.model.ConflictResolution
 import com.example.core.model.FileReference
 import com.example.core.model.ProviderType
+import com.example.core.network.RemoteNetworkClients
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -113,9 +114,25 @@ class TransferQueueEngine(
         activeJobs.remove(jobId)?.cancel()
     }
 
-    private fun providerFor(type: ProviderType): VirtualFileSystemProvider = when (type) {
-        ProviderType.SAF -> safProvider
+    private suspend fun providerFor(ref: FileReference): VirtualFileSystemProvider = when {
+        ref.providerType.isRemote -> remoteProviderFor(ref)
+        ref.providerType == ProviderType.SAF -> safProvider
         else -> localProvider
+    }
+
+    /**
+     * Resolves the saved FTP / FTPS / SFTP / SMB profile an item belongs to (tagged in its metadata when
+     * listed) so remote items are streamed over their own protocol instead of being treated as local paths.
+     */
+    private suspend fun remoteProviderFor(ref: FileReference): VirtualFileSystemProvider = withContext(Dispatchers.IO) {
+        val profileId = ref.metadata[RemoteNetworkClients.REMOTE_PROFILE_ID_KEY]?.toLongOrNull()
+            ?: throw IllegalStateException(
+                "Cannot identify the remote server for '${ref.displayName}'. Reconnect to the server and try again."
+            )
+        val profile = dao.getNetworkProfileById(profileId)
+            ?: throw IllegalStateException("The saved server for '${ref.displayName}' no longer exists.")
+        val secret = credentialVault.retrieveSecret(profile.secretAlias).orEmpty()
+        RemoteFileSystemProvider(context, profile, secret)
     }
 
     /**
@@ -194,7 +211,7 @@ class TransferQueueEngine(
                     coroutineContext.ensureActive()
                     waitIfPaused(jobId, initialEntity, transferredBytes, processedFiles)
 
-                    val destProvider = providerFor(destinationDir.providerType)
+                    val destProvider = providerFor(destinationDir)
                     var targetName = sourceItem.displayName
 
                     // Check for collision
@@ -291,7 +308,7 @@ class TransferQueueEngine(
                         performUndo = {
                             withContext(Dispatchers.IO) {
                                 runCatching {
-                                    val destProvider = providerFor(destinationDir.providerType)
+                                    val destProvider = providerFor(destinationDir)
                                     createdDestinations.forEach { destProvider.delete(it) }
                                     "Undid copy of ${createdDestinations.size} item(s)"
                                 }
@@ -386,8 +403,8 @@ class TransferQueueEngine(
         onBytesDelta: (Long) -> Unit
     ): FileReference {
         coroutineContext.ensureActive()
-        val srcProvider = providerFor(source.providerType)
-        val dstProvider = providerFor(destinationParent.providerType)
+        val srcProvider = providerFor(source)
+        val dstProvider = providerFor(destinationParent)
 
         // Prevent copying or moving a folder into itself or its own subdirectory
         if (source.isDirectory && source.providerType == destinationParent.providerType) {
@@ -566,7 +583,7 @@ class TransferQueueEngine(
                     trashIdsCreated.add(trashId)
                     trashedCount++
                 } else {
-                    val provider = providerFor(item.providerType)
+                    val provider = providerFor(item)
                     provider.delete(item).getOrThrow()
                     permanentCount++
                 }
