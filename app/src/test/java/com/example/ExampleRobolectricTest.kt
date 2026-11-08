@@ -357,6 +357,57 @@ class ExampleRobolectricTest {
     }
 
     @Test
+    fun `transfer queue tracks accurate totalBytes for directories and updates progress to Room`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = OpenFileDatabase.getInstance(context)
+        val localProvider = LocalFileSystemProvider(context)
+        val safProvider = SafDocumentProvider(context)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val engine = TransferQueueEngine(context, db.dao(), localProvider, safProvider, scope)
+
+        val srcDir = Files.createTempDirectory("xfer_prog_src").toFile()
+        val dstDir = Files.createTempDirectory("xfer_prog_dst").toFile()
+        try {
+            val subFolder = File(srcDir, "Album").apply { mkdirs() }
+            val chunk = ByteArray(128 * 1024) { 0x42 }
+            File(subFolder, "track01.mp3").writeBytes(chunk)
+            File(subFolder, "track02.mp3").writeBytes(chunk)
+            File(subFolder, "track03.mp3").writeBytes(chunk)
+            val expectedTotal = chunk.size.toLong() * 3
+
+            engine.copyToClipboard(listOf(localProvider.toFileReference(subFolder)), ClipboardMode.COPY)
+            var done = false
+            var outcome: Result<String>? = null
+            val jobId = engine.enqueuePasteFromClipboard(
+                destinationDir = localProvider.toFileReference(dstDir),
+                verifyChecksum = false,
+                onComplete = {
+                    outcome = it
+                    done = true
+                }
+            )
+
+            var attempts = 0
+            while (!done && attempts < 200) {
+                delay(50)
+                attempts++
+            }
+            assertTrue("Copy should succeed: ${outcome?.exceptionOrNull()?.message}", outcome?.isSuccess == true)
+
+            val jobEntity = db.dao().observeTransferJobs().first().firstOrNull { it.jobId == jobId }
+            assertNotNull(jobEntity)
+            assertEquals("COMPLETED", jobEntity?.status)
+            assertEquals(expectedTotal, jobEntity?.transferredBytes)
+            assertEquals(expectedTotal, jobEntity?.totalBytes)
+            assertEquals(3, jobEntity?.processedFiles)
+            assertEquals(3, jobEntity?.totalFiles)
+        } finally {
+            srcDir.deleteRecursively()
+            dstDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `embedded FTP server exposes device and sdcard virtual mounts like File Manager Plus`() = runBlocking {
         val tempDeviceRoot = Files.createTempDirectory("ftp_device_root").toFile()
         val tempSdCardRoot = Files.createTempDirectory("ftp_sdcard_root").toFile()

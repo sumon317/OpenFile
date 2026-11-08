@@ -5,6 +5,7 @@ import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -185,6 +186,10 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
         count
     }
 
+    val activeRunningJob = remember(transferJobs) {
+        transferJobs.firstOrNull { it.status == "RUNNING" }
+    }
+
     val onCycleThemeMode: () -> Unit = {
         val currentMode = viewModel.settings.value.themeMode
         val nextMode = when (currentMode) {
@@ -242,6 +247,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                         },
                         currentThemeMode = settings.themeMode,
                         activeTransferCount = activeTransferCount,
+                        activeRunningJob = activeRunningJob,
                         undoActionDescription = undoAction?.description,
                         snackbarHostState = snackbarHostState,
                         onOpenDrawer = {},
@@ -370,6 +376,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                     },
                     currentThemeMode = settings.themeMode,
                     activeTransferCount = activeTransferCount,
+                    activeRunningJob = activeRunningJob,
                     undoActionDescription = undoAction?.description,
                     snackbarHostState = snackbarHostState,
                     onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
@@ -550,6 +557,7 @@ private fun MainScaffoldContent(
     customTitleOverride: String? = null,
     currentThemeMode: ThemeMode,
     activeTransferCount: Int,
+    activeRunningJob: com.example.core.database.TransferJobEntity? = null,
     undoActionDescription: String?,
     snackbarHostState: SnackbarHostState,
     onOpenDrawer: () -> Unit,
@@ -662,32 +670,93 @@ private fun MainScaffoldContent(
             }
         },
         bottomBar = {
-            if (undoActionDescription != null) {
-                Surface(
-                    color = MaterialTheme.colorScheme.inverseSurface,
-                    contentColor = MaterialTheme.colorScheme.inverseOnSurface,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (activeRunningJob != null) {
+                    val frac = if (activeRunningJob.totalBytes > 0L) {
+                        (activeRunningJob.transferredBytes.toFloat() / activeRunningJob.totalBytes.toFloat()).coerceIn(0f, 1f)
+                    } else 0f
+                    val percentText = if (activeRunningJob.totalBytes > 0L) " (${(frac * 100).toInt()}%)" else ""
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                            .clickable(onClick = onOpenTransferQueue)
                     ) {
-                        Text(
-                            text = undoActionDescription,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Row {
-                            TextButton(onClick = onTriggerUndo) {
-                                Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = null, tint = MaterialTheme.colorScheme.inversePrimary)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("UNDO", color = MaterialTheme.colorScheme.inversePrimary, fontWeight = FontWeight.Bold)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.SwapVert,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = activeRunningJob.title,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Text(
+                                    text = "${com.example.core.model.formatByteSize(activeRunningJob.transferredBytes)} / ${com.example.core.model.formatByteSize(activeRunningJob.totalBytes)}$percentText",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
-                            TextButton(onClick = onDismissUndo) {
-                                Text("Dismiss", color = MaterialTheme.colorScheme.inverseOnSurface)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            if (activeRunningJob.totalBytes <= 0L) {
+                                androidx.compose.material3.LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            } else {
+                                androidx.compose.material3.LinearProgressIndicator(
+                                    progress = { frac },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+                    }
+                }
+                if (undoActionDescription != null) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.inverseSurface,
+                        contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = undoActionDescription,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Row {
+                                TextButton(onClick = onTriggerUndo) {
+                                    Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = null, tint = MaterialTheme.colorScheme.inversePrimary)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("UNDO", color = MaterialTheme.colorScheme.inversePrimary, fontWeight = FontWeight.Bold)
+                                }
+                                TextButton(onClick = onDismissUndo) {
+                                    Text("Dismiss", color = MaterialTheme.colorScheme.inverseOnSurface)
+                                }
                             }
                         }
                     }

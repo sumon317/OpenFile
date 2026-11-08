@@ -116,21 +116,23 @@ class RemoteFileSystemProvider(
     }
 
     override suspend fun openInputStream(target: FileReference): Result<InputStream> = withContext(Dispatchers.IO) {
-        val tempDir = newTempDir()
-        val temp = File(tempDir, target.displayName)
-        RemoteNetworkClients.downloadRemoteFile(profile, secret, target, temp)
-            .map<InputStream, File> {
-                object : FileInputStream(temp) {
-                    override fun close() {
-                        try {
-                            super.close()
-                        } finally {
-                            tempDir.deleteRecursively()
-                        }
+        runCatching {
+            RemoteNetworkClients.openRemoteInputStream(profile, secret, target.uriOrPath)
+        }.recoverCatching {
+            // Graceful fallback to temp-file download if streaming is unsupported by remote host
+            val tempDir = newTempDir()
+            val temp = File(tempDir, target.displayName)
+            RemoteNetworkClients.downloadRemoteFile(profile, secret, target, temp).getOrThrow()
+            object : FileInputStream(temp) {
+                override fun close() {
+                    try {
+                        super.close()
+                    } finally {
+                        tempDir.deleteRecursively()
                     }
                 }
             }
-            .onFailure { tempDir.deleteRecursively() }
+        }
     }
 
     override suspend fun openOutputStream(
@@ -138,10 +140,15 @@ class RemoteFileSystemProvider(
         fileName: String,
         append: Boolean
     ): Result<Pair<FileReference, OutputStream>> = withContext(Dispatchers.IO) {
+        val targetPath = join(parent.uriOrPath, fileName)
+        val ref = childRef(parent, fileName, isDirectory = false)
         runCatching {
+            val stream = RemoteNetworkClients.openRemoteOutputStream(profile, secret, targetPath)
+            ref to stream
+        }.recoverCatching {
+            // Graceful fallback to temp-file upload if streaming is unsupported
             val tempDir = newTempDir()
             val temp = File(tempDir, fileName)
-            val ref = childRef(parent, fileName, isDirectory = false)
             val stream = object : FileOutputStream(temp) {
                 private var closed = false
                 override fun close() {

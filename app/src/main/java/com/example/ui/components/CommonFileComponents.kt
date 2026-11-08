@@ -1507,17 +1507,22 @@ fun TransferQueueBottomSheet(
                                         }
                                     )
                                 }
-                                LinearProgressIndicator(
-                                    progress = { fraction },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
+                                if (job.status == "RUNNING" && job.totalBytes <= 0L) {
+                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                } else {
+                                    LinearProgressIndicator(
+                                        progress = { fraction },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    val percentText = if (job.totalBytes > 0L) " (${(fraction * 100).toInt()}%)" else ""
                                     Text(
-                                        text = "${formatByteSize(job.transferredBytes)} / ${formatByteSize(job.totalBytes)} (${job.processedFiles}/${job.totalFiles} files)",
+                                        text = "${formatByteSize(job.transferredBytes)} / ${formatByteSize(job.totalBytes)}$percentText • ${job.processedFiles}/${job.totalFiles} files",
                                         style = MaterialTheme.typography.labelSmall
                                     )
                                     if (job.status == "RUNNING" || job.status == "PAUSED") {

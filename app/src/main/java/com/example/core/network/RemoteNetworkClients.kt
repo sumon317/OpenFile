@@ -25,6 +25,8 @@ import org.apache.commons.net.ftp.FTPClient
 import org.apache.commons.net.ftp.FTPReply
 import org.apache.commons.net.ftp.FTPSClient
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.MessageDigest
@@ -110,6 +112,40 @@ object RemoteNetworkClients {
                 else -> throw IllegalArgumentException("Unsupported protocol: ${profile.protocol}")
             }
             localDestinationFile
+        }
+    }
+
+    /**
+     * Opens a direct streaming network [InputStream] for reading bytes from a remote FTP/FTPS/SFTP/SMB file.
+     * Closing the returned stream cleanly finishes pending protocol transactions and closes the connection.
+     */
+    suspend fun openRemoteInputStream(
+        profile: NetworkProfileEntity,
+        decryptedSecret: String,
+        remotePath: String
+    ): InputStream = withContext(Dispatchers.IO) {
+        when (profile.protocol.uppercase()) {
+            "FTP", "FTPS" -> openFtpInputStream(profile, decryptedSecret, remotePath)
+            "SFTP" -> openSftpInputStream(profile, decryptedSecret, remotePath)
+            "SMB" -> openSmbInputStream(profile, decryptedSecret, remotePath)
+            else -> throw IllegalArgumentException("Unsupported protocol: ${profile.protocol}")
+        }
+    }
+
+    /**
+     * Opens a direct streaming network [OutputStream] for writing bytes to a remote FTP/FTPS/SFTP/SMB file.
+     * Closing the returned stream cleanly finishes pending protocol transactions and closes the connection.
+     */
+    suspend fun openRemoteOutputStream(
+        profile: NetworkProfileEntity,
+        decryptedSecret: String,
+        remoteTargetFilePath: String
+    ): OutputStream = withContext(Dispatchers.IO) {
+        when (profile.protocol.uppercase()) {
+            "FTP", "FTPS" -> openFtpOutputStream(profile, decryptedSecret, remoteTargetFilePath)
+            "SFTP" -> openSftpOutputStream(profile, decryptedSecret, remoteTargetFilePath)
+            "SMB" -> openSmbOutputStream(profile, decryptedSecret, remoteTargetFilePath)
+            else -> throw IllegalArgumentException("Unsupported protocol: ${profile.protocol}")
         }
     }
 
@@ -231,11 +267,10 @@ object RemoteNetworkClients {
     // FTP / FTPS Implementation (Apache Commons Net)
     // ---------------------------------------------------------------------------------------------
 
-    private fun <T> withFtpClient(
+    private fun connectFtpClient(
         profile: NetworkProfileEntity,
-        decryptedSecret: String,
-        block: (FTPClient) -> T
-    ): T {
+        decryptedSecret: String
+    ): FTPClient {
         val client: FTPClient = if (profile.protocol.equals("FTPS", ignoreCase = true)) {
             // Port 990 is the IANA implicit-FTPS port; everything else uses explicit AUTH TLS.
             FTPSClient(profile.port == 990)
@@ -266,10 +301,82 @@ object RemoteNetworkClients {
             }
             client.setFileType(FTP.BINARY_FILE_TYPE)
             client.bufferSize = 256 * 1024
+            return client
+        } catch (e: Exception) {
+            runCatching { if (client.isConnected) client.disconnect() }
+            throw e
+        }
+    }
+
+    private fun <T> withFtpClient(
+        profile: NetworkProfileEntity,
+        decryptedSecret: String,
+        block: (FTPClient) -> T
+    ): T {
+        val client = connectFtpClient(profile, decryptedSecret)
+        try {
             return block(client)
         } finally {
             runCatching { if (client.isConnected) client.logout() }
             runCatching { if (client.isConnected) client.disconnect() }
+        }
+    }
+
+    private fun openFtpInputStream(
+        profile: NetworkProfileEntity,
+        decryptedSecret: String,
+        remotePath: String
+    ): InputStream {
+        val client = connectFtpClient(profile, decryptedSecret)
+        try {
+            val raw = client.retrieveFileStream(remotePath)
+                ?: throw IllegalStateException("FTP cannot retrieve '$remotePath': ${client.replyString}")
+            return object : java.io.FilterInputStream(raw) {
+                private var closed = false
+                override fun close() {
+                    if (closed) return
+                    closed = true
+                    try {
+                        super.close()
+                        runCatching { client.completePendingCommand() }
+                    } finally {
+                        runCatching { if (client.isConnected) client.logout() }
+                        runCatching { if (client.isConnected) client.disconnect() }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            runCatching { if (client.isConnected) client.disconnect() }
+            throw e
+        }
+    }
+
+    private fun openFtpOutputStream(
+        profile: NetworkProfileEntity,
+        decryptedSecret: String,
+        remotePath: String
+    ): OutputStream {
+        val client = connectFtpClient(profile, decryptedSecret)
+        try {
+            val raw = client.storeFileStream(remotePath)
+                ?: throw IllegalStateException("FTP cannot store '$remotePath': ${client.replyString}")
+            return object : java.io.FilterOutputStream(raw) {
+                private var closed = false
+                override fun close() {
+                    if (closed) return
+                    closed = true
+                    try {
+                        super.close()
+                        runCatching { client.completePendingCommand() }
+                    } finally {
+                        runCatching { if (client.isConnected) client.logout() }
+                        runCatching { if (client.isConnected) client.disconnect() }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            runCatching { if (client.isConnected) client.disconnect() }
+            throw e
         }
     }
 
@@ -335,11 +442,10 @@ object RemoteNetworkClients {
     // SFTP Implementation (JSch with strict SHA-256 Host-Key Fingerprint Verification)
     // ---------------------------------------------------------------------------------------------
 
-    private fun <T> withSftpChannel(
+    private fun connectSftpChannel(
         profile: NetworkProfileEntity,
-        decryptedSecret: String,
-        block: (ChannelSftp) -> T
-    ): T {
+        decryptedSecret: String
+    ): Pair<com.jcraft.jsch.Session, ChannelSftp> {
         val jsch = JSch()
         // If decryptedSecret looks like an OpenSSH/PEM private key, load as identity
         val isPrivateKey = decryptedSecret.contains("-----BEGIN ")
@@ -399,11 +505,76 @@ object RemoteNetworkClients {
         session.connect(12_000)
         val channel = session.openChannel("sftp") as ChannelSftp
         channel.connect(12_000)
+        return session to channel
+    }
+
+    private fun <T> withSftpChannel(
+        profile: NetworkProfileEntity,
+        decryptedSecret: String,
+        block: (ChannelSftp) -> T
+    ): T {
+        val (session, channel) = connectSftpChannel(profile, decryptedSecret)
         try {
             return block(channel)
         } finally {
             runCatching { channel.disconnect() }
             runCatching { session.disconnect() }
+        }
+    }
+
+    private fun openSftpInputStream(
+        profile: NetworkProfileEntity,
+        decryptedSecret: String,
+        remotePath: String
+    ): InputStream {
+        val (session, channel) = connectSftpChannel(profile, decryptedSecret)
+        try {
+            val raw = channel.get(remotePath)
+            return object : java.io.FilterInputStream(raw) {
+                private var closed = false
+                override fun close() {
+                    if (closed) return
+                    closed = true
+                    try {
+                        super.close()
+                    } finally {
+                        runCatching { channel.disconnect() }
+                        runCatching { session.disconnect() }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            runCatching { channel.disconnect() }
+            runCatching { session.disconnect() }
+            throw e
+        }
+    }
+
+    private fun openSftpOutputStream(
+        profile: NetworkProfileEntity,
+        decryptedSecret: String,
+        remotePath: String
+    ): OutputStream {
+        val (session, channel) = connectSftpChannel(profile, decryptedSecret)
+        try {
+            val raw = channel.put(remotePath)
+            return object : java.io.FilterOutputStream(raw) {
+                private var closed = false
+                override fun close() {
+                    if (closed) return
+                    closed = true
+                    try {
+                        super.close()
+                    } finally {
+                        runCatching { channel.disconnect() }
+                        runCatching { session.disconnect() }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            runCatching { channel.disconnect() }
+            runCatching { session.disconnect() }
+            throw e
         }
     }
 
@@ -469,11 +640,24 @@ object RemoteNetworkClients {
     // SMB2 / SMB3 Implementation (SMBJ)
     // ---------------------------------------------------------------------------------------------
 
-    private fun <T> withSmbDiskShare(
+    private class SmbResourceHolder(
+        val client: SMBClient,
+        val connection: com.hierynomus.smbj.connection.Connection,
+        val session: com.hierynomus.smbj.session.Session,
+        val share: DiskShare
+    ) : java.io.Closeable {
+        override fun close() {
+            runCatching { share.close() }
+            runCatching { session.close() }
+            runCatching { connection.close() }
+            runCatching { client.close() }
+        }
+    }
+
+    private fun connectSmbShare(
         profile: NetworkProfileEntity,
-        decryptedSecret: String,
-        block: (DiskShare) -> T
-    ): T {
+        decryptedSecret: String
+    ): SmbResourceHolder {
         val shareName = profile.shareName.ifBlank {
             profile.remoteInitialPath.trim('/').substringBefore('/').ifBlank { "Public" }
         }
@@ -494,15 +678,95 @@ object RemoteNetworkClients {
             val session = connection.authenticate(authContext)
             val share = session.connectShare(shareName) as? DiskShare
                 ?: throw IllegalStateException("SMB share '$shareName' is not a DiskShare.")
-            try {
-                return block(share)
-            } finally {
-                runCatching { share.close() }
-                runCatching { session.close() }
-                runCatching { connection.close() }
-            }
-        } finally {
+            return SmbResourceHolder(client, connection, session, share)
+        } catch (e: Exception) {
             runCatching { client.close() }
+            throw e
+        }
+    }
+
+    private fun <T> withSmbDiskShare(
+        profile: NetworkProfileEntity,
+        decryptedSecret: String,
+        block: (DiskShare) -> T
+    ): T {
+        val holder = connectSmbShare(profile, decryptedSecret)
+        try {
+            return block(holder.share)
+        } finally {
+            holder.close()
+        }
+    }
+
+    private fun openSmbInputStream(
+        profile: NetworkProfileEntity,
+        decryptedSecret: String,
+        remotePath: String
+    ): InputStream {
+        val holder = connectSmbShare(profile, decryptedSecret)
+        try {
+            val smbPath = remotePath.trim('/').replace('/', '\\')
+            val file = holder.share.openFile(
+                smbPath,
+                EnumSet.of(AccessMask.GENERIC_READ),
+                null,
+                SMB2ShareAccess.ALL,
+                SMB2CreateDisposition.FILE_OPEN,
+                null
+            )
+            val raw = file.inputStream
+            return object : java.io.FilterInputStream(raw) {
+                private var closed = false
+                override fun close() {
+                    if (closed) return
+                    closed = true
+                    try {
+                        super.close()
+                        runCatching { file.close() }
+                    } finally {
+                        holder.close()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            holder.close()
+            throw e
+        }
+    }
+
+    private fun openSmbOutputStream(
+        profile: NetworkProfileEntity,
+        decryptedSecret: String,
+        remotePath: String
+    ): OutputStream {
+        val holder = connectSmbShare(profile, decryptedSecret)
+        try {
+            val smbPath = remotePath.trim('/').replace('/', '\\')
+            val file = holder.share.openFile(
+                smbPath,
+                EnumSet.of(AccessMask.GENERIC_WRITE),
+                null,
+                SMB2ShareAccess.ALL,
+                SMB2CreateDisposition.FILE_OVERWRITE_IF,
+                null
+            )
+            val raw = file.outputStream
+            return object : java.io.FilterOutputStream(raw) {
+                private var closed = false
+                override fun close() {
+                    if (closed) return
+                    closed = true
+                    try {
+                        super.close()
+                        runCatching { file.close() }
+                    } finally {
+                        holder.close()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            holder.close()
+            throw e
         }
     }
 

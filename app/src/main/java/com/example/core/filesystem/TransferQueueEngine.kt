@@ -181,9 +181,11 @@ class TransferQueueEngine(
         }
         val isMove = clip.mode == ClipboardMode.CUT
         val jobId = UUID.randomUUID().toString()
-        val totalBytes = clip.items.sumOf { it.sizeBytes.coerceAtLeast(1024L) }
 
         val job = appScope.launch(Dispatchers.IO) {
+            val (calculatedBytes, calculatedFiles) = calculateTotalBytesAndFiles(clip.items)
+            var totalBytes = calculatedBytes
+            var totalFiles = calculatedFiles
             var stickyResolution: ConflictResolution? = defaultConflictPolicy
             var transferredBytes = 0L
             var processedFiles = 0
@@ -199,7 +201,7 @@ class TransferQueueEngine(
                 destUriOrPath = destinationDir.uriOrPath,
                 totalBytes = totalBytes,
                 transferredBytes = 0L,
-                totalFiles = clip.items.size,
+                totalFiles = totalFiles,
                 processedFiles = 0,
                 status = "RUNNING",
                 verifyChecksum = verifyChecksum
@@ -207,6 +209,45 @@ class TransferQueueEngine(
             try {
                 runCatching { dao.upsertTransferJob(initialEntity) }
                 var lastDbUpdateMs = 0L
+
+                val onProgressDelta: suspend (Long) -> Unit = { delta ->
+                    transferredBytes += delta
+                    val now = System.currentTimeMillis()
+                    if (now - lastDbUpdateMs >= 150L) {
+                        lastDbUpdateMs = now
+                        val currentTotal = maxOf(totalBytes, transferredBytes)
+                        dao.upsertTransferJob(
+                            initialEntity.copy(
+                                totalBytes = currentTotal,
+                                transferredBytes = transferredBytes,
+                                totalFiles = maxOf(totalFiles, processedFiles),
+                                processedFiles = processedFiles,
+                                status = "RUNNING",
+                                updatedAt = now
+                            )
+                        )
+                    }
+                }
+
+                val onFileCompleted: suspend () -> Unit = {
+                    processedFiles++
+                    val now = System.currentTimeMillis()
+                    if (now - lastDbUpdateMs >= 150L) {
+                        lastDbUpdateMs = now
+                        val currentTotal = maxOf(totalBytes, transferredBytes)
+                        dao.upsertTransferJob(
+                            initialEntity.copy(
+                                totalBytes = currentTotal,
+                                transferredBytes = transferredBytes,
+                                totalFiles = maxOf(totalFiles, processedFiles),
+                                processedFiles = processedFiles,
+                                status = "RUNNING",
+                                updatedAt = now
+                            )
+                        )
+                    }
+                }
+
                 for (sourceItem in clip.items) {
                     coroutineContext.ensureActive()
                     waitIfPaused(jobId, initialEntity, transferredBytes, processedFiles)
@@ -280,24 +321,31 @@ class TransferQueueEngine(
                         targetName = targetName,
                         isMove = isMove,
                         verifyChecksum = verifyChecksum,
-                        onBytesDelta = { delta ->
-                            transferredBytes += delta
+                        onBytesDelta = onProgressDelta,
+                        onFileCompleted = onFileCompleted,
+                        onDirectoryChildrenDiscovered = { extraBytes, extraFiles ->
+                            totalBytes += extraBytes
+                            totalFiles = if (totalFiles == clip.items.size && clip.items.all { it.isDirectory }) {
+                                extraFiles
+                            } else {
+                                totalFiles + extraFiles
+                            }
                         }
                     )
                     createdDestinations.add(transferredRef)
-                    processedFiles++
                     val now = System.currentTimeMillis()
-                    if (now - lastDbUpdateMs >= 300L || processedFiles == clip.items.size) {
-                        lastDbUpdateMs = now
-                        dao.upsertTransferJob(
-                            initialEntity.copy(
-                                transferredBytes = transferredBytes.coerceAtMost(totalBytes),
-                                processedFiles = processedFiles,
-                                status = "RUNNING",
-                                updatedAt = now
-                            )
+                    lastDbUpdateMs = now
+                    val currentTotal = maxOf(totalBytes, transferredBytes)
+                    dao.upsertTransferJob(
+                        initialEntity.copy(
+                            totalBytes = currentTotal,
+                            transferredBytes = transferredBytes,
+                            totalFiles = maxOf(totalFiles, processedFiles),
+                            processedFiles = processedFiles,
+                            status = "RUNNING",
+                            updatedAt = now
                         )
-                    }
+                    )
                 }
 
                 if (isMove) {
@@ -317,10 +365,13 @@ class TransferQueueEngine(
                     )
                 }
 
+                val finalTotal = maxOf(totalBytes, transferredBytes)
                 dao.upsertTransferJob(
                     initialEntity.copy(
-                        transferredBytes = totalBytes,
-                        processedFiles = clip.items.size,
+                        totalBytes = finalTotal,
+                        transferredBytes = finalTotal,
+                        totalFiles = maxOf(totalFiles, processedFiles),
+                        processedFiles = maxOf(totalFiles, processedFiles),
                         status = "COMPLETED",
                         checksumResult = if (verifyChecksum) "SHA-256 Verified OK" else null,
                         updatedAt = System.currentTimeMillis()
@@ -328,9 +379,12 @@ class TransferQueueEngine(
                 )
                 onComplete(Result.success("${if (isMove) "Moved" else "Copied"} $processedFiles item(s) to ${destinationDir.displayName}"))
             } catch (ce: CancellationException) {
+                val curTotal = maxOf(totalBytes, transferredBytes)
                 dao.upsertTransferJob(
                     initialEntity.copy(
+                        totalBytes = curTotal,
                         transferredBytes = transferredBytes,
+                        totalFiles = maxOf(totalFiles, processedFiles),
                         processedFiles = processedFiles,
                         status = "CANCELLED",
                         errorMessage = "Cancelled by user",
@@ -339,9 +393,12 @@ class TransferQueueEngine(
                 )
                 onComplete(Result.failure(ce))
             } catch (e: Exception) {
+                val curTotal = maxOf(totalBytes, transferredBytes)
                 dao.upsertTransferJob(
                     initialEntity.copy(
+                        totalBytes = curTotal,
                         transferredBytes = transferredBytes,
+                        totalFiles = maxOf(totalFiles, processedFiles),
                         processedFiles = processedFiles,
                         status = "FAILED",
                         errorMessage = e.message ?: "Transfer failed",
@@ -392,6 +449,38 @@ class TransferQueueEngine(
         }
     }
 
+    private suspend fun calculateTotalBytesAndFiles(
+        items: List<FileReference>
+    ): Pair<Long, Int> = withContext(Dispatchers.IO) {
+        var bytes = 0L
+        var files = 0
+        for (item in items) {
+            if (!item.isDirectory) {
+                bytes += item.sizeBytes.coerceAtLeast(0L)
+                files++
+            } else if (item.providerType == ProviderType.LOCAL) {
+                // Local directory: fast recursive walk
+                val dir = File(item.uriOrPath)
+                var dirFileCount = 0
+                dir.walkTopDown().forEach { f ->
+                    if (f.isFile) {
+                        bytes += f.length()
+                        files++
+                        dirFileCount++
+                    }
+                }
+                if (dirFileCount == 0) {
+                    files++
+                }
+            } else {
+                // Remote/SAF directory: initial estimate from root item;
+                // children sizes will be added dynamically via onDirectoryChildrenDiscovered as traversed
+                files++
+            }
+        }
+        bytes to files.coerceAtLeast(items.size)
+    }
+
     private suspend fun transferItemRecursive(
         jobId: String,
         jobTemplate: TransferJobEntity,
@@ -400,7 +489,9 @@ class TransferQueueEngine(
         targetName: String,
         isMove: Boolean,
         verifyChecksum: Boolean,
-        onBytesDelta: (Long) -> Unit
+        onBytesDelta: suspend (Long) -> Unit,
+        onFileCompleted: suspend () -> Unit = {},
+        onDirectoryChildrenDiscovered: (Long, Int) -> Unit = { _, _ -> }
     ): FileReference {
         coroutineContext.ensureActive()
         val srcProvider = providerFor(source)
@@ -436,24 +527,39 @@ class TransferQueueEngine(
             }
             if (srcFile.renameTo(dstFile)) {
                 onBytesDelta(source.sizeBytes.coerceAtLeast(1024L))
+                onFileCompleted()
                 return localProvider.toFileReference(dstFile)
             }
         }
 
         if (source.isDirectory) {
             val children = srcProvider.listChildren(source, showHidden = true).getOrDefault(emptyList())
+            if (source.providerType != ProviderType.LOCAL) {
+                val newlyDiscoveredFiles = children.filter { !it.isDirectory }
+                val extraBytes = newlyDiscoveredFiles.sumOf { it.sizeBytes.coerceAtLeast(0L) }
+                val extraFiles = newlyDiscoveredFiles.size
+                if (extraBytes > 0L || extraFiles > 0) {
+                    onDirectoryChildrenDiscovered(extraBytes, extraFiles)
+                }
+            }
             val createdDir = dstProvider.createDirectory(destinationParent, targetName).getOrThrow()
-            for (child in children) {
-                transferItemRecursive(
-                    jobId = jobId,
-                    jobTemplate = jobTemplate,
-                    source = child,
-                    destinationParent = createdDir,
-                    targetName = child.displayName,
-                    isMove = isMove,
-                    verifyChecksum = verifyChecksum,
-                    onBytesDelta = onBytesDelta
-                )
+            if (children.isEmpty()) {
+                onFileCompleted()
+            } else {
+                for (child in children) {
+                    transferItemRecursive(
+                        jobId = jobId,
+                        jobTemplate = jobTemplate,
+                        source = child,
+                        destinationParent = createdDir,
+                        targetName = child.displayName,
+                        isMove = isMove,
+                        verifyChecksum = verifyChecksum,
+                        onBytesDelta = onBytesDelta,
+                        onFileCompleted = onFileCompleted,
+                        onDirectoryChildrenDiscovered = onDirectoryChildrenDiscovered
+                    )
+                }
             }
             if (isMove) {
                 srcProvider.delete(source)
@@ -502,6 +608,8 @@ class TransferQueueEngine(
                     // Only delete source after verified 100% completion
                     srcProvider.delete(source).getOrThrow()
                 }
+
+                onFileCompleted()
 
                 return if (finalDest.providerType == ProviderType.LOCAL) {
                     localProvider.toFileReference(File(finalDest.uriOrPath))
