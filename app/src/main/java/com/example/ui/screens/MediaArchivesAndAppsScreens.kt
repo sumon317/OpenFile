@@ -518,7 +518,7 @@ fun StorageAnalysisScreen(
                         ) {
                             Icon(Icons.Filled.SelectAll, contentDescription = "Select all", modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(if (selectedTab == 3) "Select Redundant" else "Select All")
+                            Text(if (selectedTab == 3) "Select All Copies" else "Select All")
                         }
                     }
                 }
@@ -641,6 +641,10 @@ fun StorageAnalysisScreen(
                     onItemLongClick = { fileRef -> toggleSelect(fileRef) },
                     onSelectRedundantInGroup = { groupFiles ->
                         selectedUris = selectedUris + groupFiles.drop(1).map { it.uriOrPath }
+                    },
+                    onSelectAllCopies = {
+                        val allCopies = filteredDuplicateGroups.flatMap { grp -> grp.files.drop(1).map { it.uriOrPath } }.toSet()
+                        selectedUris = selectedUris + allCopies
                     },
                     onRename = { renameTarget = it },
                     onCopy = { fileRef -> onCopyItems(listOf(fileRef), ClipboardMode.COPY) },
@@ -1336,6 +1340,7 @@ private fun DuplicateFilesTab(
     onItemClick: (FileReference) -> Unit,
     onItemLongClick: (FileReference) -> Unit,
     onSelectRedundantInGroup: (List<FileReference>) -> Unit,
+    onSelectAllCopies: () -> Unit,
     onRename: (FileReference) -> Unit,
     onCopy: (FileReference) -> Unit,
     onCut: (FileReference) -> Unit,
@@ -1355,6 +1360,18 @@ private fun DuplicateFilesTab(
         }
         return
     }
+
+    val totalCopiesCount = remember(groups) {
+        groups.sumOf { (it.files.size - 1).coerceAtLeast(0) }
+    }
+    val totalReclaimableBytes = remember(groups) {
+        groups.sumOf { it.reclaimableBytes }
+    }
+    val allCopiesUris = remember(groups) {
+        groups.flatMap { grp -> grp.files.drop(1).map { it.uriOrPath } }.toSet()
+    }
+    val allCopiesSelected = allCopiesUris.isNotEmpty() && allCopiesUris.all { it in selectedUris }
+
     LazyColumn(
         contentPadding = PaddingValues(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -1362,6 +1379,55 @@ private fun DuplicateFilesTab(
             .fillMaxSize()
             .testTag("analyzer_duplicates_list")
     ) {
+        if (totalCopiesCount > 0) {
+            item(key = "duplicate_summary_action_header") {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "$totalCopiesCount redundant copies found",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                text = "Can reclaim up to ${formatByteSize(totalReclaimableBytes)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = onSelectAllCopies,
+                            colors = if (allCopiesSelected) {
+                                ButtonDefaults.filledTonalButtonColors()
+                            } else {
+                                ButtonDefaults.buttonColors()
+                            },
+                            modifier = Modifier.testTag("analyzer_select_all_copies_button")
+                        ) {
+                            Icon(
+                                imageVector = if (allCopiesSelected) Icons.Filled.Check else Icons.Filled.SelectAll,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(if (allCopiesSelected) "All Copies Selected" else "Select All Copies")
+                        }
+                    }
+                }
+            }
+        }
         items(
             items = groups,
             key = { it.sha256Hash },
