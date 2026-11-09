@@ -54,7 +54,7 @@ data class FileReference(
     val lastModifiedEpochMs: Long = 0L,
     val mimeType: String = if (isDirectory) "inode/directory" else "application/octet-stream",
     val extension: String = displayName.substringAfterLast('.', "").lowercase(),
-    val isHidden: Boolean = displayName.startsWith("."),
+    val isHidden: Boolean = displayName.startsWith(".") || isPathInsideHiddenDirectory(uriOrPath) || isPathInsideHiddenDirectory(parentUriOrPath),
     val capabilities: Set<ProviderCapability> = defaultCapabilitiesFor(providerType, isDirectory),
     val metadata: Map<String, String> = emptyMap()
 ) {
@@ -343,5 +343,22 @@ fun formatByteSize(bytes: Long): String {
         "$whole ${BYTE_UNITS[unitIndex]}"
     } else {
         "$whole.$frac ${BYTE_UNITS[unitIndex]}"
+    }
+}
+
+/**
+ * Determines whether any directory segment in the given path or URI starts with a '.' (hidden folder),
+ * such as `.openfile_trash`, `.thumbnails`, or `.hidden_folder`.
+ */
+fun isPathInsideHiddenDirectory(path: String?): Boolean {
+    if (path.isNullOrBlank()) return false
+    val clean = if (path.startsWith("file://")) {
+        path.substring(7)
+    } else {
+        runCatching { java.net.URLDecoder.decode(path, "UTF-8") }.getOrDefault(path)
+    }
+    val parent = if (clean.contains('/')) clean.substringBeforeLast('/') else return false
+    return parent.split('/', ':').any { segment ->
+        segment.startsWith('.') && segment != "." && segment != ".."
     }
 }

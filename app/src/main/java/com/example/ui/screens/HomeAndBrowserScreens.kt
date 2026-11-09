@@ -107,10 +107,15 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.core.archive.ArchiveCreationFormat
+import com.example.core.archive.ArchiveEngine
 import com.example.core.archive.ArchiveEntryItem
 import com.example.core.database.BookmarkEntity
 import com.example.core.database.NetworkProfileEntity
@@ -127,6 +132,7 @@ import com.example.core.model.SortOrder
 import com.example.core.model.StorageVolumeInfo
 import com.example.core.model.ViewMode
 import com.example.core.model.formatByteSize
+import com.example.core.model.isPathInsideHiddenDirectory
 import com.example.core.network.FtpServerRuntimeState
 import com.example.core.update.AppUpdateUiState
 import com.example.ui.BrowserUiState
@@ -181,8 +187,12 @@ fun HomeScreen(
     onOpenAccessFromPc: () -> Unit = { onNavigateDestination(OpenFileDestination.NETWORK) },
     onOpenRemoteConnections: () -> Unit = { onNavigateDestination(OpenFileDestination.NETWORK) },
     appUpdateState: AppUpdateUiState? = null,
-    onOpenUpdateDialog: () -> Unit = {}
+    onOpenUpdateDialog: () -> Unit = {},
+    showHiddenFiles: Boolean = false
 ) {
+    val displayRecentFiles = remember(recentFiles, showHiddenFiles) {
+        if (showHiddenFiles) recentFiles else recentFiles.filter { !it.displayName.startsWith(".") && !isPathInsideHiddenDirectory(it.uriOrPath) }
+    }
     val gridTiles = remember(categoryCounts, remoteProfilesCount, ftpState.isRunning) {
         fun countLabel(cat: FileCategory, fallback: String): String {
             val c = categoryCounts[cat]
@@ -747,7 +757,7 @@ fun HomeScreen(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold
                 )
-                if (recentFiles.isNotEmpty()) {
+                if (displayRecentFiles.isNotEmpty()) {
                     TextButton(onClick = { onNavigateDestination(OpenFileDestination.RECENT_FILES) }) {
                         Text("More")
                     }
@@ -755,7 +765,7 @@ fun HomeScreen(
             }
         }
 
-        if (recentFiles.isEmpty()) {
+        if (displayRecentFiles.isEmpty()) {
             item(key = "recent_files_empty", contentType = "empty_hint") {
                 Text(
                     text = "Files you open or inspect will appear here for one-tap access.",
@@ -765,7 +775,7 @@ fun HomeScreen(
             }
         } else {
             items(
-                items = recentFiles.take(8),
+                items = displayRecentFiles.take(8),
                 key = { it.uriOrPath },
                 contentType = { "recent_file" }
             ) { recent ->
@@ -2158,6 +2168,47 @@ fun getArchiveFileIcon(fileName: String): ImageVector {
     }
 }
 
+@Composable
+fun ArchiveEntryThumbnailBadge(
+    archiveRef: FileReference,
+    entryPath: String,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val thumbFile by produceState<java.io.File?>(initialValue = null, key1 = archiveRef.uriOrPath, key2 = entryPath) {
+        value = withContext(Dispatchers.IO) {
+            val file = java.io.File(archiveRef.uriOrPath)
+            if (file.exists() && file.canRead()) {
+                ArchiveEngine.getOrExtractEntryThumbnail(
+                    archiveFile = file,
+                    entryPath = entryPath,
+                    cacheDir = context.cacheDir
+                )
+            } else null
+        }
+    }
+
+    val thumb = thumbFile
+    if (thumb != null && thumb.exists()) {
+        AsyncImage(
+            model = ImageRequest.Builder(context)
+                .data(thumb)
+                .crossfade(true)
+                .build(),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = modifier.clip(RoundedCornerShape(6.dp))
+        )
+    } else {
+        Icon(
+            imageVector = Icons.Filled.Image,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = modifier
+        )
+    }
+}
+
 /**
  * Native Zip & Archive Viewer.
  * Allows instant inspection, breadcrumb navigation, search, and on-the-fly previewing
@@ -2510,23 +2561,33 @@ fun NativeZipViewer(
                             modifier = Modifier.weight(1f),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            val icon = when {
-                                isSuspicious -> Icons.Filled.Warning
-                                item.isDirectory -> Icons.Filled.Folder
-                                else -> getArchiveFileIcon(item.displayName)
-                            }
-                            val iconTint = when {
-                                isSuspicious -> MaterialTheme.colorScheme.error
-                                item.isDirectory -> FolderAmber
-                                else -> MaterialTheme.colorScheme.primary
-                            }
+                            val ext = item.displayName.substringAfterLast('.', "").lowercase()
+                            val isImageEntry = !item.isDirectory && !isSuspicious && ext in setOf("jpg", "jpeg", "png", "webp", "bmp", "gif")
+                            if (isImageEntry) {
+                                ArchiveEntryThumbnailBadge(
+                                    archiveRef = archiveRef,
+                                    entryPath = item.entryPath,
+                                    modifier = Modifier.size(32.dp)
+                                )
+                            } else {
+                                val icon = when {
+                                    isSuspicious -> Icons.Filled.Warning
+                                    item.isDirectory -> Icons.Filled.Folder
+                                    else -> getArchiveFileIcon(item.displayName)
+                                }
+                                val iconTint = when {
+                                    isSuspicious -> MaterialTheme.colorScheme.error
+                                    item.isDirectory -> FolderAmber
+                                    else -> MaterialTheme.colorScheme.primary
+                                }
 
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = null,
-                                tint = iconTint,
-                                modifier = Modifier.size(28.dp)
-                            )
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = null,
+                                    tint = iconTint,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
                             Spacer(modifier = Modifier.width(12.dp))
                             Column {
                                 Text(

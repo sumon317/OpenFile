@@ -833,7 +833,8 @@ private fun DestinationRouter(
                 onOpenAccessFromPc = { viewModel.openNetworkTab(0) },
                 onOpenRemoteConnections = { viewModel.openNetworkTab(1) },
                 appUpdateState = appUpdateState,
-                onOpenUpdateDialog = { viewModel.openAppUpdateDialog() }
+                onOpenUpdateDialog = { viewModel.openAppUpdateDialog() },
+                showHiddenFiles = settings.showHiddenFiles
             )
         }
 

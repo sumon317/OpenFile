@@ -407,6 +407,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
         lastCategoryPrewarmEpochMs = now
         viewModelScope.launch(Dispatchers.IO) {
+            val showHidden = _settings.value.showHiddenFiles
             val thresholdBytes = _settings.value.largeFileThresholdMb * 1024L * 1024L
             _categoryCounts.value = mediaStoreProvider.queryCategoryCounts(thresholdBytes)
             // Pre-warm common categories in the background with cooperative yields so UI scrolling stays silky smooth
@@ -426,7 +427,8 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                     categoryCache[cat] = items
                     categoryCacheAt[cat] = System.currentTimeMillis()
                     if (cat != FileCategory.APPLICATIONS) {
-                        _categoryCounts.value = _categoryCounts.value + (cat to items.size)
+                        val count = if (showHidden) items.size else items.count { !it.isHidden }
+                        _categoryCounts.value = _categoryCounts.value + (cat to count)
                     }
                 }
             }
@@ -754,6 +756,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         val nowMs = System.currentTimeMillis()
         val cachedAt = categoryCacheAt[category] ?: 0L
         val cached = categoryCache[category]?.takeIf { nowMs - cachedAt < 30_000L }
+            ?.let { list ->
+                if (currentSettings.showHiddenFiles) list else list.filter { !it.isHidden }
+            }
         val initialItems = if (cached != null) {
             FileSortAndFilterEngine.sortFiles(cached, sortField, sortOrder)
         } else {
@@ -789,9 +794,10 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             } else {
                 indexedItems
             }
+            val visibleItems = if (currentSettings.showHiddenFiles) combinedItems else combinedItems.filter { !it.isHidden }
             val sorted = withContext(Dispatchers.Default) {
                 FileSortAndFilterEngine.sortFiles(
-                    combinedItems,
+                    visibleItems,
                     sortField,
                     sortOrder
                 )
@@ -2161,7 +2167,13 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         _settings.value = _settings.value.copy(showHiddenFiles = enabled)
         viewModelScope.launch {
             settingsStore.setShowHiddenFiles(enabled)
-            refreshCurrentDirectory()
+            refreshCategoryCountsAndPrewarm(force = true)
+            val activeCategory = _browserState.value.activeCategoryFilter
+            if (activeCategory != null) {
+                openCategoryOrSpecialFolder(activeCategory)
+            } else {
+                refreshCurrentDirectory()
+            }
         }
     }
 

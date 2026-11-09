@@ -11,6 +11,7 @@ import com.example.core.model.ProviderCapability
 import com.example.core.model.ProviderType
 import com.example.core.model.SortField
 import com.example.core.model.SortOrder
+import com.example.core.model.isPathInsideHiddenDirectory
 import com.example.core.network.FtpServerEngine
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -388,4 +389,58 @@ class ExampleUnitTest {
             tempRoot.deleteRecursively()
         }
     }
+
+    @Test
+    fun `isPathInsideHiddenDirectory accurately detects files inside hidden directory trees`() {
+        assertTrue(isPathInsideHiddenDirectory("/storage/emulated/0/.openfile_trash/photo.jpg"))
+        assertTrue(isPathInsideHiddenDirectory("/storage/emulated/0/.thumbnails/thumb1.png"))
+        assertTrue(isPathInsideHiddenDirectory("/storage/emulated/0/.hidden_folder/sub/doc.pdf"))
+        assertTrue(isPathInsideHiddenDirectory("file:///storage/emulated/0/.secret/notes.txt"))
+        assertTrue(isPathInsideHiddenDirectory("content://com.android.externalstorage.documents/tree/primary%3A.openfile_trash%2Fphoto.jpg"))
+
+        assertFalse(isPathInsideHiddenDirectory("/storage/emulated/0/DCIM/Camera/photo.jpg"))
+        assertFalse(isPathInsideHiddenDirectory("/storage/emulated/0/Download/report.pdf"))
+        assertFalse(isPathInsideHiddenDirectory("/storage/emulated/0/normal.jpg"))
+        assertFalse(isPathInsideHiddenDirectory(null))
+        assertFalse(isPathInsideHiddenDirectory(""))
+    }
+
+    @Test
+    fun `FileReference and filterFiles exclude files inside hidden directories when showHidden is false`() {
+        val normalFile = FileReference(
+            providerType = ProviderType.LOCAL,
+            uriOrPath = "/storage/emulated/0/DCIM/Camera/photo.jpg",
+            displayName = "photo.jpg",
+            parentUriOrPath = "/storage/emulated/0/DCIM/Camera",
+            isDirectory = false
+        )
+        assertFalse(normalFile.isHidden)
+
+        val trashFile = FileReference(
+            providerType = ProviderType.LOCAL,
+            uriOrPath = "/storage/emulated/0/.openfile_trash/deleted_pic.jpg",
+            displayName = "deleted_pic.jpg",
+            parentUriOrPath = "/storage/emulated/0/.openfile_trash",
+            isDirectory = false
+        )
+        assertTrue(trashFile.isHidden)
+
+        val dotFile = FileReference(
+            providerType = ProviderType.LOCAL,
+            uriOrPath = "/storage/emulated/0/Documents/.secret.txt",
+            displayName = ".secret.txt",
+            parentUriOrPath = "/storage/emulated/0/Documents",
+            isDirectory = false
+        )
+        assertTrue(dotFile.isHidden)
+
+        val allFiles = listOf(normalFile, trashFile, dotFile)
+
+        val hiddenExcluded = FileSortAndFilterEngine.filterFiles(allFiles, showHidden = false)
+        assertEquals(listOf("photo.jpg"), hiddenExcluded.map { it.displayName })
+
+        val hiddenIncluded = FileSortAndFilterEngine.filterFiles(allFiles, showHidden = true)
+        assertEquals(3, hiddenIncluded.size)
+    }
 }
+

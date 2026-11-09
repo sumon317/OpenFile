@@ -1,5 +1,7 @@
 package com.example.core.archive
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import com.example.core.model.FileReference
 import com.example.core.model.ProviderType
 import kotlinx.coroutines.Dispatchers
@@ -335,6 +337,111 @@ object ArchiveEngine {
             }
             throw NoSuchElementException("Entry '$entryPath' not found in archive")
         }
+    }
+
+    /**
+     * Extracts a downsampled thumbnail for an image entry in [archiveFile] and caches it in [cacheDir].
+     * For standard ZIP/JAR/APK files, uses [java.util.zip.ZipFile] for random-access extraction
+     * without decompressing unrelated entries.
+     */
+    fun getOrExtractEntryThumbnail(
+        archiveFile: File,
+        entryPath: String,
+        cacheDir: File,
+        maxDim: Int = 180
+    ): File? {
+        if (!archiveFile.exists() || !archiveFile.canRead()) return null
+        val ext = entryPath.substringAfterLast('.', "").lowercase()
+        if (ext !in setOf("jpg", "jpeg", "png", "webp", "bmp", "gif")) return null
+
+        val thumbDir = File(cacheDir, "zip_entry_thumbs").apply { if (!exists()) mkdirs() }
+        val archiveHash = (archiveFile.absolutePath + archiveFile.lastModified()).hashCode().toString(16)
+        val entryHash = entryPath.hashCode().toString(16)
+        val thumbFile = File(thumbDir, "${archiveHash}_${entryHash}.jpg")
+        if (thumbFile.exists() && thumbFile.length() > 0L) {
+            return thumbFile
+        }
+
+        return runCatching {
+            val lower = archiveFile.name.lowercase()
+            val rawBytes: ByteArray = when {
+                lower.endsWith(".zip") || lower.endsWith(".apk") || lower.endsWith(".jar") -> {
+                    java.util.zip.ZipFile(archiveFile).use { zf ->
+                        val entry = zf.getEntry(entryPath) ?: return@runCatching null
+                        if (entry.size > 25L * 1024 * 1024) return@runCatching null
+                        zf.getInputStream(entry).use { it.readBytes() }
+                    }
+                }
+                lower.endsWith(".7z") -> {
+                    SevenZFile.builder().setFile(archiveFile).get().use { sevenZ ->
+                        var entry = sevenZ.nextEntry
+                        var matched: ByteArray? = null
+                        while (entry != null) {
+                            if (entry.name == entryPath && !entry.isDirectory) {
+                                if (entry.size <= 25L * 1024 * 1024) {
+                                    val buffer = java.io.ByteArrayOutputStream()
+                                    val buf = ByteArray(BUFFER_SIZE)
+                                    var read = sevenZ.read(buf)
+                                    while (read > 0) {
+                                        buffer.write(buf, 0, read)
+                                        read = sevenZ.read(buf)
+                                    }
+                                    matched = buffer.toByteArray()
+                                }
+                                break
+                            }
+                            entry = sevenZ.nextEntry
+                        }
+                        matched
+                    } ?: return@runCatching null
+                }
+                else -> {
+                    openArchiveInputStream(archiveFile).use { ais ->
+                        var entry: ArchiveEntry? = ais.nextEntry
+                        var matched: ByteArray? = null
+                        while (entry != null) {
+                            if (entry.name == entryPath && !entry.isDirectory) {
+                                if (entry.size <= 25L * 1024 * 1024) {
+                                    val buffer = java.io.ByteArrayOutputStream()
+                                    val buf = ByteArray(BUFFER_SIZE)
+                                    var read = ais.read(buf)
+                                    while (read > 0) {
+                                        buffer.write(buf, 0, read)
+                                        read = ais.read(buf)
+                                    }
+                                    matched = buffer.toByteArray()
+                                }
+                                break
+                            }
+                            entry = ais.nextEntry
+                        }
+                        matched
+                    } ?: return@runCatching null
+                }
+            }
+
+            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, boundsOpts)
+            if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) return@runCatching null
+
+            val maxActual = maxOf(boundsOpts.outWidth, boundsOpts.outHeight)
+            var sampleSize = 1
+            while (maxActual / (sampleSize * 2) >= maxDim) {
+                sampleSize *= 2
+            }
+            val decodeOpts = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            val bitmap = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOpts)
+                ?: return@runCatching null
+
+            thumbFile.outputStream().use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
+            }
+            bitmap.recycle()
+            thumbFile
+        }.getOrNull()
     }
 
     private suspend fun extractSevenZ(

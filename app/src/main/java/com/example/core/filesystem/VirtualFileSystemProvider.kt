@@ -20,6 +20,7 @@ import com.example.core.model.ProviderType
 import com.example.core.model.SortField
 import com.example.core.model.SortOrder
 import com.example.core.model.StorageVolumeInfo
+import com.example.core.model.isPathInsideHiddenDirectory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -192,7 +193,7 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
                 lastModifiedEpochMs = file.lastModified(),
                 mimeType = mime,
                 extension = ext,
-                isHidden = name.startsWith("."),
+                isHidden = name.startsWith(".") || isPathInsideHiddenDirectory(path) || isPathInsideHiddenDirectory(file.parent),
                 capabilities = FileReference.defaultCapabilitiesFor(ProviderType.LOCAL, isDir),
                 metadata = if (isDir) DefaultDirMetadata else DefaultFileMetadata
             )
@@ -237,7 +238,7 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
             lastModifiedEpochMs = file.lastModified(),
             mimeType = mime,
             extension = ext,
-            isHidden = name.startsWith("."),
+            isHidden = name.startsWith(".") || isPathInsideHiddenDirectory(path) || isPathInsideHiddenDirectory(file.parent),
             capabilities = capabilities,
             metadata = metadata
         )
@@ -291,7 +292,7 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
                     lastModifiedEpochMs = childFile.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis(),
                     mimeType = if (isDir) "inode/directory" else guessMimeType(name.substringAfterLast('.', "")),
                     extension = if (isDir) "" else name.substringAfterLast('.', "").lowercase(),
-                    isHidden = name.startsWith("."),
+                    isHidden = name.startsWith(".") || isPathInsideHiddenDirectory(childFile.absolutePath) || isPathInsideHiddenDirectory(dir.absolutePath),
                     metadata = mapOf("permissions" to if (isDir) "drwxr-xr-x" else "-rw-r--r--", "rootResolved" to "true")
                 )
             }
@@ -345,7 +346,7 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
                     lastModifiedEpochMs = pkgDir.lastModified().takeIf { it > 0L } ?: 0L,
                     mimeType = "inode/directory",
                     extension = "",
-                    isHidden = pkg.startsWith("."),
+                    isHidden = pkg.startsWith(".") || isPathInsideHiddenDirectory(pkgDir.absolutePath),
                     metadata = meta
                 )
             }
@@ -1049,7 +1050,7 @@ class SafDocumentProvider(private val context: Context) : VirtualFileSystemProvi
             lastModifiedEpochMs = doc.lastModified(),
             mimeType = doc.type ?: LocalFileSystemProvider.guessMimeType(ext),
             extension = ext,
-            isHidden = name.startsWith("."),
+            isHidden = name.startsWith(".") || isPathInsideHiddenDirectory(doc.uri.toString()) || isPathInsideHiddenDirectory(parentUri),
             capabilities = caps
         )
     }
@@ -1406,7 +1407,7 @@ class MediaStoreProvider(
                         lastModifiedEpochMs = dateSec * 1000L,
                         mimeType = mime,
                         extension = ext,
-                        isHidden = name.startsWith(".")
+                        isHidden = name.startsWith(".") || isPathInsideHiddenDirectory(rawPath) || isPathInsideHiddenDirectory(parentPath)
                     )
                 } else {
                     val contentUri = ContentUris.withAppendedId(collectionUri, id)
@@ -1419,7 +1420,8 @@ class MediaStoreProvider(
                         sizeBytes = size,
                         lastModifiedEpochMs = dateSec * 1000L,
                         mimeType = mime,
-                        extension = ext
+                        extension = ext,
+                        isHidden = name.startsWith(".") || isPathInsideHiddenDirectory(contentUri.toString())
                     )
                 }
             }

@@ -11,9 +11,11 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.core.app.ApplicationProvider
+import com.example.core.archive.ArchiveEngine
 import com.example.core.database.NetworkProfileEntity
 import com.example.core.database.OpenFileDatabase
 import com.example.core.filesystem.ClipboardMode
+import com.example.core.filesystem.FileSortAndFilterEngine
 import com.example.core.filesystem.LocalFileSystemProvider
 import com.example.core.filesystem.SafDocumentProvider
 import com.example.core.filesystem.TransferQueueEngine
@@ -1192,4 +1194,78 @@ class ExampleRobolectricTest {
             tempDir.deleteRecursively()
         }
     }
+
+    @Test
+    fun `ArchiveEngine getOrExtractEntryThumbnail extracts and caches image thumbnail from zip`() {
+        val tempDir = Files.createTempDirectory("openfile_zip_thumb_test").toFile()
+        try {
+            val cacheDir = File(tempDir, "cache").apply { mkdirs() }
+            val zipFile = File(tempDir, "images.zip")
+
+            val bitmap = android.graphics.Bitmap.createBitmap(100, 100, android.graphics.Bitmap.Config.ARGB_8888)
+            val pngBytes = java.io.ByteArrayOutputStream().use { out ->
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                out.toByteArray()
+            }
+
+            java.util.zip.ZipOutputStream(java.io.FileOutputStream(zipFile)).use { zos ->
+                zos.putNextEntry(java.util.zip.ZipEntry("photos/sample.png"))
+                zos.write(pngBytes)
+                zos.closeEntry()
+                zos.putNextEntry(java.util.zip.ZipEntry("readme.txt"))
+                zos.write("not an image".toByteArray())
+                zos.closeEntry()
+            }
+
+            val thumb = ArchiveEngine.getOrExtractEntryThumbnail(zipFile, "photos/sample.png", cacheDir)
+            assertNotNull(thumb)
+            assertTrue(thumb!!.exists())
+            assertTrue(thumb.length() > 0L)
+
+            val textThumb = ArchiveEngine.getOrExtractEntryThumbnail(zipFile, "readme.txt", cacheDir)
+            assertNull(textThumb)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `Quick access category navigation filters out files in hidden folders unless showHiddenFiles is true`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+        val tempDir = Files.createTempDirectory("openfile_quickaccess_hidden_test").toFile()
+        try {
+            val root = viewModel.localProvider.getPrimaryRootDirectory()
+            val trashDir = File(root, ".openfile_trash").apply { mkdirs() }
+            val hiddenPic = File(trashDir, "trash_photo.jpg").apply { writeText("hidden image content") }
+
+            val normalDir = File(root, "Pictures").apply { mkdirs() }
+            val normalPic = File(normalDir, "normal_photo.jpg").apply { writeText("normal image content") }
+
+            viewModel.setShowHiddenFiles(false)
+            composeTestRule.waitForIdle()
+
+            viewModel.openCategoryOrSpecialFolder(FileCategory.IMAGES)
+            composeTestRule.waitForIdle()
+
+            val stateHidden = viewModel.browserState.value
+            val itemPathsHidden = stateHidden.items.map { it.uriOrPath }
+            assertFalse("Hidden folder file should not be visible when showHiddenFiles is false", itemPathsHidden.any { it.contains(".openfile_trash") })
+
+            val hiddenRef = viewModel.localProvider.toFileReference(hiddenPic)
+            val normalRef = viewModel.localProvider.toFileReference(normalPic)
+            assertTrue("hiddenRef must have isHidden = true", hiddenRef.isHidden)
+            assertFalse("normalRef must have isHidden = false", normalRef.isHidden)
+
+            val filteredVisible = FileSortAndFilterEngine.filterFiles(listOf(hiddenRef, normalRef), showHidden = true)
+            assertEquals(2, filteredVisible.size)
+
+            val filteredHidden = FileSortAndFilterEngine.filterFiles(listOf(hiddenRef, normalRef), showHidden = false)
+            assertEquals(1, filteredHidden.size)
+            assertEquals("normal_photo.jpg", filteredHidden[0].displayName)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
 }
+
