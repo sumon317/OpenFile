@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -1163,6 +1164,18 @@ class ExampleRobolectricTest {
             val extracted = viewModel.getOrExtractArchiveEntry(zipRef, birdEntry)
             assertNotNull(extracted)
             assertTrue(extracted!!.exists())
+
+            // Verify UI displays archive image pager with back/forth navigation
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("archive_image_pager").assertIsDisplayed()
+            composeTestRule.onNodeWithContentDescription("Previous Image").assertIsDisplayed().performClick()
+            composeTestRule.waitForIdle()
+
+            composeTestRule.runOnUiThread {
+                viewModel.closePreviewDialog()
+            }
+            composeTestRule.waitForIdle()
+            assertNull(viewModel.previewState.value)
         } finally {
             tempDir.deleteRecursively()
         }

@@ -9,7 +9,12 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
@@ -1143,8 +1148,12 @@ private fun ImagePagerPreview(
         ) {
             HorizontalPager(
                 state = pagerState,
+                key = { entries[it].entryPath },
                 userScrollEnabled = !isCurrentPageZoomed,
-                modifier = Modifier.fillMaxSize()
+                beyondViewportPageCount = 1,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("archive_image_pager")
             ) { page ->
                 val entry = entries[page]
                 val fileState by produceState<File?>(
@@ -1257,8 +1266,12 @@ private fun ImagePagerPreview(
         ) {
             HorizontalPager(
                 state = pagerState,
+                key = { images[it].uriOrPath },
                 userScrollEnabled = !isCurrentPageZoomed,
-                modifier = Modifier.fillMaxSize()
+                beyondViewportPageCount = 1,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("folder_image_pager")
             ) { page ->
                 val f = images[page]
                 val imgModel = resolveFastThumbnailPath(f)?.let { File(it) } ?: f.uriOrPath
@@ -1387,26 +1400,82 @@ private fun ZoomableImagePreview(
     title: String,
     onZoomChanged: ((Boolean) -> Unit)? = null
 ) {
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offsetX by remember { mutableFloatStateOf(0f) }
-    var offsetY by remember { mutableFloatStateOf(0f) }
+    var scale by remember(imageModel) { mutableFloatStateOf(1f) }
+    var offsetX by remember(imageModel) { mutableFloatStateOf(0f) }
+    var offsetY by remember(imageModel) { mutableFloatStateOf(0f) }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(imageModel) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    val newScale = (scale * zoom).coerceIn(1f, 5f)
-                    scale = newScale
-                    if (newScale > 1f) {
-                        offsetX += pan.x
-                        offsetY += pan.y
-                        onZoomChanged?.invoke(true)
-                    } else {
-                        offsetX = 0f
-                        offsetY = 0f
-                        onZoomChanged?.invoke(false)
+                detectTapGestures(
+                    onDoubleTap = {
+                        if (scale > 1.05f) {
+                            scale = 1f
+                            offsetX = 0f
+                            offsetY = 0f
+                            onZoomChanged?.invoke(false)
+                        } else {
+                            scale = 2.5f
+                            onZoomChanged?.invoke(true)
+                        }
                     }
+                )
+            }
+            .pointerInput(imageModel) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event = awaitPointerEvent()
+                        val pointerCount = event.changes.count { it.pressed }
+
+                        if (scale > 1.05f) {
+                            val zoomChange = event.calculateZoom()
+                            val panChange = event.calculatePan()
+                            val newScale = (scale * zoomChange).coerceIn(1f, 5f)
+                            scale = newScale
+                            if (newScale > 1.05f) {
+                                val maxOffsetX = (size.width.toFloat() * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                                val maxOffsetY = (size.height.toFloat() * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                                offsetX = (offsetX + panChange.x).coerceIn(-maxOffsetX, maxOffsetX)
+                                offsetY = (offsetY + panChange.y).coerceIn(-maxOffsetY, maxOffsetY)
+                                onZoomChanged?.invoke(true)
+                            } else {
+                                scale = 1f
+                                offsetX = 0f
+                                offsetY = 0f
+                                onZoomChanged?.invoke(false)
+                            }
+
+                            event.changes.forEach { change ->
+                                if (change.positionChanged()) {
+                                    change.consume()
+                                }
+                            }
+                        } else {
+                            if (pointerCount >= 2) {
+                                val zoomChange = event.calculateZoom()
+                                val panChange = event.calculatePan()
+                                val newScale = (scale * zoomChange).coerceIn(1f, 5f)
+                                if (newScale > 1.05f) {
+                                    scale = newScale
+                                    val maxOffsetX = (size.width.toFloat() * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                                    val maxOffsetY = (size.height.toFloat() * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                                    offsetX = (offsetX + panChange.x).coerceIn(-maxOffsetX, maxOffsetX)
+                                    offsetY = (offsetY + panChange.y).coerceIn(-maxOffsetY, maxOffsetY)
+                                    onZoomChanged?.invoke(true)
+
+                                    event.changes.forEach { change ->
+                                        if (change.positionChanged()) {
+                                            change.consume()
+                                        }
+                                    }
+                                }
+                            }
+                            // Single pointer when not zoomed does NOT consume events,
+                            // allowing HorizontalPager to receive drag and swipe left/right freely!
+                        }
+                    } while (event.changes.any { it.pressed })
                 }
             },
         contentAlignment = Alignment.Center
