@@ -1492,6 +1492,76 @@ class MediaStoreProvider(
 }
 
 /**
+ * Alphanumeric natural order comparator for filenames (e.g. 1, 2, 3 ... 9, 10, 11 instead of 1, 10, 11, 2).
+ * Follows modern file manager conventions (KDE Dolphin, Windows Explorer, GNOME Nautilus).
+ */
+object NaturalOrderComparator : Comparator<String> {
+    override fun compare(s1: String?, s2: String?): Int {
+        if (s1 == null && s2 == null) return 0
+        if (s1 == null) return -1
+        if (s2 == null) return 1
+
+        val len1 = s1.length
+        val len2 = s2.length
+        var idx1 = 0
+        var idx2 = 0
+
+        while (idx1 < len1 && idx2 < len2) {
+            val c1 = s1[idx1]
+            val c2 = s2[idx2]
+
+            if (c1.isDigit() && c2.isDigit()) {
+                val start1 = idx1
+                while (idx1 < len1 && s1[idx1].isDigit()) idx1++
+                val end1 = idx1
+
+                val start2 = idx2
+                while (idx2 < len2 && s2[idx2].isDigit()) idx2++
+                val end2 = idx2
+
+                var nz1 = start1
+                while (nz1 < end1 && s1[nz1] == '0') nz1++
+                var nz2 = start2
+                while (nz2 < end2 && s2[nz2] == '0') nz2++
+
+                val effLen1 = end1 - nz1
+                val effLen2 = end2 - nz2
+
+                if (effLen1 != effLen2) {
+                    return effLen1 - effLen2
+                }
+
+                var p1 = nz1
+                var p2 = nz2
+                while (p1 < end1 && p2 < end2) {
+                    if (s1[p1] != s2[p2]) {
+                        return s1[p1] - s2[p2]
+                    }
+                    p1++
+                    p2++
+                }
+
+                val fullLen1 = end1 - start1
+                val fullLen2 = end2 - start2
+                if (fullLen1 != fullLen2) {
+                    return fullLen1 - fullLen2
+                }
+            } else {
+                val lc1 = c1.lowercaseChar()
+                val lc2 = c2.lowercaseChar()
+                if (lc1 != lc2) {
+                    return lc1.compareTo(lc2)
+                }
+                idx1++
+                idx2++
+            }
+        }
+
+        return len1 - len2
+    }
+}
+
+/**
  * Pure utility for sorting and filtering [FileReference] collections.
  * Directories are always grouped before regular files, matching KDE Dolphin & File Manager + conventions.
  */
@@ -1508,15 +1578,15 @@ object FileSortAndFilterEngine {
                 return@Comparator if (a.isDirectory) -1 else 1
             }
             val rawCompare = when (field) {
-                SortField.NAME -> a.displayName.compareTo(b.displayName, ignoreCase = true)
+                SortField.NAME -> NaturalOrderComparator.compare(a.displayName, b.displayName)
                 SortField.SIZE -> a.sizeBytes.compareTo(b.sizeBytes).let {
-                    if (it == 0) a.displayName.compareTo(b.displayName, ignoreCase = true) else it
+                    if (it == 0) NaturalOrderComparator.compare(a.displayName, b.displayName) else it
                 }
                 SortField.DATE -> a.lastModifiedEpochMs.compareTo(b.lastModifiedEpochMs).let {
-                    if (it == 0) a.displayName.compareTo(b.displayName, ignoreCase = true) else it
+                    if (it == 0) NaturalOrderComparator.compare(a.displayName, b.displayName) else it
                 }
                 SortField.TYPE -> a.extension.compareTo(b.extension, ignoreCase = true).let {
-                    if (it == 0) a.displayName.compareTo(b.displayName, ignoreCase = true) else it
+                    if (it == 0) NaturalOrderComparator.compare(a.displayName, b.displayName) else it
                 }
             }
             if (order == SortOrder.ASCENDING) rawCompare else -rawCompare

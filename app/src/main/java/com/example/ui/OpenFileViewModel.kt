@@ -28,6 +28,7 @@ import com.example.core.filesystem.ClipboardState
 import com.example.core.filesystem.ConflictPromptRequest
 import com.example.core.filesystem.FileChecksums
 import com.example.core.filesystem.FileSortAndFilterEngine
+import com.example.core.filesystem.NaturalOrderComparator
 import com.example.core.filesystem.LocalFileSystemProvider
 import com.example.core.filesystem.MediaStoreProvider
 import com.example.core.filesystem.SafDocumentProvider
@@ -1601,7 +1602,8 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                     val direct = allArchiveImages.filter { !it.entryPath.contains('/') }
                     if (direct.isNotEmpty()) direct else allArchiveImages
                 }
-                val targetImages = if (folderImages.isNotEmpty()) folderImages else allArchiveImages
+                val rawTarget = if (folderImages.isNotEmpty()) folderImages else allArchiveImages
+                val targetImages = rawTarget.sortedWith { a, b -> NaturalOrderComparator.compare(a.displayName, b.displayName) }
                 val idx = targetImages.indexOfFirst { it.entryPath == entry.entryPath }.coerceAtLeast(0)
 
                 _previewState.value = FilePreviewState(

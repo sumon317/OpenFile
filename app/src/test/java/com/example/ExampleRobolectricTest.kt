@@ -1155,7 +1155,7 @@ class ExampleRobolectricTest {
 
             val archiveCtx = previewState.archiveContext!!
             assertEquals(3, archiveCtx.imageEntries.size)
-            assertEquals(1, archiveCtx.initialIndex) // dog.png is 2nd image (index 1)
+            assertEquals(2, archiveCtx.initialIndex) // bird.webp (0), cat.jpg (1), dog.png (2) in natural alphanumeric order
             assertEquals("dog.png", archiveCtx.imageEntries[archiveCtx.initialIndex].displayName)
 
             // Test on-demand adjacent extraction

@@ -124,6 +124,7 @@ import com.example.core.datastore.AppSettingsState
 import com.example.core.filesystem.ClipboardMode
 import com.example.core.filesystem.ClipboardState
 import com.example.core.filesystem.FileSortAndFilterEngine
+import com.example.core.filesystem.NaturalOrderComparator
 import com.example.core.model.FileCategory
 import com.example.core.model.FileReference
 import com.example.core.model.ProviderType
@@ -2067,6 +2068,13 @@ fun resolveArchiveVirtualItems(
                     originalEntry = entry
                 )
             }
+            .sortedWith { a, b ->
+                if (a.isDirectory != b.isDirectory) {
+                    if (a.isDirectory) -1 else 1
+                } else {
+                    NaturalOrderComparator.compare(a.displayName, b.displayName)
+                }
+            }
     }
 
     if (isFlatView) {
@@ -2081,6 +2089,12 @@ fun resolveArchiveVirtualItems(
                 isSuspiciousPath = entry.isSuspiciousPath,
                 originalEntry = entry
             )
+        }.sortedWith { a, b ->
+            if (a.isDirectory != b.isDirectory) {
+                if (a.isDirectory) -1 else 1
+            } else {
+                NaturalOrderComparator.compare(a.entryPath, b.entryPath)
+            }
         }
     }
 
@@ -2146,9 +2160,9 @@ fun resolveArchiveVirtualItems(
             childCount = folderChildrenCount[folderPath] ?: 0,
             originalEntry = explicit
         )
-    }.sortedBy { it.displayName.lowercase() }
+    }.sortedWith { a, b -> NaturalOrderComparator.compare(a.displayName, b.displayName) }
 
-    val sortedFiles = directFiles.sortedBy { it.displayName.lowercase() }
+    val sortedFiles = directFiles.sortedWith { a, b -> NaturalOrderComparator.compare(a.displayName, b.displayName) }
 
     return folderItems + sortedFiles
 }

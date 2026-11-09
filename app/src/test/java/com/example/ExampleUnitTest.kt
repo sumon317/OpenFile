@@ -2,6 +2,7 @@ package com.example
 
 import com.example.core.archive.ArchiveCreationFormat
 import com.example.core.archive.ArchiveEngine
+import com.example.core.archive.ArchiveEntryItem
 import com.example.core.filesystem.ChecksumAndDuplicateEngine
 import com.example.core.filesystem.FileSortAndFilterEngine
 import com.example.core.filesystem.LocalFileSystemProvider
@@ -441,6 +442,54 @@ class ExampleUnitTest {
 
         val hiddenIncluded = FileSortAndFilterEngine.filterFiles(allFiles, showHidden = true)
         assertEquals(3, hiddenIncluded.size)
+    }
+
+    @Test
+    fun `NaturalOrderComparator sorts numeric filenames in natural human order 1 2 3 instead of 1 10 11`() {
+        val files = listOf(
+            "10.jpg",
+            "1.jpg",
+            "20.jpg",
+            "2.jpg",
+            "11.jpg",
+            "3.jpg",
+            "12.jpg",
+            "photo_9.png",
+            "photo_10.png",
+            "photo_1.png"
+        )
+        val sorted = files.sortedWith(com.example.core.filesystem.NaturalOrderComparator)
+        assertEquals(
+            listOf(
+                "1.jpg",
+                "2.jpg",
+                "3.jpg",
+                "10.jpg",
+                "11.jpg",
+                "12.jpg",
+                "20.jpg",
+                "photo_1.png",
+                "photo_9.png",
+                "photo_10.png"
+            ),
+            sorted
+        )
+    }
+
+    @Test
+    fun `resolveArchiveVirtualItems displays archive entries in natural alphanumeric order`() {
+        val entries = listOf(
+            ArchiveEntryItem("pics/10.jpg", "10.jpg", false, 100L, 80L, 1000L, false),
+            ArchiveEntryItem("pics/1.jpg", "1.jpg", false, 100L, 80L, 1000L, false),
+            ArchiveEntryItem("pics/2.jpg", "2.jpg", false, 100L, 80L, 1000L, false),
+            ArchiveEntryItem("pics/3.jpg", "3.jpg", false, 100L, 80L, 1000L, false),
+            ArchiveEntryItem("pics/11.jpg", "11.jpg", false, 100L, 80L, 1000L, false)
+        )
+        val items = com.example.ui.screens.resolveArchiveVirtualItems(entries, subPath = "pics", searchQuery = "", isFlatView = false)
+        assertEquals(
+            listOf("1.jpg", "2.jpg", "3.jpg", "10.jpg", "11.jpg"),
+            items.map { it.displayName }
+        )
     }
 }
 
