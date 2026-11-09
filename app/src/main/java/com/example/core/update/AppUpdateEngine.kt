@@ -238,6 +238,31 @@ class AppUpdateEngine(private val context: Context) {
         context.startActivity(intent)
     }
 
+    /**
+     * Cleans up all downloaded APK update files and temporary partial downloads
+     * across external and cache update folders so the app's cache and storage
+     * stay minimal after an update is installed.
+     */
+    fun cleanDownloadedUpdateApks(): Result<Int> = runCatching {
+        var deletedFiles = 0
+        val candidateRoots = listOfNotNull(
+            context.getExternalFilesDir("updates"),
+            File(context.cacheDir, "updates")
+        )
+        for (root in candidateRoots) {
+            if (root.exists()) {
+                val files = root.walkBottomUp().toList()
+                for (file in files) {
+                    if (file != root) {
+                        if (file.isFile) deletedFiles++
+                        file.delete()
+                    }
+                }
+            }
+        }
+        deletedFiles
+    }
+
     companion object {
         const val GITHUB_OWNER = "sumon317"
         const val GITHUB_REPO = "OpenFile"

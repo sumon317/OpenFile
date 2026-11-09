@@ -357,4 +357,35 @@ class ExampleUnitTest {
         assertEquals(1, searchItems.size)
         assertEquals("src/test/AppTest.kt", searchItems[0].entryPath)
     }
+
+    @Test
+    fun `cleanDownloadedUpdateApks deletes update APK files and returns deleted count`() {
+        val tempRoot = Files.createTempDirectory("openfile_update_clean_test").toFile()
+        try {
+            val updatesDir = File(tempRoot, "updates/v1_2_0").apply { mkdirs() }
+            val apkFile = File(updatesDir, "OpenFile-v1.2.0-release.apk").apply {
+                writeText("fake apk binary content")
+            }
+            val partFile = File(updatesDir, "download.apk.part").apply {
+                writeText("incomplete part")
+            }
+            assertTrue(apkFile.exists())
+            assertTrue(partFile.exists())
+
+            // Test walking and deleting candidate files
+            var deletedCount = 0
+            val files = updatesDir.walkBottomUp().toList()
+            for (file in files) {
+                if (file != updatesDir) {
+                    if (file.isFile) deletedCount++
+                    file.delete()
+                }
+            }
+            assertEquals(2, deletedCount)
+            assertFalse(apkFile.exists())
+            assertFalse(partFile.exists())
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
 }

@@ -343,6 +343,10 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             kotlinx.coroutines.delay(1200L)
             refreshCategoryCountsAndPrewarm()
         }
+        // Clean up any old downloaded update APKs from previous updates so app cache & storage stays minimal
+        viewModelScope.launch(Dispatchers.IO) {
+            appUpdateEngine.cleanDownloadedUpdateApks()
+        }
         // Automatically check GitHub Releases for app updates in the background on real devices
         if (!Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) {
             viewModelScope.launch(Dispatchers.IO) {
@@ -2279,6 +2283,24 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 statusMessage = "Permission granted! Launching package installer..."
             )
             appUpdateEngine.launchPackageInstaller(apkFile)
+            return
+        }
+
+        // If the user returned to the app and the current installed version is now >= the version in the downloaded APK,
+        // the installation succeeded -> delete the cached APK to keep app storage minimal.
+        if (apkFile != null) {
+            val (currentVName, _) = appUpdateEngine.getCurrentVersionInfo()
+            val latestRel = state.latestRelease
+            if (latestRel != null && !AppUpdateEngine.isNewerVersion(latestRel.tagName, currentVName)) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    appUpdateEngine.cleanDownloadedUpdateApks()
+                }
+                _appUpdateState.value = state.copy(
+                    downloadedApkFile = null,
+                    updateAvailable = false,
+                    statusMessage = "OpenFile is up to date (v$currentVName)."
+                )
+            }
         }
     }
 }
