@@ -75,8 +75,12 @@ class TransferQueueEngine(
     private val activeJobs = mutableMapOf<String, Job>()
     private val pausedJobIds = mutableSetOf<String>()
 
-    private val trashRootDir: File by lazy {
-        File(context.filesDir, ".openfile_trash").apply { if (!exists()) mkdirs() }
+    internal fun getTrashDirectoryForPath(path: String?): File {
+        return if (path != null && path.startsWith("/storage/emulated/0")) {
+            File("/storage/emulated/0/.openfile_trash").apply { if (!exists()) mkdirs() }
+        } else {
+            File(context.filesDir, ".openfile_trash").apply { if (!exists()) mkdirs() }
+        }
     }
 
     fun copyToClipboard(items: List<FileReference>, mode: ClipboardMode) {
@@ -643,21 +647,22 @@ class TransferQueueEngine(
                 // Items on secondary storage (SD card, USB OTG) or remote storage bypass Trash and delete directly (instant, no copying)
                 val canTrash = moveToTrash && !isSecondaryStorage && (item.providerType == ProviderType.LOCAL || item.providerType == ProviderType.SAF)
                 if (canTrash) {
-                    val trashFile = File(trashRootDir, "${UUID.randomUUID()}_${item.displayName}")
+                    val trashDir = getTrashDirectoryForPath(item.uriOrPath)
+                    val trashFile = File(trashDir, "${UUID.randomUUID()}_${item.displayName}")
                     val originalParent = item.parentUriOrPath ?: localProvider.getPrimaryRootDirectory().absolutePath
-
-                    // Check free space when copying across volumes/SAF (guard against 0-total virtual StatFs)
-                    val stat = runCatching { StatFs(trashRootDir.absolutePath) }.getOrNull()
-                    val availableBytes = if (stat != null && stat.totalBytes > 0L) stat.availableBytes else Long.MAX_VALUE
-                    if (item.sizeBytes > availableBytes - 10L * 1024 * 1024) {
-                        throw IllegalStateException("Insufficient storage space to move '${item.displayName}' to Trash. Choose permanent delete instead.")
-                    }
 
                     val movedOk = if (item.providerType == ProviderType.LOCAL) {
                         val src = File(item.uriOrPath)
+                        // Fast path: Same filesystem rename (instant O(1) inode pointer move)
                         if (src.renameTo(trashFile)) {
                             true
                         } else {
+                            // Check free space when fallback copy is required across filesystems
+                            val stat = runCatching { StatFs(trashDir.absolutePath) }.getOrNull()
+                            val availableBytes = if (stat != null && stat.totalBytes > 0L) stat.availableBytes else Long.MAX_VALUE
+                            if (item.sizeBytes > availableBytes - 10L * 1024 * 1024) {
+                                throw IllegalStateException("Insufficient storage space to move '${item.displayName}' to Trash. Choose permanent delete instead.")
+                            }
                             src.copyRecursively(trashFile, overwrite = true) && src.deleteRecursively()
                         }
                     } else {
@@ -769,7 +774,8 @@ class TransferQueueEngine(
 
     suspend fun emptyTrash(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            trashRootDir.listFiles()?.forEach { it.deleteRecursively() }
+            File("/storage/emulated/0/.openfile_trash").takeIf { it.exists() }?.listFiles()?.forEach { it.deleteRecursively() }
+            File(context.filesDir, ".openfile_trash").takeIf { it.exists() }?.listFiles()?.forEach { it.deleteRecursively() }
             dao.clearAllTrashItems()
         }
     }
