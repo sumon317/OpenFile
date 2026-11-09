@@ -226,8 +226,8 @@ enum class FileCategory(val title: String, val extensions: Set<String>) {
     DOCUMENTS(
         "Documents",
         setOf(
-            "pdf", "txt", "md", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-            "odt", "ods", "odp", "rtf", "epub", "mobi", "csv", "json", "xml",
+            "pdf", "txt", "md", "markdown", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+            "odt", "ods", "odp", "odf", "cbz", "cbr", "rtf", "epub", "mobi", "csv", "tsv", "json", "xml",
             "html", "htm", "css", "js", "ts", "kt", "kts", "java", "py", "sh",
             "c", "cpp", "h", "hpp", "rs", "go", "rb", "php", "sql", "log",
             "ini", "conf", "cfg", "properties", "yaml", "yml", "toml", "gradle"
@@ -238,7 +238,7 @@ enum class FileCategory(val title: String, val extensions: Set<String>) {
         "Archives",
         setOf(
             "zip", "rar", "tar", "gz", "tgz", "xz", "txz", "7z", "bz2",
-            "tbz2", "zst", "lz4", "iso", "cab"
+            "tbz2", "zst", "lz4", "iso", "cab", "cbz", "cbr"
         )
     ),
     LARGE_FILES("Large Files", emptySet()),

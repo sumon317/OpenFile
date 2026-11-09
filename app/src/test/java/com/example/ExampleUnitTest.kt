@@ -491,5 +491,110 @@ class ExampleUnitTest {
             items.map { it.displayName }
         )
     }
+
+    @Test
+    fun `DocumentReaderEngine parses csv and tsv spreadsheets accurately`() {
+        val tempDir = Files.createTempDirectory("openfile_csv_test").toFile()
+        try {
+            val csvFile = File(tempDir, "data.csv").apply {
+                writeText("ID,Product,Price,Notes\n1,\"Mechanical Keyboard, RGB\",89.99,\"Top seller, prime\"\n2,Mouse,29.50,Wireless\n")
+            }
+            val sheetDoc = com.example.core.document.DocumentReaderEngine.readSpreadsheet(csvFile)
+            assertEquals("data.csv", sheetDoc.title)
+            assertEquals(1, sheetDoc.sheets.size)
+            val sheet = sheetDoc.sheets[0]
+            assertEquals(3, sheet.rows.size)
+            assertEquals(listOf("ID", "Product", "Price", "Notes"), sheet.rows[0])
+            assertEquals(listOf("1", "Mechanical Keyboard, RGB", "89.99", "Top seller, prime"), sheet.rows[1])
+            assertEquals(listOf("2", "Mouse", "29.50", "Wireless"), sheet.rows[2])
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `DocumentReaderEngine reads cbz comic book archive and extracts pages`() {
+        val tempDir = Files.createTempDirectory("openfile_cbz_test").toFile()
+        try {
+            val cbzFile = File(tempDir, "manga.cbz")
+            java.util.zip.ZipOutputStream(java.io.FileOutputStream(cbzFile)).use { zos ->
+                for (page in listOf("page_10.jpg", "page_1.jpg", "page_2.jpg")) {
+                    zos.putNextEntry(java.util.zip.ZipEntry(page))
+                    zos.write(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte()))
+                    zos.closeEntry()
+                }
+                zos.putNextEntry(java.util.zip.ZipEntry("metadata.xml"))
+                zos.write("<xml/>".toByteArray())
+                zos.closeEntry()
+            }
+
+            val cbz = com.example.core.document.DocumentReaderEngine.readCbz(cbzFile)
+            assertEquals(3, cbz.pages.size)
+            // Verify natural order: page_1, page_2, page_10
+            assertEquals(listOf("page_1.jpg", "page_2.jpg", "page_10.jpg"), cbz.pages.map { it.entryName })
+
+            val cacheDir = File(tempDir, "cache").apply { mkdirs() }
+            val extracted = com.example.core.document.DocumentReaderEngine.extractCbzPage(cbzFile, cbz.pages[0], cacheDir)
+            org.junit.Assert.assertNotNull(extracted)
+            assertTrue(extracted!!.exists())
+            assertTrue(extracted.length() > 0L)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `DocumentReaderEngine parses rich markdown text with headers code blocks lists checklists and tables`() {
+        val mdText = """
+            # Project Overview
+            
+            This is a **bold statement** with *italics* and `inline code`.
+            
+            > Essential architecture note
+            
+            - [x] Implement DOCX reader
+            - [ ] Implement PPTX reader
+            
+            - Feature A
+            - Feature B
+            
+            1. Step One
+            2. Step Two
+            
+            ```kotlin
+            fun main() {
+                println("Hello OpenFile")
+            }
+            ```
+            
+            | Feature | Status |
+            |---|---|
+            | PDF | Supported |
+            | CBZ | Supported |
+            
+            ---
+        """.trimIndent()
+
+        val mdDoc = com.example.core.document.DocumentReaderEngine.parseMarkdown(mdText, "test.md")
+        assertEquals("test.md", mdDoc.title)
+
+        val header = mdDoc.nodes.first { it is com.example.core.document.MarkdownNode.Header } as com.example.core.document.MarkdownNode.Header
+        assertEquals(1, header.level)
+        assertEquals("Project Overview", header.text)
+
+        val codeBlock = mdDoc.nodes.first { it is com.example.core.document.MarkdownNode.CodeBlock } as com.example.core.document.MarkdownNode.CodeBlock
+        assertEquals("kotlin", codeBlock.language)
+        assertTrue(codeBlock.code.contains("Hello OpenFile"))
+
+        val checklist = mdDoc.nodes.filterIsInstance<com.example.core.document.MarkdownNode.ChecklistItem>()
+        assertEquals(2, checklist.size)
+        assertTrue(checklist[0].isChecked)
+        assertFalse(checklist[1].isChecked)
+
+        val table = mdDoc.nodes.first { it is com.example.core.document.MarkdownNode.Table } as com.example.core.document.MarkdownNode.Table
+        assertEquals(listOf("Feature", "Status"), table.headers)
+        assertEquals(2, table.rows.size)
+        assertEquals(listOf("PDF", "Supported"), table.rows[0])
+    }
 }
 

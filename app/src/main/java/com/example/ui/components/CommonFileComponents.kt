@@ -985,11 +985,12 @@ fun FilePreviewScreen(
     val file = state.currentFile
     val ext = file.extension.lowercase()
     val isImage = ext in FileCategory.IMAGES.extensions || state.archiveContext != null
+    val isImageOrComic = isImage || ext in setOf("cbz", "cbr")
 
     var activeTitle by remember(file) { mutableStateOf(file.displayName) }
     var activeSubtitle by remember(file) {
         mutableStateOf(
-            if (isImage) {
+            if (isImageOrComic) {
                 file.formattedSize
             } else {
                 "${file.providerType.label} • ${file.mimeType} • ${file.formattedSize}"
@@ -1002,7 +1003,7 @@ fun FilePreviewScreen(
             .fillMaxSize()
             .statusBarsPadding()
             .navigationBarsPadding(),
-        color = if (isImage) Color.Black else MaterialTheme.colorScheme.background
+        color = if (isImageOrComic) Color.Black else MaterialTheme.colorScheme.background
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Full-Window Top App Bar
@@ -1018,7 +1019,7 @@ fun FilePreviewScreen(
                         Text(
                             text = activeSubtitle,
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (isImage) Color.LightGray else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (isImageOrComic) Color.LightGray else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 },
@@ -1027,7 +1028,7 @@ fun FilePreviewScreen(
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
-                            tint = if (isImage) Color.White else MaterialTheme.colorScheme.onSurface
+                            tint = if (isImageOrComic) Color.White else MaterialTheme.colorScheme.onSurface
                         )
                     }
                 },
@@ -1037,24 +1038,24 @@ fun FilePreviewScreen(
                             imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                             contentDescription = null,
                             modifier = Modifier.size(18.dp),
-                            tint = if (isImage) Color.White else MaterialTheme.colorScheme.primary
+                            tint = if (isImageOrComic) Color.White else MaterialTheme.colorScheme.primary
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             "Open With",
-                            color = if (isImage) Color.White else MaterialTheme.colorScheme.primary
+                            color = if (isImageOrComic) Color.White else MaterialTheme.colorScheme.primary
                         )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = if (isImage) Color.Black.copy(alpha = 0.85f) else MaterialTheme.colorScheme.surfaceContainer,
-                    titleContentColor = if (isImage) Color.White else MaterialTheme.colorScheme.onSurface,
-                    navigationIconContentColor = if (isImage) Color.White else MaterialTheme.colorScheme.onSurface,
-                    actionIconContentColor = if (isImage) Color.White else MaterialTheme.colorScheme.primary
+                    containerColor = if (isImageOrComic) Color.Black.copy(alpha = 0.85f) else MaterialTheme.colorScheme.surfaceContainer,
+                    titleContentColor = if (isImageOrComic) Color.White else MaterialTheme.colorScheme.onSurface,
+                    navigationIconContentColor = if (isImageOrComic) Color.White else MaterialTheme.colorScheme.onSurface,
+                    actionIconContentColor = if (isImageOrComic) Color.White else MaterialTheme.colorScheme.primary
                 )
             )
 
-            if (!isImage) {
+            if (!isImageOrComic) {
                 HorizontalDivider()
             }
 
@@ -1062,7 +1063,7 @@ fun FilePreviewScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(if (isImage) 0.dp else 12.dp)
+                    .padding(if (isImage || ext in setOf("cbz", "cbr", "pdf")) 0.dp else 12.dp)
             ) {
                 when {
                     isImage -> {
@@ -1076,7 +1077,22 @@ fun FilePreviewScreen(
                         )
                     }
                     ext == "pdf" -> {
-                        PdfDocumentPreview(file)
+                        PdfDocumentViewer(file)
+                    }
+                    ext in setOf("docx", "doc", "odt", "odf") -> {
+                        DocxDocumentPreview(file)
+                    }
+                    ext in setOf("pptx", "ppt", "odp") -> {
+                        PptxDocumentPreview(file)
+                    }
+                    ext in setOf("xlsx", "xls", "ods", "csv", "tsv") -> {
+                        SpreadsheetPreview(file)
+                    }
+                    ext in setOf("cbz", "cbr") -> {
+                        CbzComicPreview(file)
+                    }
+                    ext in setOf("md", "markdown") -> {
+                        MarkdownDocumentPreview(file = file, onSaveText = onSaveTextContent)
                     }
                     ext in FileCategory.AUDIO.extensions -> {
                         AudioPlayerPreview(file, file.displayName)
@@ -1493,85 +1509,6 @@ private fun ZoomableImagePreview(
                     translationY = offsetY
                 }
         )
-    }
-}
-
-@Composable
-private fun PdfDocumentPreview(file: FileReference) {
-    val context = LocalContext.current
-    var pageCount by remember { mutableIntStateOf(0) }
-    var currentPageIndex by remember { mutableIntStateOf(0) }
-    var pageBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var errorText by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(file, currentPageIndex) {
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val localFile = resolveLocalBackingFile(file)
-                val pfd = if (localFile != null) {
-                    ParcelFileDescriptor.open(localFile, ParcelFileDescriptor.MODE_READ_ONLY)
-                } else {
-                    context.contentResolver.openFileDescriptor(Uri.parse(file.uriOrPath), "r")
-                } ?: throw IllegalStateException("Cannot open file descriptor for PDF")
-                pfd.use { descriptor ->
-                    PdfRenderer(descriptor).use { renderer ->
-                        pageCount = renderer.pageCount
-                        if (renderer.pageCount > 0) {
-                            val idx = currentPageIndex.coerceIn(0, renderer.pageCount - 1)
-                            renderer.openPage(idx).use { page ->
-                                val bmp = Bitmap.createBitmap(
-                                    (page.width * 2).coerceAtMost(2048),
-                                    (page.height * 2).coerceAtMost(2048),
-                                    Bitmap.Config.ARGB_8888
-                                )
-                                bmp.eraseColor(android.graphics.Color.WHITE)
-                                page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                                pageBitmap = bmp
-                            }
-                        }
-                    }
-                }
-            }.onFailure {
-                errorText = it.message ?: "Unable to render PDF"
-            }
-        }
-    }
-
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        if (errorText != null) {
-            Text(text = errorText!!, color = MaterialTheme.colorScheme.error)
-        } else if (pageBitmap != null) {
-            Image(
-                bitmap = pageBitmap!!.asImageBitmap(),
-                contentDescription = "PDF Page ${currentPageIndex + 1}",
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                OutlinedButton(
-                    onClick = { if (currentPageIndex > 0) currentPageIndex-- },
-                    enabled = currentPageIndex > 0
-                ) {
-                    Text("Prev Page")
-                }
-                Text("Page ${currentPageIndex + 1} / $pageCount")
-                OutlinedButton(
-                    onClick = { if (currentPageIndex < pageCount - 1) currentPageIndex++ },
-                    enabled = currentPageIndex < pageCount - 1
-                ) {
-                    Text("Next Page")
-                }
-            }
-        } else {
-            CircularProgressIndicator()
-        }
     }
 }
 

@@ -863,13 +863,15 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             return
         }
 
-        // 3. For text files & code files, open in built-in full-window editor directly (just like File Manager +)
-        val textExtensions = setOf(
-            "txt", "md", "log", "ini", "conf", "kt", "java", "py", "js", "ts", "sh",
-            "yaml", "yml", "json", "xml", "html", "htm", "csv", "c", "cpp", "h",
+        // 3. Built-in readers for docx, ppt/pptx, xlsx/xls, odf/odt/ods/odp, pdf, cbz/cbr, .md, .txt, code & spreadsheets
+        val builtInDocumentExtensions = setOf(
+            "docx", "doc", "pptx", "ppt", "xlsx", "xls", "odt", "ods", "odp", "odf",
+            "pdf", "cbz", "cbr", "md", "markdown",
+            "txt", "log", "ini", "conf", "kt", "java", "py", "js", "ts", "sh",
+            "yaml", "yml", "json", "xml", "html", "htm", "csv", "tsv", "c", "cpp", "h",
             "hpp", "rs", "go", "rb", "php", "sql", "gradle", "properties", "toml"
         )
-        if (item.extension.lowercase() in textExtensions) {
+        if (item.extension.lowercase() in builtInDocumentExtensions) {
             openBuiltInPreview(item)
             return
         }

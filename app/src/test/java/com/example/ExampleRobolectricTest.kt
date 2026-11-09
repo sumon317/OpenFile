@@ -1344,6 +1344,135 @@ class ExampleRobolectricTest {
         }
         assertTrue(viewModel.recentFiles.value.isEmpty())
     }
+
+    @Test
+    fun `clicking docx or xlsx opens built in document reader preview`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+        val tempDir = Files.createTempDirectory("openfile_doc_click_test").toFile()
+        try {
+            val docxFile = File(tempDir, "sample_document.docx").apply {
+                writeText("fake docx content")
+            }
+            val docxRef = viewModel.localProvider.toFileReference(docxFile)
+
+            composeTestRule.runOnUiThread {
+                viewModel.onFileItemClicked(docxRef)
+            }
+            composeTestRule.waitForIdle()
+
+            val previewState = viewModel.previewState.value
+            assertNotNull(previewState)
+            assertEquals("sample_document.docx", previewState!!.currentFile.displayName)
+
+            composeTestRule.runOnUiThread {
+                viewModel.closePreviewDialog()
+            }
+            assertNull(viewModel.previewState.value)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `DocumentReaderEngine reads docx document with paragraphs headings and tables under Robolectric`() {
+        val tempDir = Files.createTempDirectory("openfile_docx_robo_test").toFile()
+        try {
+            val docxFile = File(tempDir, "sample.docx")
+            val docXml = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                    <w:body>
+                        <w:p>
+                            <w:pPr><w:pStyle w:val="Heading1"/></w:pPr>
+                            <w:r><w:t>Project Report</w:t></w:r>
+                        </w:p>
+                        <w:p>
+                            <w:r><w:rPr><w:b/></w:rPr><w:t>Bold intro text </w:t></w:r>
+                            <w:r><w:rPr><w:i/></w:rPr><w:t>and italic text</w:t></w:r>
+                        </w:p>
+                        <w:tbl>
+                            <w:tr>
+                                <w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc>
+                                <w:tc><w:p><w:r><w:t>Score</w:t></w:r></w:p></w:tc>
+                            </w:tr>
+                            <w:tr>
+                                <w:tc><w:p><w:r><w:t>Alice</w:t></w:r></w:p></w:tc>
+                                <w:tc><w:p><w:r><w:t>98</w:t></w:r></w:p></w:tc>
+                            </w:tr>
+                        </w:tbl>
+                    </w:body>
+                </w:document>
+            """.trimIndent()
+
+            java.util.zip.ZipOutputStream(java.io.FileOutputStream(docxFile)).use { zos ->
+                zos.putNextEntry(java.util.zip.ZipEntry("word/document.xml"))
+                zos.write(docXml.toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+            }
+
+            val doc = com.example.core.document.DocumentReaderEngine.readDocx(docxFile)
+            assertEquals("sample.docx", doc.title)
+            assertEquals(3, doc.blocks.size)
+
+            val h1 = doc.blocks[0] as com.example.core.document.DocBlock.Paragraph
+            assertTrue(h1.isHeading)
+            assertEquals(1, h1.headingLevel)
+            assertEquals("Project Report", h1.fullText)
+
+            val p2 = doc.blocks[1] as com.example.core.document.DocBlock.Paragraph
+            assertEquals(2, p2.runs.size)
+            assertTrue(p2.runs[0].isBold)
+            assertTrue(p2.runs[1].isItalic)
+
+            val tbl = doc.blocks[2] as com.example.core.document.DocBlock.Table
+            assertEquals(2, tbl.rows.size)
+            assertEquals(listOf("Name", "Score"), tbl.rows[0])
+            assertEquals(listOf("Alice", "98"), tbl.rows[1])
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `DocumentReaderEngine reads pptx presentation with slides and natural ordering under Robolectric`() {
+        val tempDir = Files.createTempDirectory("openfile_pptx_robo_test").toFile()
+        try {
+            val pptxFile = File(tempDir, "slides.pptx")
+            val slide1Xml = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+                    <p:cSld>
+                        <p:spTree>
+                            <p:sp>
+                                <p:txBody>
+                                    <a:p><a:r><a:t>Agenda Slide</a:t></a:r></a:p>
+                                    <a:p><a:r><a:t>1. Architecture overview</a:t></a:r></a:p>
+                                    <a:p><a:r><a:t>2. Performance results</a:t></a:r></a:p>
+                                </p:txBody>
+                            </p:sp>
+                        </p:spTree>
+                    </p:cSld>
+                </p:sld>
+            """.trimIndent()
+
+            java.util.zip.ZipOutputStream(java.io.FileOutputStream(pptxFile)).use { zos ->
+                zos.putNextEntry(java.util.zip.ZipEntry("ppt/slides/slide1.xml"))
+                zos.write(slide1Xml.toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+            }
+
+            val ppt = com.example.core.document.DocumentReaderEngine.readPptx(pptxFile)
+            assertEquals("slides.pptx", ppt.title)
+            assertEquals(1, ppt.slides.size)
+            val slide1 = ppt.slides[0]
+            assertEquals(1, slide1.slideNumber)
+            assertEquals("Agenda Slide", slide1.title)
+            assertEquals(listOf("1. Architecture overview", "2. Performance results"), slide1.items)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
 }
 
 
