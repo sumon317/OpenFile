@@ -96,6 +96,19 @@ data class SshHostKeyPrompt(
     val isMismatchWarning: Boolean
 )
 
+data class ArchiveImagePreviewContext(
+    val archiveRef: FileReference,
+    val imageEntries: List<ArchiveEntryItem>,
+    val initialIndex: Int
+)
+
+data class FilePreviewState(
+    val currentFile: FileReference,
+    val siblingImages: List<FileReference> = emptyList(),
+    val initialImageIndex: Int = 0,
+    val archiveContext: ArchiveImagePreviewContext? = null
+)
+
 class OpenFileViewModel(application: Application) : AndroidViewModel(application) {
 
     private val context = application.applicationContext
@@ -271,9 +284,35 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     )
     private var searchDebounceJob: Job? = null
 
-    // Preview & Properties modals
+    // Preview & Properties modals / windows
+    private val _previewState = MutableStateFlow<FilePreviewState?>(null)
+    val previewState: StateFlow<FilePreviewState?> = _previewState.asStateFlow()
+
     private val _previewFile = MutableStateFlow<FileReference?>(null)
     val previewFile: StateFlow<FileReference?> = _previewFile.asStateFlow()
+
+    private val _extractedArchiveImageCache = java.util.concurrent.ConcurrentHashMap<String, File>()
+
+    suspend fun getOrExtractArchiveEntry(
+        archiveRef: FileReference,
+        entry: ArchiveEntryItem
+    ): File? = withContext(Dispatchers.IO) {
+        val key = "${archiveRef.uriOrPath}::${entry.entryPath}"
+        val existing = _extractedArchiveImageCache[key]
+        if (existing != null && existing.exists() && existing.length() > 0L) {
+            return@withContext existing
+        }
+        val archiveFile = File(archiveRef.uriOrPath)
+        if (!archiveFile.exists()) return@withContext null
+
+        ArchiveEngine.extractSingleEntryToCache(
+            archiveFile = archiveFile,
+            entryPath = entry.entryPath,
+            cacheDir = context.cacheDir
+        ).getOrNull()?.also {
+            _extractedArchiveImageCache[key] = it
+        }
+    }
 
     private val _propertiesFile = MutableStateFlow<FileReference?>(null)
     val propertiesFile: StateFlow<FileReference?> = _propertiesFile.asStateFlow()
@@ -817,22 +856,53 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             return
         }
 
-        // 3. For Remote Network files (FTP/SFTP/SMB), show built-in preview dialog
-        if (item.providerType != ProviderType.LOCAL && item.providerType != ProviderType.MEDIA_STORE && item.providerType != ProviderType.SAF) {
-            _previewFile.value = item
+        // 3. For text files & code files, open in built-in full-window editor directly (just like File Manager +)
+        val textExtensions = setOf(
+            "txt", "md", "log", "ini", "conf", "kt", "java", "py", "js", "ts", "sh",
+            "yaml", "yml", "json", "xml", "html", "htm", "csv", "c", "cpp", "h",
+            "hpp", "rs", "go", "rb", "php", "sql", "gradle", "properties", "toml"
+        )
+        if (item.extension.lowercase() in textExtensions) {
+            openBuiltInPreview(item)
             return
         }
 
-        // 4. Standard File Manager behavior: launch external / system handler (Video player, PDF viewer, Gallery, Music player, Office app, etc.)
+        // 4. For images, open in built-in image viewer with swipe support (just like File Manager +)
+        if (item.extension.lowercase() in FileCategory.IMAGES.extensions) {
+            openBuiltInPreview(item)
+            return
+        }
+
+        // 5. For Remote Network files (FTP/SFTP/SMB), show built-in preview
+        if (item.providerType != ProviderType.LOCAL && item.providerType != ProviderType.MEDIA_STORE && item.providerType != ProviderType.SAF) {
+            openBuiltInPreview(item)
+            return
+        }
+
+        // 6. Standard File Manager behavior: launch external / system handler (Video player, PDF viewer, Music player, Office app, etc.)
         // Falls back to built-in previewer ONLY if no external app is installed for this file type.
         openWithExternalApp(item, forceChooser = false, fallbackToBuiltInPreview = true)
     }
 
     fun openBuiltInPreview(item: FileReference) {
+        val ext = item.extension.lowercase()
+        if (ext in FileCategory.IMAGES.extensions) {
+            val currentItems = _browserState.value.items
+            val images = currentItems.filter { it.extension.lowercase() in FileCategory.IMAGES.extensions }
+            val idx = images.indexOfFirst { it.uriOrPath == item.uriOrPath }.coerceAtLeast(0)
+            _previewState.value = FilePreviewState(
+                currentFile = item,
+                siblingImages = if (images.isNotEmpty()) images else listOf(item),
+                initialImageIndex = idx
+            )
+        } else {
+            _previewState.value = FilePreviewState(currentFile = item)
+        }
         _previewFile.value = item
     }
 
     fun closePreviewDialog() {
+        _previewState.value = null
         _previewFile.value = null
     }
 
@@ -1497,24 +1567,49 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 return@launch
             }
             _browserState.value = _browserState.value.copy(isLoading = true)
-            ArchiveEngine.extractSingleEntryToCache(
-                archiveFile = archiveFile,
-                entryPath = entry.entryPath,
-                cacheDir = context.cacheDir
-            ).fold(
-                onSuccess = { cachedFile ->
-                    _browserState.value = _browserState.value.copy(isLoading = false)
-                    val ref = localProvider.toFileReference(cachedFile).copy(
-                        displayName = entry.displayName,
-                        sizeBytes = entry.uncompressedSize
-                    )
-                    _previewFile.value = ref
-                },
-                onFailure = { err ->
-                    _browserState.value = _browserState.value.copy(isLoading = false)
-                    showStatus("Cannot view file: ${err.message}")
-                }
+            val extracted = getOrExtractArchiveEntry(archiveRef, entry)
+            _browserState.value = _browserState.value.copy(isLoading = false)
+
+            if (extracted == null) {
+                showStatus("Cannot view file: ${entry.displayName}")
+                return@launch
+            }
+
+            val ref = localProvider.toFileReference(extracted).copy(
+                displayName = entry.displayName,
+                sizeBytes = entry.uncompressedSize
             )
+
+            val ext = entry.displayName.substringAfterLast('.', "").lowercase()
+            if (ext in FileCategory.IMAGES.extensions) {
+                val allArchiveImages = _browserState.value.archiveEntries.filter {
+                    !it.isDirectory && it.displayName.substringAfterLast('.', "").lowercase() in FileCategory.IMAGES.extensions
+                }
+                val currentSub = _browserState.value.archiveSubPath.trim('/')
+                val folderImages = if (currentSub.isNotEmpty()) {
+                    allArchiveImages.filter {
+                        val p = if (it.entryPath.contains('/')) it.entryPath.substringBeforeLast('/') else ""
+                        p == currentSub
+                    }
+                } else {
+                    val direct = allArchiveImages.filter { !it.entryPath.contains('/') }
+                    if (direct.isNotEmpty()) direct else allArchiveImages
+                }
+                val targetImages = if (folderImages.isNotEmpty()) folderImages else allArchiveImages
+                val idx = targetImages.indexOfFirst { it.entryPath == entry.entryPath }.coerceAtLeast(0)
+
+                _previewState.value = FilePreviewState(
+                    currentFile = ref,
+                    archiveContext = ArchiveImagePreviewContext(
+                        archiveRef = archiveRef,
+                        imageEntries = targetImages,
+                        initialIndex = idx
+                    )
+                )
+            } else {
+                _previewState.value = FilePreviewState(currentFile = ref)
+            }
+            _previewFile.value = ref
         }
     }
 

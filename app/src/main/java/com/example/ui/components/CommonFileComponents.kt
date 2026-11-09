@@ -24,19 +24,32 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberCoroutineScope
+import com.example.core.archive.ArchiveEntryItem
+import com.example.ui.FilePreviewState
+import kotlinx.coroutines.launch
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Bookmark
@@ -951,9 +964,130 @@ private fun PropertyKeyValueRow(
 }
 
 /**
- * Built-in File Preview System supporting Text/Code/JSON/Markdown, Pinch-to-Zoom Images,
- * PDF Page Rendering (`PdfRenderer`), and inline Audio playback (`MediaPlayer`).
+ * Full-Window File Preview System (File Manager + style):
+ * Dedicated window views for Text/Code/JSON/Markdown, Pinch-to-Zoom Image Gallery with horizontal
+ * swiping across siblings and archive entries, PDF Page Rendering, and inline Audio/Video players.
  */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FilePreviewScreen(
+    state: FilePreviewState,
+    onDismiss: () -> Unit,
+    onOpenExternal: (FileReference) -> Unit,
+    onSaveTextContent: ((FileReference, String) -> Unit)? = null,
+    onLoadArchiveImage: (suspend (ArchiveEntryItem) -> File?)? = null
+) {
+    val file = state.currentFile
+    val ext = file.extension.lowercase()
+    val isImage = ext in FileCategory.IMAGES.extensions || state.archiveContext != null
+
+    var activeTitle by remember(file) { mutableStateOf(file.displayName) }
+    var activeSubtitle by remember(file) {
+        mutableStateOf(
+            if (isImage) {
+                file.formattedSize
+            } else {
+                "${file.providerType.label} • ${file.mimeType} • ${file.formattedSize}"
+            }
+        )
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding(),
+        color = if (isImage) Color.Black else MaterialTheme.colorScheme.background
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Full-Window Top App Bar
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            text = activeTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = activeSubtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (isImage) Color.LightGray else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = if (isImage) Color.White else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                },
+                actions = {
+                    TextButton(onClick = { onOpenExternal(file) }) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = if (isImage) Color.White else MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            "Open With",
+                            color = if (isImage) Color.White else MaterialTheme.colorScheme.primary
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = if (isImage) Color.Black.copy(alpha = 0.85f) else MaterialTheme.colorScheme.surfaceContainer,
+                    titleContentColor = if (isImage) Color.White else MaterialTheme.colorScheme.onSurface,
+                    navigationIconContentColor = if (isImage) Color.White else MaterialTheme.colorScheme.onSurface,
+                    actionIconContentColor = if (isImage) Color.White else MaterialTheme.colorScheme.primary
+                )
+            )
+
+            if (!isImage) {
+                HorizontalDivider()
+            }
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(if (isImage) 0.dp else 12.dp)
+            ) {
+                when {
+                    isImage -> {
+                        ImagePagerPreview(
+                            state = state,
+                            onLoadArchiveImage = onLoadArchiveImage,
+                            onPageTitleChanged = { title, sub ->
+                                activeTitle = title
+                                activeSubtitle = sub
+                            }
+                        )
+                    }
+                    ext == "pdf" -> {
+                        PdfDocumentPreview(file)
+                    }
+                    ext in FileCategory.AUDIO.extensions -> {
+                        AudioPlayerPreview(file, file.displayName)
+                    }
+                    ext in FileCategory.VIDEOS.extensions || file.mimeType.startsWith("video/") -> {
+                        VideoPreviewPlaceholder(file = file, onOpenExternal = { onOpenExternal(file) })
+                    }
+                    else -> {
+                        TextAndCodePreview(file = file, onSaveTextContent = onSaveTextContent)
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun FilePreviewDialog(
     file: FileReference,
@@ -961,74 +1095,234 @@ fun FilePreviewDialog(
     onOpenExternal: (FileReference) -> Unit,
     onSaveTextContent: ((FileReference, String) -> Unit)? = null
 ) {
-    val ext = file.extension.lowercase()
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
+    FilePreviewScreen(
+        state = FilePreviewState(currentFile = file),
+        onDismiss = onDismiss,
+        onOpenExternal = onOpenExternal,
+        onSaveTextContent = onSaveTextContent
+    )
+}
+
+@Composable
+private fun ImagePagerPreview(
+    state: FilePreviewState,
+    onLoadArchiveImage: (suspend (ArchiveEntryItem) -> File?)? = null,
+    onPageTitleChanged: (title: String, subtitle: String) -> Unit
+) {
+    val coroutineScope = rememberCoroutineScope()
+    var isCurrentPageZoomed by remember { mutableStateOf(false) }
+
+    val archiveContext = state.archiveContext
+    if (archiveContext != null) {
+        val entries = archiveContext.imageEntries
+        val initialIdx = archiveContext.initialIndex.coerceIn(0, (entries.size - 1).coerceAtLeast(0))
+        val pagerState = rememberPagerState(initialPage = initialIdx) { entries.size }
+
+        LaunchedEffect(pagerState.currentPage) {
+            isCurrentPageZoomed = false
+            val cur = pagerState.currentPage
+            if (cur in entries.indices) {
+                val entry = entries[cur]
+                onPageTitleChanged(
+                    entry.displayName,
+                    "${cur + 1} of ${entries.size} • ${formatByteSize(entry.uncompressedSize)}"
+                )
+            }
+            if (cur > 0 && onLoadArchiveImage != null) {
+                onLoadArchiveImage(entries[cur - 1])
+            }
+            if (cur < entries.size - 1 && onLoadArchiveImage != null) {
+                onLoadArchiveImage(entries[cur + 1])
+            }
+        }
+
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp),
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 4.dp
+                .background(Color.Black)
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                // Header
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            HorizontalPager(
+                state = pagerState,
+                userScrollEnabled = !isCurrentPageZoomed,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                val entry = entries[page]
+                val fileState by produceState<File?>(
+                    initialValue = if (page == initialIdx) File(state.currentFile.uriOrPath) else null,
+                    key1 = entry.entryPath
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = file.displayName,
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "${file.providerType.label} • ${file.mimeType} • ${file.formattedSize}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    TextButton(onClick = { onOpenExternal(file) }) {
-                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Open With")
-                    }
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Filled.Close, contentDescription = "Close preview")
+                    if (value == null && onLoadArchiveImage != null) {
+                        value = onLoadArchiveImage(entry)
                     }
                 }
-                HorizontalDivider()
 
-                Box(
+                if (fileState != null) {
+                    ZoomableImagePreview(
+                        imageModel = fileState!!,
+                        title = entry.displayName,
+                        onZoomChanged = { isZoomed ->
+                            if (pagerState.currentPage == page) {
+                                isCurrentPageZoomed = isZoomed
+                            }
+                        }
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
+                }
+            }
+
+            // Left Previous Button
+            if (pagerState.currentPage > 0) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.5f),
                     modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(12.dp)
+                        .align(Alignment.CenterStart)
+                        .padding(start = 12.dp)
+                        .size(44.dp)
                 ) {
-                    when {
-                        ext in FileCategory.IMAGES.extensions -> {
-                            val imgModel = resolveFastThumbnailPath(file)?.let { File(it) } ?: file.uriOrPath
-                            ZoomableImagePreview(imgModel, file.displayName)
+                    IconButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                pagerState.animateScrollToPage(pagerState.currentPage - 1)
+                            }
                         }
-                        ext == "pdf" -> {
-                            PdfDocumentPreview(file)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                            contentDescription = "Previous Image",
+                            tint = Color.White,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
+            }
+
+            // Right Next Button
+            if (pagerState.currentPage < entries.size - 1) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.5f),
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 12.dp)
+                        .size(44.dp)
+                ) {
+                    IconButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                pagerState.animateScrollToPage(pagerState.currentPage + 1)
+                            }
                         }
-                        ext in FileCategory.AUDIO.extensions -> {
-                            AudioPlayerPreview(file, file.displayName)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = "Next Image",
+                            tint = Color.White,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
+            }
+        }
+    } else {
+        val images = if (state.siblingImages.isNotEmpty()) state.siblingImages else listOf(state.currentFile)
+        val initialIdx = state.initialImageIndex.coerceIn(0, (images.size - 1).coerceAtLeast(0))
+        val pagerState = rememberPagerState(initialPage = initialIdx) { images.size }
+
+        LaunchedEffect(pagerState.currentPage) {
+            isCurrentPageZoomed = false
+            val cur = pagerState.currentPage
+            if (cur in images.indices) {
+                val f = images[cur]
+                onPageTitleChanged(
+                    f.displayName,
+                    "${cur + 1} of ${images.size} • ${f.formattedSize}"
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            HorizontalPager(
+                state = pagerState,
+                userScrollEnabled = !isCurrentPageZoomed,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                val f = images[page]
+                val imgModel = resolveFastThumbnailPath(f)?.let { File(it) } ?: f.uriOrPath
+                ZoomableImagePreview(
+                    imageModel = imgModel,
+                    title = f.displayName,
+                    onZoomChanged = { isZoomed ->
+                        if (pagerState.currentPage == page) {
+                            isCurrentPageZoomed = isZoomed
                         }
-                        ext in FileCategory.VIDEOS.extensions || file.mimeType.startsWith("video/") -> {
-                            VideoPreviewPlaceholder(file = file, onOpenExternal = { onOpenExternal(file) })
+                    }
+                )
+            }
+
+            // Left Previous Button
+            if (pagerState.currentPage > 0) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.5f),
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = 12.dp)
+                        .size(44.dp)
+                ) {
+                    IconButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                pagerState.animateScrollToPage(pagerState.currentPage - 1)
+                            }
                         }
-                        else -> {
-                            TextAndCodePreview(file = file, onSaveTextContent = onSaveTextContent)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                            contentDescription = "Previous Image",
+                            tint = Color.White,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
+            }
+
+            // Right Next Button
+            if (pagerState.currentPage < images.size - 1) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.5f),
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 12.dp)
+                        .size(44.dp)
+                ) {
+                    IconButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                pagerState.animateScrollToPage(pagerState.currentPage + 1)
+                            }
                         }
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = "Next Image",
+                            tint = Color.White,
+                            modifier = Modifier.size(28.dp)
+                        )
                     }
                 }
             }
@@ -1088,7 +1382,11 @@ private fun VideoPreviewPlaceholder(
 }
 
 @Composable
-private fun ZoomableImagePreview(imageModel: Any, title: String) {
+private fun ZoomableImagePreview(
+    imageModel: Any,
+    title: String,
+    onZoomChanged: ((Boolean) -> Unit)? = null
+) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
@@ -1096,15 +1394,18 @@ private fun ZoomableImagePreview(imageModel: Any, title: String) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(Unit) {
+            .pointerInput(imageModel) {
                 detectTransformGestures { _, pan, zoom, _ ->
-                    scale = (scale * zoom).coerceIn(1f, 5f)
-                    if (scale > 1f) {
+                    val newScale = (scale * zoom).coerceIn(1f, 5f)
+                    scale = newScale
+                    if (newScale > 1f) {
                         offsetX += pan.x
                         offsetY += pan.y
+                        onZoomChanged?.invoke(true)
                     } else {
                         offsetX = 0f
                         offsetY = 0f
+                        onZoomChanged?.invoke(false)
                     }
                 }
             },
@@ -1113,6 +1414,7 @@ private fun ZoomableImagePreview(imageModel: Any, title: String) {
         AsyncImage(
             model = imageModel,
             contentDescription = title,
+            contentScale = ContentScale.Fit,
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {

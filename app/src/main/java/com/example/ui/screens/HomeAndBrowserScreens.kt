@@ -2216,6 +2216,16 @@ fun NativeZipViewer(
                         modifier = Modifier.weight(1f),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        IconButton(
+                            onClick = onClose,
+                            modifier = Modifier.testTag("zip_viewer_close_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back to files",
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
                         Surface(
                             shape = RoundedCornerShape(10.dp),
                             color = MaterialTheme.colorScheme.primaryContainer,
@@ -2255,22 +2265,13 @@ fun NativeZipViewer(
                         }
                     }
                     Spacer(modifier = Modifier.width(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(
-                            onClick = onClose,
-                            modifier = Modifier.testTag("zip_viewer_close_button")
-                        ) {
-                            Text("Close")
-                        }
+                    Button(
+                        onClick = { onExtractArchive(archiveRef, null) },
+                        modifier = Modifier.testTag("extract_all_archive_button")
+                    ) {
+                        Icon(Icons.Filled.Unarchive, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Button(
-                            onClick = { onExtractArchive(archiveRef, null) },
-                            modifier = Modifier.testTag("extract_all_archive_button")
-                        ) {
-                            Icon(Icons.Filled.Unarchive, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Extract All")
-                        }
+                        Text("Extract All")
                     }
                 }
 

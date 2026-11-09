@@ -606,7 +606,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `UI CUJ tests theme cycling view mode toggle and directory status footer`() {
+    fun `UI CUJ tests theme cycling view mode toggle and directory status footer`() = runBlocking<Unit> {
         composeTestRule.waitForIdle()
 
         val vm = composeTestRule.activity.viewModel
@@ -614,18 +614,22 @@ class ExampleRobolectricTest {
 
         // Cycle theme modes via TopAppBar button (SYSTEM -> LIGHT -> DARK -> AMOLED -> SYSTEM)
         composeTestRule.onNodeWithTag("top_bar_theme_button").assertIsDisplayed().performClick()
+        delay(50)
         composeTestRule.waitForIdle()
         assertEquals(ThemeMode.LIGHT, vm.settings.value.themeMode)
 
         composeTestRule.onNodeWithTag("top_bar_theme_button").performClick()
+        delay(50)
         composeTestRule.waitForIdle()
         assertEquals(ThemeMode.DARK, vm.settings.value.themeMode)
 
         composeTestRule.onNodeWithTag("top_bar_theme_button").performClick()
+        delay(50)
         composeTestRule.waitForIdle()
         assertEquals(ThemeMode.AMOLED, vm.settings.value.themeMode)
 
         composeTestRule.onNodeWithTag("top_bar_theme_button").performClick()
+        delay(50)
         composeTestRule.waitForIdle()
         assertEquals(ThemeMode.SYSTEM, vm.settings.value.themeMode)
 
@@ -1053,5 +1057,139 @@ class ExampleRobolectricTest {
         }
         assertEquals(SortField.DATE, viewModel.browserState.value.currentSortField)
         assertEquals(SortOrder.DESCENDING, viewModel.browserState.value.currentSortOrder)
+    }
+
+    @Test
+    fun `file preview window opens image with sibling images for horizontal scrolling`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+        val tempDir = Files.createTempDirectory("openfile_img_siblings_test").toFile()
+        try {
+            File(tempDir, "photo1.jpg").writeBytes(byteArrayOf(1, 2))
+            val f2 = File(tempDir, "photo2.png").apply { writeBytes(byteArrayOf(3, 4)) }
+            File(tempDir, "notes.txt").writeText("hello")
+
+            val r2 = viewModel.localProvider.toFileReference(f2)
+            val dirRef = viewModel.localProvider.toFileReference(tempDir)
+
+            composeTestRule.runOnUiThread {
+                viewModel.openDirectory(dirRef)
+            }
+            var attempts = 0
+            while (viewModel.browserState.value.items.isEmpty() && attempts < 20) {
+                delay(100)
+                composeTestRule.waitForIdle()
+                attempts++
+            }
+
+            composeTestRule.runOnUiThread {
+                viewModel.openBuiltInPreview(r2)
+            }
+            val state = viewModel.previewState.value
+            assertNotNull(state)
+            assertEquals("photo2.png", state!!.currentFile.displayName)
+            assertTrue("Expected sibling images to be found", state.siblingImages.isNotEmpty())
+
+            composeTestRule.runOnUiThread {
+                viewModel.closePreviewDialog()
+            }
+            assertNull(viewModel.previewState.value)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `archive viewer image preview builds archive context for scrolling through archive photos`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+
+        // Create temporary zip with 3 photos and 1 txt
+        val tempDir = Files.createTempDirectory("openfile_zip_photos_test").toFile()
+        try {
+            val photo1 = File(tempDir, "cat.jpg").apply { writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte())) }
+            val photo2 = File(tempDir, "dog.png").apply { writeBytes(byteArrayOf(0x89.toByte(), 0x50.toByte(), 0x4E.toByte(), 0x47.toByte())) }
+            val photo3 = File(tempDir, "bird.webp").apply { writeBytes(byteArrayOf(0x52.toByte(), 0x49.toByte(), 0x46.toByte(), 0x46.toByte())) }
+            val readme = File(tempDir, "readme.txt").apply { writeText("Hello archive") }
+
+            val zipOut = File(tempDir, "gallery.zip")
+            java.util.zip.ZipOutputStream(java.io.FileOutputStream(zipOut)).use { zos ->
+                for (f in listOf(photo1, photo2, photo3, readme)) {
+                    zos.putNextEntry(java.util.zip.ZipEntry(f.name))
+                    f.inputStream().use { it.copyTo(zos) }
+                    zos.closeEntry()
+                }
+            }
+
+            val zipRef = viewModel.localProvider.toFileReference(zipOut)
+
+            composeTestRule.runOnUiThread {
+                viewModel.inspectArchive(zipRef)
+            }
+            var attempts = 0
+            while (viewModel.browserState.value.archiveEntries.isEmpty() && attempts < 20) {
+                delay(100)
+                composeTestRule.waitForIdle()
+                attempts++
+            }
+
+            val entries = viewModel.browserState.value.archiveEntries
+            assertTrue("Expected 4 entries in archive", entries.size >= 4)
+
+            val dogEntry = entries.first { it.displayName == "dog.png" }
+            composeTestRule.runOnUiThread {
+                viewModel.previewArchiveEntry(zipRef, dogEntry)
+            }
+            attempts = 0
+            while (viewModel.previewState.value == null && attempts < 20) {
+                delay(100)
+                composeTestRule.waitForIdle()
+                attempts++
+            }
+
+            val previewState = viewModel.previewState.value
+            assertNotNull(previewState)
+            assertNotNull(previewState!!.archiveContext)
+
+            val archiveCtx = previewState.archiveContext!!
+            assertEquals(3, archiveCtx.imageEntries.size)
+            assertEquals(1, archiveCtx.initialIndex) // dog.png is 2nd image (index 1)
+            assertEquals("dog.png", archiveCtx.imageEntries[archiveCtx.initialIndex].displayName)
+
+            // Test on-demand adjacent extraction
+            val birdEntry = archiveCtx.imageEntries.first { it.displayName == "bird.webp" }
+            val extracted = viewModel.getOrExtractArchiveEntry(zipRef, birdEntry)
+            assertNotNull(extracted)
+            assertTrue(extracted!!.exists())
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `clicking a text file opens full-window text editor preview`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+        val tempDir = Files.createTempDirectory("openfile_txt_click_test").toFile()
+        try {
+            val txtFile = File(tempDir, "config.json").apply { writeText("{\"key\": \"value\"}") }
+            val txtRef = viewModel.localProvider.toFileReference(txtFile)
+
+            composeTestRule.runOnUiThread {
+                viewModel.onFileItemClicked(txtRef)
+            }
+            composeTestRule.waitForIdle()
+
+            val previewState = viewModel.previewState.value
+            assertNotNull(previewState)
+            assertEquals("config.json", previewState!!.currentFile.displayName)
+
+            composeTestRule.runOnUiThread {
+                viewModel.closePreviewDialog()
+            }
+            assertNull(viewModel.previewState.value)
+        } finally {
+            tempDir.deleteRecursively()
+        }
     }
 }

@@ -75,9 +75,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.core.model.ProviderType
 import com.example.ui.components.ConflictResolutionDialog
 import com.example.ui.components.FilePreviewDialog
+import com.example.ui.components.FilePreviewScreen
 import com.example.ui.components.FilePropertiesModalSheet
 import com.example.ui.components.TransferQueueBottomSheet
 import com.example.ui.screens.ApplicationsScreen
@@ -101,7 +101,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
     val conflictPrompt by viewModel.conflictPrompt.collectAsStateWithLifecycle()
     val undoAction by viewModel.latestUndoAction.collectAsStateWithLifecycle()
     val browserState by viewModel.browserState.collectAsStateWithLifecycle()
-    val previewFile by viewModel.previewFile.collectAsStateWithLifecycle()
+    val previewState by viewModel.previewState.collectAsStateWithLifecycle()
     val propertiesFile by viewModel.propertiesFile.collectAsStateWithLifecycle()
     val showAppUpdateDialog by viewModel.showAppUpdateDialog.collectAsStateWithLifecycle()
     val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
@@ -149,6 +149,11 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
         snackbarHostState.currentSnackbarData?.dismiss()
         snackbarHostState.showSnackbar(msg.second)
         viewModel.clearStatusMessage()
+    }
+
+    // Hardware Back navigation for full-window file preview
+    BackHandler(enabled = previewState != null) {
+        viewModel.closePreviewDialog()
     }
 
     // Hardware Back navigation handling for browser stack & sub-destinations
@@ -420,13 +425,18 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
         )
     }
 
-    // File Preview Dialog
-    if (previewFile != null) {
-        FilePreviewDialog(
-            file = previewFile!!,
+    // Full-Window File Preview (File Manager + style)
+    if (previewState != null) {
+        FilePreviewScreen(
+            state = previewState!!,
             onDismiss = { viewModel.closePreviewDialog() },
             onOpenExternal = { viewModel.openWithExternalApp(it, forceChooser = true) },
-            onSaveTextContent = { item, newText -> viewModel.saveEditedTextFile(item, newText) }
+            onSaveTextContent = { item, newText -> viewModel.saveEditedTextFile(item, newText) },
+            onLoadArchiveImage = { entry ->
+                previewState?.archiveContext?.let { ctx ->
+                    viewModel.getOrExtractArchiveEntry(ctx.archiveRef, entry)
+                }
+            }
         )
     }
 
