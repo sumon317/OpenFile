@@ -361,6 +361,7 @@ fun FileItemRow(
     onDownloadRemote: (() -> Unit)? = null,
     onOpenWith: (() -> Unit)? = null,
     onQuickPreview: (() -> Unit)? = null,
+    onViewArchive: (() -> Unit)? = null,
     onOpenParentFolder: (() -> Unit)? = null,
     onCompress: (() -> Unit)? = null,
     onDrillDownAnalyze: (() -> Unit)? = null,
@@ -535,6 +536,16 @@ fun FileItemRow(
                                 onClick = {
                                     menuExpanded = false
                                     onQuickPreview()
+                                }
+                            )
+                        }
+                        if (onViewArchive != null) {
+                            DropdownMenuItem(
+                                text = { Text("View Archive") },
+                                leadingIcon = { Icon(Icons.Filled.FolderZip, contentDescription = null) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onViewArchive()
                                 }
                             )
                         }

@@ -23,6 +23,7 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.util.UUID
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -257,6 +258,82 @@ object ArchiveEngine {
                 }
             }
             extractedCount
+        }
+    }
+
+    /**
+     * Extracts a single entry from [archiveFile] into [cacheDir] for on-the-fly native viewing without unzipping.
+     */
+    suspend fun extractSingleEntryToCache(
+        archiveFile: File,
+        entryPath: String,
+        cacheDir: File
+    ): Result<File> = withContext(Dispatchers.IO) {
+        runCatching {
+            val sanitizedName = entryPath.trimEnd('/').substringAfterLast('/')
+            val previewDir = File(cacheDir, "zip_entry_preview").apply { mkdirs() }
+            val ext = if (sanitizedName.contains('.')) ".${sanitizedName.substringAfterLast('.')}" else ""
+            val baseName = sanitizedName.substringBeforeLast('.')
+            val targetFile = File(previewDir, "${baseName}_${UUID.randomUUID().toString().take(8)}$ext")
+
+            val lowerName = archiveFile.name.lowercase()
+            if (lowerName.endsWith(".7z")) {
+                SevenZFile.builder().setFile(archiveFile).get().use { sevenZ ->
+                    var entry = sevenZ.nextEntry
+                    while (entry != null) {
+                        if (entry.name == entryPath && !entry.isDirectory) {
+                            targetFile.outputStream().use { out ->
+                                val buf = ByteArray(BUFFER_SIZE)
+                                var read = sevenZ.read(buf)
+                                while (read > 0) {
+                                    out.write(buf, 0, read)
+                                    read = sevenZ.read(buf)
+                                }
+                            }
+                            return@runCatching targetFile
+                        }
+                        entry = sevenZ.nextEntry
+                    }
+                }
+                throw NoSuchElementException("Entry '$entryPath' not found in 7z archive")
+            }
+
+            if (lowerName.endsWith(".gz") && !lowerName.endsWith(".tar.gz") && !lowerName.endsWith(".tgz")) {
+                GzipCompressorInputStream(BufferedInputStream(FileInputStream(archiveFile))).use { gis ->
+                    targetFile.outputStream().use { out ->
+                        gis.copyTo(out, BUFFER_SIZE)
+                    }
+                }
+                return@runCatching targetFile
+            }
+
+            if (lowerName.endsWith(".xz") && !lowerName.endsWith(".tar.xz") && !lowerName.endsWith(".txz")) {
+                XZCompressorInputStream(BufferedInputStream(FileInputStream(archiveFile))).use { xis ->
+                    targetFile.outputStream().use { out ->
+                        xis.copyTo(out, BUFFER_SIZE)
+                    }
+                }
+                return@runCatching targetFile
+            }
+
+            openArchiveInputStream(archiveFile).use { ais ->
+                var entry: ArchiveEntry? = ais.nextEntry
+                while (entry != null) {
+                    if (entry.name == entryPath && !entry.isDirectory) {
+                        targetFile.outputStream().use { out ->
+                            val buf = ByteArray(BUFFER_SIZE)
+                            var read = ais.read(buf)
+                            while (read > 0) {
+                                out.write(buf, 0, read)
+                                read = ais.read(buf)
+                            }
+                        }
+                        return@runCatching targetFile
+                    }
+                    entry = ais.nextEntry
+                }
+            }
+            throw NoSuchElementException("Entry '$entryPath' not found in archive")
         }
     }
 

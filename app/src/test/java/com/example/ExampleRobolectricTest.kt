@@ -207,6 +207,33 @@ class ExampleRobolectricTest {
     }
 
     @Test
+    fun `transfer queue engine direct delete skips trash and deletes directly without undo`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = OpenFileDatabase.getInstance(context)
+        val localProvider = LocalFileSystemProvider(context)
+        val safProvider = SafDocumentProvider(context)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val engine = TransferQueueEngine(context, db.dao(), localProvider, safProvider, scope)
+
+        val tempDir = Files.createTempDirectory("openfile_direct_delete_test").toFile()
+        try {
+            val sampleFile = File(tempDir, "direct_delete_target.txt").apply {
+                writeText("Direct deletion content")
+            }
+            val fileRef = localProvider.toFileReference(sampleFile)
+
+            // Direct permanent delete (skip trash)
+            val deleteRes = engine.deleteItems(listOf(fileRef), moveToTrash = false)
+            assertTrue(deleteRes.isSuccess)
+            assertTrue(deleteRes.getOrNull()?.contains("Deleted 1 item(s) directly") == true)
+            assertFalse("File should be immediately deleted from disk", sampleFile.exists())
+            assertNull("Direct delete should not produce an Undo action", engine.latestUndoAction.value)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `storage analyzer computes breakdown and finds exact SHA-256 duplicates`() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val localProvider = LocalFileSystemProvider(context)

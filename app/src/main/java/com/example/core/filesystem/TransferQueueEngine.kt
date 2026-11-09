@@ -639,7 +639,9 @@ class TransferQueueEngine(
 
             for (item in items) {
                 coroutineContext.ensureActive()
-                val canTrash = moveToTrash && (item.providerType == ProviderType.LOCAL || item.providerType == ProviderType.SAF)
+                val isSecondaryStorage = item.providerType == ProviderType.LOCAL && localProvider.isSecondaryStoragePath(item.uriOrPath)
+                // Items on secondary storage (SD card, USB OTG) or remote storage bypass Trash and delete directly (instant, no copying)
+                val canTrash = moveToTrash && !isSecondaryStorage && (item.providerType == ProviderType.LOCAL || item.providerType == ProviderType.SAF)
                 if (canTrash) {
                     val trashFile = File(trashRootDir, "${UUID.randomUUID()}_${item.displayName}")
                     val originalParent = item.parentUriOrPath ?: localProvider.getPrimaryRootDirectory().absolutePath
@@ -692,7 +694,10 @@ class TransferQueueEngine(
                     trashedCount++
                 } else {
                     val provider = providerFor(item)
-                    provider.delete(item).getOrThrow()
+                    val ok = provider.delete(item).getOrThrow()
+                    if (!ok) {
+                        throw IllegalStateException("Failed to delete '${item.displayName}'.")
+                    }
                     permanentCount++
                 }
             }
@@ -707,9 +712,9 @@ class TransferQueueEngine(
             }
 
             when {
-                trashedCount > 0 && permanentCount > 0 -> "Moved $trashedCount to Trash, permanently deleted $permanentCount"
+                trashedCount > 0 && permanentCount > 0 -> "Moved $trashedCount to Trash, deleted $permanentCount directly"
                 trashedCount > 0 -> "Moved $trashedCount item(s) to Trash"
-                else -> "Permanently deleted $permanentCount item(s)"
+                else -> "Deleted $permanentCount item(s) directly"
             }
         }
     }

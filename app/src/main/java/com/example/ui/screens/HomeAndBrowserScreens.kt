@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Sort
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
@@ -48,6 +50,7 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.GridView
@@ -56,12 +59,15 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material.icons.filled.VideoFile
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -105,6 +111,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.core.archive.ArchiveCreationFormat
+import com.example.core.archive.ArchiveEntryItem
 import com.example.core.database.BookmarkEntity
 import com.example.core.database.NetworkProfileEntity
 import com.example.core.database.RecentFileEntity
@@ -926,11 +933,28 @@ fun FileBrowserScreen(
     onQuickPreview: ((FileReference) -> Unit)? = null,
     onOpenParentFolder: ((FileReference) -> Unit)? = null,
     onOpenLocalRoot: (() -> Unit)? = null,
+    onPreviewArchiveEntry: ((FileReference, ArchiveEntryItem) -> Unit)? = null,
+    onOpenArchiveSubFolder: ((String) -> Unit)? = null,
+    onViewArchive: ((FileReference) -> Unit)? = null,
     hasAllFilesAccess: Boolean = true,
     onRequestAllFilesAccess: (() -> Unit)? = null,
     onToggleShowHidden: (() -> Unit)? = null,
     onRequestSafForPath: ((String?) -> Unit)? = null
 ) {
+    if (browserState.inspectArchiveFile != null) {
+        NativeZipViewer(
+            archiveRef = browserState.inspectArchiveFile,
+            entries = browserState.archiveEntries,
+            currentSubPath = browserState.archiveSubPath,
+            onNavigateUp = onCloseArchiveInspector,
+            onOpenSubFolder = { onOpenArchiveSubFolder?.invoke(it) },
+            onPreviewEntry = { entry -> onPreviewArchiveEntry?.invoke(browserState.inspectArchiveFile, entry) },
+            onExtractArchive = onExtractArchive,
+            onClose = onCloseArchiveInspector
+        )
+        return
+    }
+
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var showNewFileDialog by remember { mutableStateOf(false) }
     var showCompressDialog by remember { mutableStateOf(false) }
@@ -1269,91 +1293,7 @@ fun FileBrowserScreen(
             }
         }
 
-        // Archive Virtual Contents Inspector (if user opened a .zip/.tar/.7z)
-        if (browserState.inspectArchiveFile != null) {
-            val archiveRef = browserState.inspectArchiveFile
-            Column(modifier = Modifier.fillMaxSize()) {
-                Surface(
-                    color = MaterialTheme.colorScheme.tertiaryContainer,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Archive Inspector: ${archiveRef.displayName}",
-                                style = MaterialTheme.typography.titleSmall
-                            )
-                            Text(
-                                text = "${browserState.archiveEntries.size} entries • Zip-Slip Guard Active",
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            TextButton(onClick = onCloseArchiveInspector) {
-                                Text("Close")
-                            }
-                            Button(
-                                onClick = { onExtractArchive(archiveRef, null) },
-                                modifier = Modifier.testTag("extract_all_archive_button")
-                            ) {
-                                Icon(Icons.Filled.Unarchive, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Extract All")
-                            }
-                        }
-                    }
-                }
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(
-                        items = browserState.archiveEntries,
-                        key = { it.entryPath },
-                        contentType = { "archive_entry" }
-                    ) { entry ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = entry.entryPath,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = if (entry.isSuspiciousPath) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = if (entry.isDirectory) "Directory" else "Uncompressed: ${formatByteSize(entry.uncompressedSize)}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            if (entry.isSuspiciousPath) {
-                                Text(
-                                    text = "SUSPICIOUS PATH",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            } else if (!entry.isDirectory) {
-                                OutlinedButton(
-                                    onClick = { onExtractArchive(archiveRef, setOf(entry.entryPath)) }
-                                ) {
-                                    Text("Extract")
-                                }
-                            }
-                        }
-                        HorizontalDivider()
-                    }
-                }
-            }
-            return@Column
-        }
+
 
         // Main File List or Grid + Optional Two-Pane Tablet Inspector
         val isWideDualPane = LocalConfiguration.current.screenWidthDp >= 700
@@ -1518,7 +1458,8 @@ fun FileBrowserScreen(
                                             if (settings.confirmBeforeDelete) {
                                                 deleteConfirmTargets = listOf(item)
                                             } else {
-                                                onDeleteItems(listOf(item), settings.moveToTrashByDefault)
+                                                val isSecondary = item.uriOrPath.startsWith("/storage/") && !item.uriOrPath.startsWith("/storage/emulated")
+                                                onDeleteItems(listOf(item), settings.moveToTrashByDefault && !isSecondary)
                                             }
                                         },
                                         onToggleBookmark = { onToggleBookmark(item) },
@@ -1528,6 +1469,7 @@ fun FileBrowserScreen(
                                         onOpenWith = if (onOpenWithExternal != null && (browserState.activeRemoteProfile == null)) ({ onOpenWithExternal(item) }) else null,
                                         onQuickPreview = if (onQuickPreview != null) ({ onQuickPreview(item) }) else null,
                                         onOpenParentFolder = if (browserState.currentDirectory == null && onOpenParentFolder != null) ({ onOpenParentFolder(item) }) else null,
+                                        onViewArchive = if (onViewArchive != null && (item.extension.lowercase() in setOf("zip", "tar", "gz", "xz", "7z", "jar", "apk", "tgz", "txz") || item.displayName.endsWith(".zip", ignoreCase = true) || item.displayName.endsWith(".tar", ignoreCase = true) || item.displayName.endsWith(".7z", ignoreCase = true))) ({ onViewArchive(item) }) else null,
                                         showParentPath = browserState.currentDirectory == null,
                                         context = context
                                     )
@@ -1644,7 +1586,8 @@ fun FileBrowserScreen(
                             if (settings.confirmBeforeDelete) {
                                 deleteConfirmTargets = selectedItemsList
                             } else {
-                                onDeleteItems(selectedItemsList, settings.moveToTrashByDefault)
+                                val hasSecondary = selectedItemsList.any { it.uriOrPath.startsWith("/storage/") && !it.uriOrPath.startsWith("/storage/emulated") }
+                                onDeleteItems(selectedItemsList, settings.moveToTrashByDefault && !hasSecondary)
                             }
                         }
                     )
@@ -1918,8 +1861,14 @@ fun FileBrowserScreen(
     // Delete Confirmation Dialog
     if (deleteConfirmTargets != null) {
         val targets = deleteConfirmTargets!!
-        val isLocalOrSaf = targets.all { it.providerType == ProviderType.LOCAL || it.providerType == ProviderType.SAF }
-        var useTrash by remember { mutableStateOf(settings.moveToTrashByDefault && isLocalOrSaf) }
+        val isAllLocalOrSaf = targets.all { it.providerType == ProviderType.LOCAL || it.providerType == ProviderType.SAF }
+        val hasSecondaryOrRemote = targets.any {
+            it.providerType != ProviderType.LOCAL && it.providerType != ProviderType.SAF ||
+                (it.providerType == ProviderType.LOCAL && it.uriOrPath.startsWith("/storage/") && !it.uriOrPath.startsWith("/storage/emulated"))
+        }
+        var useTrash by remember(deleteConfirmTargets, settings.moveToTrashByDefault) {
+            mutableStateOf(settings.moveToTrashByDefault && isAllLocalOrSaf && !hasSecondaryOrRemote)
+        }
         val count = targets.size
         val totalSize = formatByteSize(targets.sumOf { it.sizeBytes })
 
@@ -1936,10 +1885,10 @@ fun FileBrowserScreen(
             title = {
                 Text(
                     text = when {
-                        useTrash && count == 1 -> "Move to Trash?"
-                        useTrash -> "Move $count items to Trash?"
+                        useTrash && count == 1 -> "Move to Recycle Bin?"
+                        useTrash -> "Move $count items to Recycle Bin?"
                         count == 1 -> "Delete \"${targets.first().displayName}\"?"
-                        else -> "Delete $count items permanently?"
+                        else -> "Delete $count items directly?"
                     },
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold
@@ -1949,15 +1898,28 @@ fun FileBrowserScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
                         text = when {
-                            useTrash && count == 1 -> "\"${targets.first().displayName}\" ($totalSize) will be moved to the Trash. You can restore it anytime."
-                            useTrash -> "$count items ($totalSize) will be moved to the Trash. You can restore them anytime."
-                            count == 1 -> "\"${targets.first().displayName}\" ($totalSize) will be permanently deleted. This action cannot be undone."
-                            else -> "$count items ($totalSize) will be permanently deleted. This action cannot be undone."
+                            useTrash && count == 1 -> "\"${targets.first().displayName}\" ($totalSize) will be moved to the Recycle Bin. You can restore it anytime."
+                            useTrash -> "$count items ($totalSize) will be moved to the Recycle Bin. You can restore them anytime."
+                            count == 1 -> "\"${targets.first().displayName}\" ($totalSize) will be deleted directly and permanently. This action cannot be undone."
+                            else -> "$count items ($totalSize) will be deleted directly and permanently. This action cannot be undone."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (isLocalOrSaf) {
+                    if (hasSecondaryOrRemote) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "Items on SD Card / USB storage skip Recycle Bin and are deleted directly.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                        }
+                    } else if (isAllLocalOrSaf) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = if (useTrash) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f)
@@ -1985,12 +1947,12 @@ fun FileBrowserScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column {
                                     Text(
-                                        text = "Move to Trash",
+                                        text = "Move to Recycle Bin",
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Medium
                                     )
                                     Text(
-                                        text = if (useTrash) "Files can be recovered from Trash later" else "Skip Trash and delete permanently",
+                                        text = if (useTrash) "Files can be recovered from Trash later" else "Skip Recycle Bin and delete directly (instant)",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = if (useTrash) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
                                     )
@@ -2016,7 +1978,7 @@ fun FileBrowserScreen(
                     },
                     modifier = Modifier.testTag("dialog_confirm_delete")
                 ) {
-                    Text(if (useTrash) "Move to Trash" else "Delete Permanently")
+                    Text(if (useTrash) "Move to Trash" else "Delete Directly")
                 }
             },
             dismissButton = {
@@ -2056,4 +2018,592 @@ private fun BottomActionBarItem(
         )
     }
 }
+
+/**
+ * Model representing an entry (direct file, explicit directory, or inferred folder)
+ * inside a zip/archive for hierarchical or flat browsing.
+ */
+data class ArchiveVirtualItem(
+    val entryPath: String,
+    val displayName: String,
+    val isDirectory: Boolean,
+    val uncompressedSize: Long,
+    val compressedSize: Long,
+    val lastModifiedEpochMs: Long,
+    val isSuspiciousPath: Boolean,
+    val childCount: Int = 0,
+    val originalEntry: ArchiveEntryItem? = null
+)
+
+fun resolveArchiveVirtualItems(
+    entries: List<ArchiveEntryItem>,
+    subPath: String,
+    searchQuery: String,
+    isFlatView: Boolean
+): List<ArchiveVirtualItem> {
+    if (searchQuery.isNotBlank()) {
+        val q = searchQuery.trim().lowercase()
+        return entries
+            .filter { it.displayName.lowercase().contains(q) || it.entryPath.lowercase().contains(q) }
+            .map { entry ->
+                ArchiveVirtualItem(
+                    entryPath = entry.entryPath,
+                    displayName = entry.displayName.ifEmpty { entry.entryPath },
+                    isDirectory = entry.isDirectory,
+                    uncompressedSize = entry.uncompressedSize,
+                    compressedSize = entry.compressedSize,
+                    lastModifiedEpochMs = entry.lastModifiedEpochMs,
+                    isSuspiciousPath = entry.isSuspiciousPath,
+                    originalEntry = entry
+                )
+            }
+    }
+
+    if (isFlatView) {
+        return entries.map { entry ->
+            ArchiveVirtualItem(
+                entryPath = entry.entryPath,
+                displayName = entry.displayName.ifEmpty { entry.entryPath },
+                isDirectory = entry.isDirectory,
+                uncompressedSize = entry.uncompressedSize,
+                compressedSize = entry.compressedSize,
+                lastModifiedEpochMs = entry.lastModifiedEpochMs,
+                isSuspiciousPath = entry.isSuspiciousPath,
+                originalEntry = entry
+            )
+        }
+    }
+
+    // Hierarchical Folder Navigation
+    val cleanSub = subPath.trim().trim('/')
+    val prefix = if (cleanSub.isEmpty()) "" else "$cleanSub/"
+
+    val folderChildrenCount = mutableMapOf<String, Int>()
+    val folderMaxModified = mutableMapOf<String, Long>()
+    val directFiles = mutableListOf<ArchiveVirtualItem>()
+    val explicitFolders = mutableMapOf<String, ArchiveEntryItem>()
+
+    for (entry in entries) {
+        val cleanEntry = entry.entryPath.replace('\\', '/').trimStart('/')
+        if (prefix.isNotEmpty() && !cleanEntry.startsWith(prefix)) {
+            continue
+        }
+        val rel = if (prefix.isEmpty()) cleanEntry else cleanEntry.removePrefix(prefix)
+        val trimmedRel = rel.trim('/')
+        if (trimmedRel.isEmpty()) continue
+
+        val slashIdx = trimmedRel.indexOf('/')
+        if (slashIdx != -1) {
+            val folderName = trimmedRel.substring(0, slashIdx)
+            val fullFolderPath = if (prefix.isEmpty()) folderName else "$prefix$folderName"
+            folderChildrenCount[fullFolderPath] = (folderChildrenCount[fullFolderPath] ?: 0) + 1
+            if (entry.lastModifiedEpochMs > (folderMaxModified[fullFolderPath] ?: 0L)) {
+                folderMaxModified[fullFolderPath] = entry.lastModifiedEpochMs
+            }
+        } else {
+            if (entry.isDirectory) {
+                val fullFolderPath = if (prefix.isEmpty()) trimmedRel else "$prefix$trimmedRel"
+                explicitFolders[fullFolderPath] = entry
+            } else {
+                directFiles.add(
+                    ArchiveVirtualItem(
+                        entryPath = entry.entryPath,
+                        displayName = entry.displayName.ifEmpty { trimmedRel },
+                        isDirectory = false,
+                        uncompressedSize = entry.uncompressedSize,
+                        compressedSize = entry.compressedSize,
+                        lastModifiedEpochMs = entry.lastModifiedEpochMs,
+                        isSuspiciousPath = entry.isSuspiciousPath,
+                        originalEntry = entry
+                    )
+                )
+            }
+        }
+    }
+
+    val allFolderPaths = (folderChildrenCount.keys + explicitFolders.keys).distinct()
+    val folderItems = allFolderPaths.map { folderPath ->
+        val folderName = folderPath.substringAfterLast('/')
+        val explicit = explicitFolders[folderPath]
+        ArchiveVirtualItem(
+            entryPath = "$folderPath/",
+            displayName = folderName,
+            isDirectory = true,
+            uncompressedSize = 0L,
+            compressedSize = 0L,
+            lastModifiedEpochMs = explicit?.lastModifiedEpochMs ?: (folderMaxModified[folderPath] ?: 0L),
+            isSuspiciousPath = explicit?.isSuspiciousPath ?: false,
+            childCount = folderChildrenCount[folderPath] ?: 0,
+            originalEntry = explicit
+        )
+    }.sortedBy { it.displayName.lowercase() }
+
+    val sortedFiles = directFiles.sortedBy { it.displayName.lowercase() }
+
+    return folderItems + sortedFiles
+}
+
+fun getArchiveFileIcon(fileName: String): ImageVector {
+    val ext = fileName.substringAfterLast('.', "").lowercase()
+    return when (ext) {
+        in FileCategory.IMAGES.extensions -> Icons.Filled.Image
+        in FileCategory.VIDEOS.extensions -> Icons.Filled.VideoFile
+        in FileCategory.AUDIO.extensions -> Icons.Filled.AudioFile
+        in FileCategory.DOCUMENTS.extensions -> {
+            if (ext == "pdf") Icons.Filled.PictureAsPdf else Icons.Filled.Description
+        }
+        in setOf("kt", "java", "xml", "json", "py", "js", "ts", "html", "css", "c", "cpp", "h", "rs", "go", "sh", "yml", "yaml", "gradle") -> Icons.Filled.Code
+        in FileCategory.ARCHIVES.extensions, "zip", "tar", "gz", "xz", "7z", "jar", "apk" -> Icons.Filled.FolderZip
+        else -> Icons.Filled.Description
+    }
+}
+
+/**
+ * Native Zip & Archive Viewer.
+ * Allows instant inspection, breadcrumb navigation, search, and on-the-fly previewing
+ * of individual files within any archive without decompressing the entire archive to storage.
+ */
+@Composable
+fun NativeZipViewer(
+    archiveRef: FileReference,
+    entries: List<ArchiveEntryItem>,
+    currentSubPath: String,
+    onNavigateUp: () -> Unit,
+    onOpenSubFolder: (String) -> Unit,
+    onPreviewEntry: (ArchiveEntryItem) -> Unit,
+    onExtractArchive: (FileReference, Set<String>?) -> Unit,
+    onClose: () -> Unit
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    var isFlatView by remember { mutableStateOf(false) }
+
+    val totalUncompressed = remember(entries) { entries.sumOf { it.uncompressedSize } }
+    val archiveSize = archiveRef.sizeBytes
+    val savingsPercent = remember(totalUncompressed, archiveSize) {
+        if (totalUncompressed > archiveSize && totalUncompressed > 0L) {
+            ((1.0 - archiveSize.toDouble() / totalUncompressed.toDouble()) * 100.0).toInt().coerceIn(0, 99)
+        } else 0
+    }
+
+    val virtualItems = remember(entries, currentSubPath, searchQuery, isFlatView) {
+        resolveArchiveVirtualItems(entries, currentSubPath, searchQuery, isFlatView)
+    }
+
+    val hasSuspiciousEntries = remember(entries) { entries.any { it.isSuspiciousPath } }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("native_zip_viewer")
+    ) {
+        // 1. Archive Header & Summary Banner
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 2.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Filled.FolderZip,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = archiveRef.displayName,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = buildString {
+                                    append("${entries.size} items • ${formatByteSize(archiveSize)}")
+                                    if (savingsPercent > 0) {
+                                        append(" • $savingsPercent% compressed")
+                                    }
+                                    if (totalUncompressed > 0) {
+                                        append(" (raw: ${formatByteSize(totalUncompressed)})")
+                                    }
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(
+                            onClick = onClose,
+                            modifier = Modifier.testTag("zip_viewer_close_button")
+                        ) {
+                            Text("Close")
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Button(
+                            onClick = { onExtractArchive(archiveRef, null) },
+                            modifier = Modifier.testTag("extract_all_archive_button")
+                        ) {
+                            Icon(Icons.Filled.Unarchive, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Extract All")
+                        }
+                    }
+                }
+
+                // Security & Protection Badge
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (hasSuspiciousEntries) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (hasSuspiciousEntries) Icons.Filled.Warning else Icons.Filled.Security,
+                                contentDescription = null,
+                                modifier = Modifier.size(13.dp),
+                                tint = if (hasSuspiciousEntries) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (hasSuspiciousEntries) "Zip-Slip Traversal Blocked" else "Zip-Slip Guard Active • Safe Inspection",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                color = if (hasSuspiciousEntries) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Breadcrumbs Bar (when in folder hierarchy view)
+        if (!isFlatView && searchQuery.isEmpty()) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Archive Root crumb
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { onOpenSubFolder("") }
+                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.FolderZip,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = if (currentSubPath.isEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Root",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (currentSubPath.isEmpty()) FontWeight.Bold else FontWeight.Normal,
+                            color = if (currentSubPath.isEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    val segments = currentSubPath.trim('/').split('/').filter { it.isNotEmpty() }
+                    var accumulated = ""
+                    segments.forEachIndexed { index, seg ->
+                        accumulated = if (accumulated.isEmpty()) seg else "$accumulated/$seg"
+                        val isLast = index == segments.size - 1
+                        val pathForSeg = accumulated
+                        Text(
+                            text = "/",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.padding(horizontal = 2.dp)
+                        )
+                        Text(
+                            text = seg,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (isLast) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isLast) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onOpenSubFolder(pathForSeg) }
+                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // 3. Search and Flat/Folder View Mode Toolbar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Search inside archive...", style = MaterialTheme.typography.bodyMedium) },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Clear", modifier = Modifier.size(16.dp))
+                        }
+                    }
+                },
+                singleLine = true,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+                    .testTag("zip_search_input")
+            )
+            IconButton(
+                onClick = { isFlatView = !isFlatView },
+                modifier = Modifier
+                    .size(44.dp)
+                    .testTag("zip_toggle_flat_view")
+            ) {
+                Icon(
+                    imageVector = if (isFlatView) Icons.Filled.Folder else Icons.AutoMirrored.Filled.ViewList,
+                    contentDescription = if (isFlatView) "Switch to Folder View" else "Switch to Flat View",
+                    tint = if (isFlatView) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        HorizontalDivider()
+
+        // 4. Archive Entry List
+        val showParentRow = !isFlatView && currentSubPath.isNotEmpty() && searchQuery.isEmpty()
+
+        if (virtualItems.isEmpty() && !showParentRow) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Filled.FolderOpen,
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = if (searchQuery.isNotEmpty()) "No entries match '$searchQuery'" else "This folder is empty",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("zip_entry_list")
+            ) {
+                // Parent ".." row when nested
+                if (showParentRow) {
+                    item(key = "archive_parent_dir") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val current = currentSubPath.trim('/')
+                                    val lastSlash = current.lastIndexOf('/')
+                                    val parent = if (lastSlash != -1) current.substring(0, lastSlash) else ""
+                                    onOpenSubFolder(parent)
+                                }
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Go up",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Text(
+                                text = ".. (Parent directory)",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        HorizontalDivider()
+                    }
+                }
+
+                items(
+                    items = virtualItems,
+                    key = { it.entryPath },
+                    contentType = { if (it.isDirectory) "dir" else "file" }
+                ) { item ->
+                    val isSuspicious = item.isSuspiciousPath
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !isSuspicious) {
+                                if (item.isDirectory) {
+                                    onOpenSubFolder(item.entryPath.trimEnd('/'))
+                                } else {
+                                    val entryToPreview = item.originalEntry ?: ArchiveEntryItem(
+                                        entryPath = item.entryPath,
+                                        displayName = item.displayName,
+                                        isDirectory = false,
+                                        uncompressedSize = item.uncompressedSize,
+                                        compressedSize = item.compressedSize,
+                                        lastModifiedEpochMs = item.lastModifiedEpochMs,
+                                        isSuspiciousPath = false
+                                    )
+                                    onPreviewEntry(entryToPreview)
+                                }
+                            }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val icon = when {
+                                isSuspicious -> Icons.Filled.Warning
+                                item.isDirectory -> Icons.Filled.Folder
+                                else -> getArchiveFileIcon(item.displayName)
+                            }
+                            val iconTint = when {
+                                isSuspicious -> MaterialTheme.colorScheme.error
+                                item.isDirectory -> FolderAmber
+                                else -> MaterialTheme.colorScheme.primary
+                            }
+
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = null,
+                                tint = iconTint,
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = if (isFlatView || searchQuery.isNotEmpty()) item.entryPath else item.displayName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (item.isDirectory) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (isSuspicious) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = when {
+                                        item.isDirectory -> "${item.childCount} item(s)"
+                                        item.compressedSize > 0 -> "${formatByteSize(item.uncompressedSize)} • compressed: ${formatByteSize(item.compressedSize)}"
+                                        else -> formatByteSize(item.uncompressedSize)
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        // Action Buttons on Right
+                        if (isSuspicious) {
+                            Text(
+                                text = "BLOCKED",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(horizontal = 8.dp)
+                            )
+                        } else {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (!item.isDirectory) {
+                                    // Direct Preview Button
+                                    IconButton(
+                                        onClick = {
+                                            val entryToPreview = item.originalEntry ?: ArchiveEntryItem(
+                                                entryPath = item.entryPath,
+                                                displayName = item.displayName,
+                                                isDirectory = false,
+                                                uncompressedSize = item.uncompressedSize,
+                                                compressedSize = item.compressedSize,
+                                                lastModifiedEpochMs = item.lastModifiedEpochMs,
+                                                isSuspiciousPath = false
+                                            )
+                                            onPreviewEntry(entryToPreview)
+                                        },
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Visibility,
+                                            contentDescription = "Preview file",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                                // Single-file / Single-folder extract button
+                                IconButton(
+                                    onClick = { onExtractArchive(archiveRef, setOf(item.entryPath)) },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Unarchive,
+                                        contentDescription = "Extract entry",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    HorizontalDivider()
+                }
+            }
+        }
+    }
+}
+
 

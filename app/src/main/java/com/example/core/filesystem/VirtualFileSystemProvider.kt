@@ -26,6 +26,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import kotlin.coroutines.coroutineContext
@@ -471,11 +472,58 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
         }
     }
 
+    /**
+     * Checks if [path] resides on a secondary/removable storage volume (e.g. physical SD card or USB OTG).
+     */
+    fun isSecondaryStoragePath(path: String): Boolean {
+        val norm = path.replace('\\', '/').trimEnd('/')
+        val primary = getPrimaryRootDirectory().absolutePath.replace('\\', '/').trimEnd('/')
+        if (norm.startsWith("$primary/") || norm == primary) return false
+        return norm.startsWith("/storage/") || norm.startsWith("/mnt/")
+    }
+
     override suspend fun delete(target: FileReference): Result<Boolean> = withContext(Dispatchers.IO) {
         runCatching {
             val file = File(target.uriOrPath)
             if (!file.exists()) return@runCatching true
-            file.deleteRecursively()
+
+            // 1. Direct standard file system delete (instantaneous for primary or writable secondary)
+            if (file.deleteRecursively()) {
+                return@runCatching true
+            }
+
+            // 2. Fallback: If on external SD card / USB OTG, attempt SAF document delete using any persisted grant
+            val primaryRoot = getPrimaryRootDirectory().absolutePath
+            val safRef = SafDocumentProvider(context).findGrantedSafReferenceForLocalPath(file.absolutePath, primaryRoot)
+            if (safRef != null) {
+                val safDeleted = runCatching {
+                    val uri = Uri.parse(safRef.uriOrPath)
+                    val doc = DocumentFile.fromSingleUri(context, uri) ?: DocumentFile.fromTreeUri(context, uri)
+                    doc?.delete() ?: false
+                }.getOrDefault(false)
+                if (safDeleted && !file.exists()) {
+                    return@runCatching true
+                }
+            }
+
+            // 3. Fallback: MediaStore delete (for photos, videos, audio, downloads)
+            runCatching {
+                val contentUri = MediaStore.Files.getContentUri("external")
+                val deletedRows = context.contentResolver.delete(
+                    contentUri,
+                    "${MediaStore.MediaColumns.DATA} = ?",
+                    arrayOf(file.absolutePath)
+                )
+                if (deletedRows > 0 && !file.exists()) {
+                    return@runCatching true
+                }
+            }
+
+            // 4. Verify whether file was deleted
+            if (file.exists()) {
+                throw IOException("Unable to delete '${target.displayName}'. File is write-protected or requires SAF access on this storage.")
+            }
+            true
         }
     }
 
@@ -902,32 +950,48 @@ class SafDocumentProvider(private val context: Context) : VirtualFileSystemProvi
     }
 
     /**
-     * Checks if any persisted SAF tree permission covers [localPath] (either directly or via an ancestor tree grant like `primary:Android/obb`)
-     * and returns a ready-to-list [FileReference] backed by [ProviderType.SAF].
+     * Checks if any persisted SAF tree permission covers [localPath] (either on primary storage or
+     * external SD card/USB OTG) and returns a ready-to-use [FileReference] backed by [ProviderType.SAF].
      */
     fun findGrantedSafReferenceForLocalPath(localPath: String, primaryRootPath: String): FileReference? {
         return runCatching {
             val normPath = localPath.replace('\\', '/').trimEnd('/')
             val normRoot = primaryRootPath.replace('\\', '/').trimEnd('/')
-            if (!normPath.startsWith("$normRoot/")) return null
-            val relPath = normPath.removePrefix("$normRoot/")
-            val targetDocId = "primary:$relPath"
+
+            val targetDocId = when {
+                normPath.startsWith("$normRoot/") -> "primary:" + normPath.removePrefix("$normRoot/")
+                normPath == normRoot -> "primary:"
+                normPath.startsWith("/storage/") && !normPath.startsWith("/storage/emulated") -> {
+                    val sub = normPath.removePrefix("/storage/")
+                    val volId = sub.substringBefore('/')
+                    val rel = sub.substringAfter('/', "")
+                    if (rel.isEmpty()) "$volId:" else "$volId:$rel"
+                }
+                normPath.startsWith("/mnt/media_rw/") -> {
+                    val sub = normPath.removePrefix("/mnt/media_rw/")
+                    val volId = sub.substringBefore('/')
+                    val rel = sub.substringAfter('/', "")
+                    if (rel.isEmpty()) "$volId:" else "$volId:$rel"
+                }
+                else -> null
+            } ?: return null
 
             val persisted = context.contentResolver.persistedUriPermissions.filter { it.isReadPermission }
             for (perm in persisted) {
                 val treeDocId = runCatching { DocumentsContract.getTreeDocumentId(perm.uri) }.getOrNull() ?: continue
-                if (targetDocId.equals(treeDocId, ignoreCase = true)) {
-                    val doc = DocumentFile.fromTreeUri(context, perm.uri)
-                    if (doc != null && doc.canRead()) {
-                        return toFileReference(doc, parentUri = null).copy(
-                            displayName = normPath.substringAfterLast('/'),
-                            metadata = mapOf("localBackingPath" to normPath, "safMounted" to "true")
-                        )
+                val match = targetDocId.equals(treeDocId, ignoreCase = true) ||
+                    targetDocId.startsWith("$treeDocId/", ignoreCase = true) ||
+                    (treeDocId.endsWith(":") && targetDocId.startsWith(treeDocId, ignoreCase = true))
+
+                if (match) {
+                    val childDocUri = if (targetDocId.equals(treeDocId, ignoreCase = true)) {
+                        perm.uri
+                    } else {
+                        DocumentsContract.buildDocumentUriUsingTree(perm.uri, targetDocId)
                     }
-                } else if (targetDocId.startsWith("$treeDocId/", ignoreCase = true)) {
-                    val childDocUri = DocumentsContract.buildDocumentUriUsingTree(perm.uri, targetDocId)
-                    val doc = DocumentFile.fromTreeUri(context, childDocUri)
-                    if (doc != null && doc.canRead()) {
+                    val doc = DocumentFile.fromSingleUri(context, childDocUri)
+                        ?: DocumentFile.fromTreeUri(context, childDocUri)
+                    if (doc != null && (doc.canRead() || doc.exists())) {
                         return toFileReference(doc, parentUri = null).copy(
                             displayName = normPath.substringAfterLast('/'),
                             metadata = mapOf("localBackingPath" to normPath, "safMounted" to "true")

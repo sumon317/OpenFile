@@ -241,6 +241,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                         isExpandedTablet = true,
                         currentDest = currentDest,
                         customTitleOverride = when {
+                            browserState.inspectArchiveFile != null ->
+                                "Archive: ${browserState.inspectArchiveFile!!.displayName}"
                             currentDest == OpenFileDestination.INTERNAL_STORAGE && browserState.activeRemoteProfile != null ->
                                 browserState.activeRemoteProfile!!.displayName
                             else -> null
@@ -370,6 +372,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                     isExpandedTablet = false,
                     currentDest = currentDest,
                     customTitleOverride = when {
+                        browserState.inspectArchiveFile != null ->
+                            "Archive: ${browserState.inspectArchiveFile!!.displayName}"
                         currentDest == OpenFileDestination.INTERNAL_STORAGE && browserState.activeRemoteProfile != null ->
                             browserState.activeRemoteProfile!!.displayName
                         else -> null
@@ -872,7 +876,10 @@ private fun DestinationRouter(
                 onOpenWithExternal = { viewModel.openWithExternalApp(it, forceChooser = true) },
                 onQuickPreview = { viewModel.openBuiltInPreview(it) },
                 onOpenParentFolder = { viewModel.openContainingFolder(it) },
-                onOpenLocalRoot = { viewModel.navigateToDestination(OpenFileDestination.INTERNAL_STORAGE) }
+                onOpenLocalRoot = { viewModel.navigateToDestination(OpenFileDestination.INTERNAL_STORAGE) },
+                onPreviewArchiveEntry = { ref, entry -> viewModel.previewArchiveEntry(ref, entry) },
+                onOpenArchiveSubFolder = { viewModel.openArchiveSubFolder(it) },
+                onViewArchive = { viewModel.inspectArchive(it) }
             )
         }
 
@@ -907,7 +914,8 @@ private fun DestinationRouter(
                     }
                 },
                 onDeleteDuplicateFile = { dupRef ->
-                    viewModel.deleteItems(listOf(dupRef), moveToTrash = true)
+                    val isSecondary = dupRef.uriOrPath.startsWith("/storage/") && !dupRef.uriOrPath.startsWith("/storage/emulated")
+                    viewModel.deleteItems(listOf(dupRef), moveToTrash = settings.moveToTrashByDefault && !isSecondary)
                 },
                 onRenameItem = { item, newName -> viewModel.renameItem(item, newName) },
                 onCopyItems = { items, mode ->

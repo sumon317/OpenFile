@@ -281,4 +281,80 @@ class ExampleUnitTest {
         val sortedNewFiles = FileSortAndFilterEngine.sortFiles(anyFiles, SortField.DATE, SortOrder.DESCENDING)
         assertEquals(listOf("app.apk", "backup.zip", "voice.m4a", "document.pdf"), sortedNewFiles.map { it.displayName })
     }
+
+    @Test
+    fun `native zip viewer extracts single entry to cache without decompressing entire archive`() = runTest {
+        val tempRoot = Files.createTempDirectory("openfile_single_entry_test").toFile()
+        try {
+            val srcDir = File(tempRoot, "src").apply { mkdirs() }
+            val fileA = File(srcDir, "readme.md").apply { writeText("# Welcome to OpenFile") }
+            val subDir = File(srcDir, "docs").apply { mkdirs() }
+            val fileB = File(subDir, "spec.json").apply { writeText("{\"feature\":\"native_zip_viewer\"}") }
+            File(subDir, "large_data.bin").writeBytes(ByteArray(1024 * 64) { 0x42 })
+
+            val zipFile = File(tempRoot, "test_archive.zip")
+            val createResult = ArchiveEngine.createArchive(
+                sourceFiles = listOf(fileA, subDir),
+                outputArchiveFile = zipFile,
+                format = ArchiveCreationFormat.ZIP
+            )
+            assertTrue(createResult.isSuccess)
+
+            val cacheDir = File(tempRoot, "cache").apply { mkdirs() }
+            val extractResult = ArchiveEngine.extractSingleEntryToCache(
+                archiveFile = zipFile,
+                entryPath = "docs/spec.json",
+                cacheDir = cacheDir
+            )
+
+            assertTrue(extractResult.isSuccess)
+            val cachedFile = extractResult.getOrThrow()
+            assertTrue(cachedFile.exists())
+            assertEquals("{\"feature\":\"native_zip_viewer\"}", cachedFile.readText())
+
+            // Ensure other files were not extracted into the cache folder
+            val cachedFiles = cacheDir.listFiles()?.flatMap { if (it.isDirectory) it.listFiles()?.toList() ?: emptyList() else listOf(it) } ?: emptyList()
+            assertFalse(cachedFiles.any { it.name == "large_data.bin" })
+            assertFalse(cachedFiles.any { it.name == "readme.md" })
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `resolveArchiveVirtualItems accurately organizes folder hierarchy and search results`() {
+        val entries = listOf(
+            com.example.core.archive.ArchiveEntryItem("src/main/App.kt", "App.kt", false, 500, 200, 1000L, false),
+            com.example.core.archive.ArchiveEntryItem("src/main/res/icon.png", "icon.png", false, 1500, 1200, 1000L, false),
+            com.example.core.archive.ArchiveEntryItem("src/test/AppTest.kt", "AppTest.kt", false, 300, 150, 1000L, false),
+            com.example.core.archive.ArchiveEntryItem("README.md", "README.md", false, 120, 80, 1000L, false)
+        )
+
+        // 1. Root level: should see "src/" as a virtual folder and "README.md" as a direct file
+        val rootItems = com.example.ui.screens.resolveArchiveVirtualItems(entries, subPath = "", searchQuery = "", isFlatView = false)
+        assertEquals(2, rootItems.size)
+        assertTrue(rootItems[0].isDirectory && rootItems[0].displayName == "src")
+        assertEquals(3, rootItems[0].childCount) // 3 items inside src
+        assertFalse(rootItems[1].isDirectory && rootItems[1].displayName == "README.md")
+
+        // 2. Inside "src": should see "main/" and "test/" virtual folders
+        val srcItems = com.example.ui.screens.resolveArchiveVirtualItems(entries, subPath = "src", searchQuery = "", isFlatView = false)
+        assertEquals(2, srcItems.size)
+        assertEquals(listOf("main", "test"), srcItems.map { it.displayName })
+
+        // 3. Inside "src/main": should see "res/" folder and "App.kt" file
+        val mainItems = com.example.ui.screens.resolveArchiveVirtualItems(entries, subPath = "src/main", searchQuery = "", isFlatView = false)
+        assertEquals(2, mainItems.size)
+        assertTrue(mainItems[0].isDirectory && mainItems[0].displayName == "res")
+        assertFalse(mainItems[1].isDirectory && mainItems[1].displayName == "App.kt")
+
+        // 4. Flat view: should return all 4 items directly
+        val flatItems = com.example.ui.screens.resolveArchiveVirtualItems(entries, subPath = "", searchQuery = "", isFlatView = true)
+        assertEquals(4, flatItems.size)
+
+        // 5. Search query "test": should match "src/test/AppTest.kt"
+        val searchItems = com.example.ui.screens.resolveArchiveVirtualItems(entries, subPath = "", searchQuery = "test", isFlatView = false)
+        assertEquals(1, searchItems.size)
+        assertEquals("src/test/AppTest.kt", searchItems[0].entryPath)
+    }
 }

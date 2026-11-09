@@ -579,7 +579,8 @@ fun StorageAnalysisScreen(
                         if (settings.confirmBeforeDelete) {
                             deleteConfirmTargets = listOf(item)
                         } else {
-                            onDeleteItems(listOf(item), settings.moveToTrashByDefault)
+                            val isSecondary = item.uriOrPath.startsWith("/storage/") && !item.uriOrPath.startsWith("/storage/emulated")
+                            onDeleteItems(listOf(item), settings.moveToTrashByDefault && !isSecondary)
                         }
                     },
                     onToggleBookmark = onToggleBookmark,
@@ -615,7 +616,8 @@ fun StorageAnalysisScreen(
                         if (settings.confirmBeforeDelete) {
                             deleteConfirmTargets = listOf(dirRef)
                         } else {
-                            onDeleteItems(listOf(dirRef), settings.moveToTrashByDefault)
+                            val isSecondary = dirRef.uriOrPath.startsWith("/storage/") && !dirRef.uriOrPath.startsWith("/storage/emulated")
+                            onDeleteItems(listOf(dirRef), settings.moveToTrashByDefault && !isSecondary)
                         }
                     },
                     onToggleBookmark = onToggleBookmark,
@@ -647,7 +649,8 @@ fun StorageAnalysisScreen(
                         if (settings.confirmBeforeDelete) {
                             deleteConfirmTargets = listOf(fileRef)
                         } else {
-                            onDeleteItems(listOf(fileRef), settings.moveToTrashByDefault)
+                            val isSecondary = fileRef.uriOrPath.startsWith("/storage/") && !fileRef.uriOrPath.startsWith("/storage/emulated")
+                            onDeleteItems(listOf(fileRef), settings.moveToTrashByDefault && !isSecondary)
                         }
                     },
                     onToggleBookmark = onToggleBookmark,
@@ -712,7 +715,8 @@ fun StorageAnalysisScreen(
                             if (settings.confirmBeforeDelete) {
                                 deleteConfirmTargets = selectedItemsList
                             } else {
-                                onDeleteItems(selectedItemsList, settings.moveToTrashByDefault)
+                                val hasSecondary = selectedItemsList.any { it.uriOrPath.startsWith("/storage/") && !it.uriOrPath.startsWith("/storage/emulated") }
+                                onDeleteItems(selectedItemsList, settings.moveToTrashByDefault && !hasSecondary)
                                 selectedUris = emptySet()
                             }
                         }
@@ -823,8 +827,14 @@ fun StorageAnalysisScreen(
     // Delete Confirmation Dialog
     if (deleteConfirmTargets != null) {
         val targets = deleteConfirmTargets!!
-        val isLocalOrSaf = targets.all { it.providerType == ProviderType.LOCAL || it.providerType == ProviderType.SAF }
-        var useTrash by remember { mutableStateOf(settings.moveToTrashByDefault && isLocalOrSaf) }
+        val isAllLocalOrSaf = targets.all { it.providerType == ProviderType.LOCAL || it.providerType == ProviderType.SAF }
+        val hasSecondaryOrRemote = targets.any {
+            it.providerType != ProviderType.LOCAL && it.providerType != ProviderType.SAF ||
+                (it.providerType == ProviderType.LOCAL && it.uriOrPath.startsWith("/storage/") && !it.uriOrPath.startsWith("/storage/emulated"))
+        }
+        var useTrash by remember(deleteConfirmTargets, settings.moveToTrashByDefault) {
+            mutableStateOf(settings.moveToTrashByDefault && isAllLocalOrSaf && !hasSecondaryOrRemote)
+        }
         val count = targets.size
         val totalSize = formatByteSize(targets.sumOf { it.sizeBytes })
 
@@ -841,10 +851,10 @@ fun StorageAnalysisScreen(
             title = {
                 Text(
                     text = when {
-                        useTrash && count == 1 -> "Move to Trash?"
-                        useTrash -> "Move $count items to Trash?"
+                        useTrash && count == 1 -> "Move to Recycle Bin?"
+                        useTrash -> "Move $count items to Recycle Bin?"
                         count == 1 -> "Delete \"${targets.first().displayName}\"?"
-                        else -> "Delete $count items permanently?"
+                        else -> "Delete $count items directly?"
                     },
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold
@@ -854,15 +864,28 @@ fun StorageAnalysisScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
                         text = when {
-                            useTrash && count == 1 -> "\"${targets.first().displayName}\" ($totalSize) will be moved to the Trash. You can restore it anytime."
-                            useTrash -> "$count items ($totalSize) will be moved to the Trash. You can restore them anytime."
-                            count == 1 -> "\"${targets.first().displayName}\" ($totalSize) will be permanently deleted. This action cannot be undone."
-                            else -> "$count items ($totalSize) will be permanently deleted. This action cannot be undone."
+                            useTrash && count == 1 -> "\"${targets.first().displayName}\" ($totalSize) will be moved to the Recycle Bin. You can restore it anytime."
+                            useTrash -> "$count items ($totalSize) will be moved to the Recycle Bin. You can restore them anytime."
+                            count == 1 -> "\"${targets.first().displayName}\" ($totalSize) will be deleted directly and permanently. This action cannot be undone."
+                            else -> "$count items ($totalSize) will be deleted directly and permanently. This action cannot be undone."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (isLocalOrSaf) {
+                    if (hasSecondaryOrRemote) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "Items on SD Card / USB storage skip Recycle Bin and are deleted directly.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                        }
+                    } else if (isAllLocalOrSaf) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = if (useTrash) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f)
@@ -890,12 +913,12 @@ fun StorageAnalysisScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column {
                                     Text(
-                                        text = "Move to Trash",
+                                        text = "Move to Recycle Bin",
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Medium
                                     )
                                     Text(
-                                        text = if (useTrash) "Files can be recovered from Trash later" else "Skip Trash and delete permanently",
+                                        text = if (useTrash) "Files can be recovered from Trash later" else "Skip Recycle Bin and delete directly (instant)",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = if (useTrash) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
                                     )
@@ -922,7 +945,7 @@ fun StorageAnalysisScreen(
                     },
                     modifier = Modifier.testTag("analyzer_dialog_confirm_delete")
                 ) {
-                    Text(if (useTrash) "Move to Trash" else "Delete Permanently")
+                    Text(if (useTrash) "Move to Trash" else "Delete Directly")
                 }
             },
             dismissButton = {

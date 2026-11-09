@@ -81,6 +81,7 @@ data class BrowserUiState(
     val activeCategoryFilter: FileCategory? = null,
     val inspectArchiveFile: FileReference? = null,
     val archiveEntries: List<ArchiveEntryItem> = emptyList(),
+    val archiveSubPath: String = "",
     val activeRemoteProfile: NetworkProfileEntity? = null,
     val currentSortField: SortField = SortField.NAME,
     val currentSortOrder: SortOrder = SortOrder.ASCENDING
@@ -603,7 +604,16 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             return true
         }
         if (state.inspectArchiveFile != null) {
-            _browserState.value = state.copy(inspectArchiveFile = null, archiveEntries = emptyList())
+            if (state.archiveSubPath.isNotEmpty()) {
+                val parentSub = if (state.archiveSubPath.contains('/')) {
+                    state.archiveSubPath.substringBeforeLast('/')
+                } else {
+                    ""
+                }
+                _browserState.value = state.copy(archiveSubPath = parentSub)
+                return true
+            }
+            _browserState.value = state.copy(inspectArchiveFile = null, archiveEntries = emptyList(), archiveSubPath = "")
             return true
         }
         val current = state.currentDirectory ?: return false
@@ -789,8 +799,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             )
         }
 
-        // 1. Check if supported archive (ZIP, TAR, GZ, XZ, 7Z) -> open built-in archive inspector
-        if (item.extension.lowercase() in FileCategory.ARCHIVES.extensions && item.providerType == ProviderType.LOCAL) {
+        // 1. Check if supported archive (ZIP, TAR, GZ, XZ, 7Z, JAR) -> open native zip viewer
+        val archiveExts = FileCategory.ARCHIVES.extensions + setOf("zip", "jar", "7z", "tar", "gz", "xz", "tgz", "txz")
+        if (item.extension.lowercase() in archiveExts) {
             inspectArchive(item)
             return
         }
@@ -1205,10 +1216,36 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 null
             }
         }
+
+        // Accurately update category usage buckets and recalculate fractions
+        val categoryDeltas = mutableMapOf<String, Pair<Long, Int>>()
+        for (item in deletedItems) {
+            if (!item.isDirectory) {
+                val cat = FileCategory.categorize(item)?.title ?: "Other"
+                val prev = categoryDeltas[cat] ?: (0L to 0)
+                categoryDeltas[cat] = (prev.first + item.sizeBytes) to (prev.second + 1)
+            }
+        }
+        val updatedTotalBytes = (current.usedBytes - freedBytes).coerceAtLeast(0L)
+        val updatedBuckets = current.categoryBuckets.map { bucket ->
+            val delta = categoryDeltas[bucket.categoryName]
+            if (delta != null) {
+                val newBytes = (bucket.bytesUsed - delta.first).coerceAtLeast(0L)
+                val newCount = (bucket.fileCount - delta.second).coerceAtLeast(0)
+                val newFraction = if (updatedTotalBytes > 0L) newBytes.toFloat() / updatedTotalBytes.toFloat() else 0f
+                bucket.copy(bytesUsed = newBytes, fileCount = newCount, fractionOfTotal = newFraction)
+            } else {
+                val newFraction = if (updatedTotalBytes > 0L) bucket.bytesUsed.toFloat() / updatedTotalBytes.toFloat() else 0f
+                bucket.copy(fractionOfTotal = newFraction)
+            }
+        }
+
         _analysisReport.value = current.copy(
-            usedBytes = (current.usedBytes - freedBytes).coerceAtLeast(0L),
+            usedBytes = updatedTotalBytes,
             freeBytes = current.freeBytes + freedBytes,
             scannedFilesCount = (current.scannedFilesCount - deletedItems.count { !it.isDirectory }).coerceAtLeast(0),
+            scannedDirectoriesCount = (current.scannedDirectoriesCount - deletedItems.count { it.isDirectory }).coerceAtLeast(0),
+            categoryBuckets = updatedBuckets,
             largestFiles = updatedLargestFiles,
             largestDirectories = updatedLargestDirs,
             duplicateGroups = updatedDuplicates
@@ -1394,7 +1431,21 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     fun inspectArchive(archiveRef: FileReference) {
         viewModelScope.launch {
             _browserState.value = _browserState.value.copy(isLoading = true, errorMessage = null)
-            val file = File(archiveRef.uriOrPath)
+            val file = if (archiveRef.providerType == ProviderType.SAF && !File(archiveRef.uriOrPath).exists()) {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        val uri = Uri.parse(archiveRef.uriOrPath)
+                        val cacheFile = File(context.cacheDir, "saf_archive_temp_${archiveRef.displayName}")
+                        context.contentResolver.openInputStream(uri)?.use { input ->
+                            cacheFile.outputStream().use { out -> input.copyTo(out) }
+                        }
+                        cacheFile
+                    }.getOrNull()
+                } ?: File(archiveRef.uriOrPath)
+            } else {
+                File(archiveRef.uriOrPath)
+            }
+
             if (!file.exists()) {
                 _browserState.value = _browserState.value.copy(isLoading = false)
                 showStatus("Cannot locate archive file: ${archiveRef.displayName}")
@@ -1402,15 +1453,62 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             }
             ArchiveEngine.listArchiveEntries(file).fold(
                 onSuccess = { entries ->
+                    _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
                     _browserState.value = _browserState.value.copy(
-                        inspectArchiveFile = archiveRef,
+                        inspectArchiveFile = archiveRef.copy(uriOrPath = file.absolutePath),
                         archiveEntries = entries,
+                        archiveSubPath = "",
                         isLoading = false
                     )
                 },
                 onFailure = { err ->
                     _browserState.value = _browserState.value.copy(isLoading = false)
                     showStatus("Cannot read archive: ${err.message}")
+                }
+            )
+        }
+    }
+
+    fun openArchiveSubFolder(subPath: String) {
+        _browserState.value = _browserState.value.copy(archiveSubPath = subPath)
+    }
+
+    fun closeArchiveInspector() {
+        _browserState.value = _browserState.value.copy(
+            inspectArchiveFile = null,
+            archiveEntries = emptyList(),
+            archiveSubPath = ""
+        )
+    }
+
+    fun previewArchiveEntry(archiveRef: FileReference, entry: ArchiveEntryItem) {
+        if (entry.isDirectory) {
+            openArchiveSubFolder(entry.entryPath.trimEnd('/'))
+            return
+        }
+        viewModelScope.launch {
+            val archiveFile = File(archiveRef.uriOrPath)
+            if (!archiveFile.exists()) {
+                showStatus("Archive file not found: ${archiveRef.displayName}")
+                return@launch
+            }
+            _browserState.value = _browserState.value.copy(isLoading = true)
+            ArchiveEngine.extractSingleEntryToCache(
+                archiveFile = archiveFile,
+                entryPath = entry.entryPath,
+                cacheDir = context.cacheDir
+            ).fold(
+                onSuccess = { cachedFile ->
+                    _browserState.value = _browserState.value.copy(isLoading = false)
+                    val ref = localProvider.toFileReference(cachedFile).copy(
+                        displayName = entry.displayName,
+                        sizeBytes = entry.uncompressedSize
+                    )
+                    _previewFile.value = ref
+                },
+                onFailure = { err ->
+                    _browserState.value = _browserState.value.copy(isLoading = false)
+                    showStatus("Cannot view file: ${err.message}")
                 }
             )
         }

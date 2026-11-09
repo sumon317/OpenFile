@@ -1409,9 +1409,15 @@ fun SettingsScreen(
                         onCheckedChange = onConfirmDeleteChange
                     )
                     SettingsToggleRow(
-                        title = "Move Deleted Local/SAF Files to Trash by Default",
+                        title = "Move Deleted Files to Recycle Bin by Default",
+                        subtitle = if (settings.moveToTrashByDefault) {
+                            "Files can be restored from Trash (turn off to skip Recycle Bin and delete directly)"
+                        } else {
+                            "Recycle Bin skipped: Files will be deleted directly and instantly"
+                        },
                         checked = settings.moveToTrashByDefault,
-                        onCheckedChange = onMoveToTrashChange
+                        onCheckedChange = onMoveToTrashChange,
+                        testTag = "settings_toggle_move_to_trash"
                     )
                     SettingsToggleRow(
                         title = "Verify SHA-256 Checksum After Copy/Move",
@@ -1629,6 +1635,7 @@ private fun SettingsToggleRow(
     title: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    subtitle: String? = null,
     testTag: String? = null
 ) {
     Row(
@@ -1636,11 +1643,23 @@ private fun SettingsToggleRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.weight(1f)
-        )
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 16.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
