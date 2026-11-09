@@ -1428,6 +1428,21 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun clearRecentFiles() {
+        viewModelScope.launch {
+            dao.clearRecentFiles()
+            categoryCache.remove(FileCategory.RECENT_FILES)
+            categoryCacheAt.remove(FileCategory.RECENT_FILES)
+            _categoryCounts.value = _categoryCounts.value + (FileCategory.RECENT_FILES to 0)
+            if (_browserState.value.activeCategoryFilter == FileCategory.RECENT_FILES) {
+                _browserState.value = _browserState.value.copy(
+                    items = emptyList()
+                )
+            }
+            showStatus("Cleared recent files")
+        }
+    }
+
     fun toggleBookmark(item: FileReference) {
         viewModelScope.launch {
             val existing = bookmarks.value.firstOrNull { it.uriOrPath == item.uriOrPath }

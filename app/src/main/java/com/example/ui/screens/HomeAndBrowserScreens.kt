@@ -189,7 +189,8 @@ fun HomeScreen(
     onOpenRemoteConnections: () -> Unit = { onNavigateDestination(OpenFileDestination.NETWORK) },
     appUpdateState: AppUpdateUiState? = null,
     onOpenUpdateDialog: () -> Unit = {},
-    showHiddenFiles: Boolean = false
+    showHiddenFiles: Boolean = false,
+    onClearRecentFiles: () -> Unit = {}
 ) {
     val displayRecentFiles = remember(recentFiles, showHiddenFiles) {
         if (showHiddenFiles) recentFiles else recentFiles.filter { !it.displayName.startsWith(".") && !isPathInsideHiddenDirectory(it.uriOrPath) }
@@ -759,8 +760,29 @@ fun HomeScreen(
                     fontWeight = FontWeight.SemiBold
                 )
                 if (displayRecentFiles.isNotEmpty()) {
-                    TextButton(onClick = { onNavigateDestination(OpenFileDestination.RECENT_FILES) }) {
-                        Text("More")
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        TextButton(
+                            onClick = onClearRecentFiles,
+                            modifier = Modifier.testTag("home_clear_recent_button")
+                        ) {
+                            Icon(
+                                Icons.Filled.Delete,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                "Clear Recent",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        TextButton(onClick = { onNavigateDestination(OpenFileDestination.RECENT_FILES) }) {
+                            Text("More")
+                        }
                     }
                 }
             }
@@ -950,7 +972,8 @@ fun FileBrowserScreen(
     hasAllFilesAccess: Boolean = true,
     onRequestAllFilesAccess: (() -> Unit)? = null,
     onToggleShowHidden: (() -> Unit)? = null,
-    onRequestSafForPath: ((String?) -> Unit)? = null
+    onRequestSafForPath: ((String?) -> Unit)? = null,
+    onClearRecentFiles: (() -> Unit)? = null
 ) {
     if (browserState.inspectArchiveFile != null) {
         NativeZipViewer(
@@ -1115,6 +1138,18 @@ fun FileBrowserScreen(
                 ) {
                     Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = "New Text File", modifier = Modifier.size(20.dp))
                 }
+            } else if (browserState.activeCategoryFilter == FileCategory.RECENT_FILES && onClearRecentFiles != null) {
+                IconButton(
+                    onClick = onClearRecentFiles,
+                    modifier = Modifier.size(38.dp).testTag("browser_clear_recents_button")
+                ) {
+                    Icon(
+                        Icons.Filled.DeleteForever,
+                        contentDescription = "Clear Recent Files",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
         }
 
@@ -1145,12 +1180,37 @@ fun FileBrowserScreen(
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    val count = filteredItems.size
-                    Text(
-                        text = "$count ${if (count == 1) "item" else "items"}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (browserState.activeCategoryFilter == FileCategory.RECENT_FILES && onClearRecentFiles != null && filteredItems.isNotEmpty()) {
+                            TextButton(
+                                onClick = onClearRecentFiles,
+                                modifier = Modifier.testTag("category_clear_recents_button"),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    "Clear Recent",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                        val count = filteredItems.size
+                        Text(
+                            text = "$count ${if (count == 1) "item" else "items"}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         }

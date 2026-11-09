@@ -834,7 +834,8 @@ private fun DestinationRouter(
                 onOpenRemoteConnections = { viewModel.openNetworkTab(1) },
                 appUpdateState = appUpdateState,
                 onOpenUpdateDialog = { viewModel.openAppUpdateDialog() },
-                showHiddenFiles = settings.showHiddenFiles
+                showHiddenFiles = settings.showHiddenFiles,
+                onClearRecentFiles = { viewModel.clearRecentFiles() }
             )
         }
 
@@ -890,7 +891,8 @@ private fun DestinationRouter(
                 onOpenLocalRoot = { viewModel.navigateToDestination(OpenFileDestination.INTERNAL_STORAGE) },
                 onPreviewArchiveEntry = { ref, entry -> viewModel.previewArchiveEntry(ref, entry) },
                 onOpenArchiveSubFolder = { viewModel.openArchiveSubFolder(it) },
-                onViewArchive = { viewModel.inspectArchive(it) }
+                onViewArchive = { viewModel.inspectArchive(it) },
+                onClearRecentFiles = { viewModel.clearRecentFiles() }
             )
         }
 

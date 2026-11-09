@@ -3,12 +3,14 @@ package com.example
 import android.content.Context
 import android.content.Intent
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.core.app.ApplicationProvider
@@ -1280,5 +1282,68 @@ class ExampleRobolectricTest {
             tempDir.deleteRecursively()
         }
     }
+
+    @Test
+    fun `clear recent files button on Home and browser category clears recents quickly without settings`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+
+        // Ensure we are on HOME
+        composeTestRule.runOnUiThread {
+            viewModel.navigateToDestination(OpenFileDestination.HOME)
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Insert a recent file
+        val sampleRecent = com.example.core.database.RecentFileEntity(
+            uriOrPath = "/storage/emulated/0/Download/quick_sample.pdf",
+            providerType = "LOCAL",
+            displayName = "quick_sample.pdf",
+            parentUriOrPath = "/storage/emulated/0/Download",
+            mimeType = "application/pdf",
+            sizeBytes = 1024L,
+            lastModifiedAt = System.currentTimeMillis()
+        )
+        viewModel.dao.upsertRecentFile(sampleRecent)
+
+        // Wait for recentFiles state to update and display on Home
+        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            viewModel.recentFiles.value.any { it.displayName == "quick_sample.pdf" }
+        }
+        composeTestRule.waitForIdle()
+
+        // 2. Scroll to and verify Home displays "home_clear_recent_button"
+        composeTestRule.onNodeWithTag("home_screen_list").performScrollToNode(hasTestTag("home_clear_recent_button"))
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("home_clear_recent_button").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+
+        // 3. Verify recents are now empty
+        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            viewModel.recentFiles.value.isEmpty()
+        }
+        assertTrue(viewModel.recentFiles.value.isEmpty())
+
+        // 4. Test within RECENT_FILES category
+        viewModel.dao.upsertRecentFile(sampleRecent)
+        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            viewModel.recentFiles.value.isNotEmpty()
+        }
+        composeTestRule.runOnUiThread {
+            viewModel.navigateToDestination(OpenFileDestination.RECENT_FILES)
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("browser_clear_recents_button").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            viewModel.recentFiles.value.isEmpty()
+        }
+        assertTrue(viewModel.recentFiles.value.isEmpty())
+    }
 }
+
 
