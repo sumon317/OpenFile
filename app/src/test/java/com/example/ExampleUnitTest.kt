@@ -134,8 +134,11 @@ class ExampleUnitTest {
     @Test
     fun `sanitizeFileName rejects path separators and dot-dot`() {
         assertEquals("report_2026.pdf", LocalFileSystemProvider.sanitizeFileName("  report_2026.pdf "))
-        val illegalResult = runCatching { LocalFileSystemProvider.sanitizeFileName("../hack") }
-        assertTrue(illegalResult.isFailure)
+        assertTrue(runCatching { LocalFileSystemProvider.sanitizeFileName("../hack") }.isFailure)
+        assertTrue(runCatching { LocalFileSystemProvider.sanitizeFileName("bad\u0000name.txt") }.isFailure)
+        assertTrue(runCatching { LocalFileSystemProvider.sanitizeFileName("line\nbreak.txt") }.isFailure)
+        assertTrue(runCatching { LocalFileSystemProvider.sanitizeFileName("line\rbreak.txt") }.isFailure)
+        assertTrue(runCatching { LocalFileSystemProvider.sanitizeFileName("   ") }.isFailure)
     }
 
     @Test
@@ -473,6 +476,14 @@ class ExampleUnitTest {
                 "photo_10.png"
             ),
             sorted
+        )
+
+        // Verifies that numeric equality does not pre-empt differing suffix characters
+        val suffixFiles = listOf("file1_b.txt", "file01_a.txt", "file1.txt", "file01.txt")
+        val sortedSuffix = suffixFiles.sortedWith(com.example.core.filesystem.NaturalOrderComparator)
+        assertEquals(
+            listOf("file1.txt", "file01.txt", "file01_a.txt", "file1_b.txt"),
+            sortedSuffix
         )
     }
 

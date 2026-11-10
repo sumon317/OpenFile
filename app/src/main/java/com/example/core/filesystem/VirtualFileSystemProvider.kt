@@ -1,6 +1,5 @@
 package com.example.core.filesystem
 
-import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
@@ -15,7 +14,6 @@ import android.webkit.MimeTypeMap
 import androidx.documentfile.provider.DocumentFile
 import com.example.core.model.FileCategory
 import com.example.core.model.FileReference
-import com.example.core.model.ProviderCapability
 import com.example.core.model.ProviderType
 import com.example.core.model.SortField
 import com.example.core.model.SortOrder
@@ -30,7 +28,6 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import kotlin.coroutines.coroutineContext
 
 /**
  * Capability-aware interface implemented by Local, SAF, MediaStore, Archive, Network, and Cloud providers.
@@ -268,13 +265,22 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
             val process = ProcessBuilder(suBinary, "-c", "ls -1Ap '$escapedPath'")
                 .redirectErrorStream(true)
                 .start()
-            val exitCode = process.waitFor()
-            if (exitCode != 0) {
+            var lines: List<String>? = null
+            var exitCode = -1
+            val workerThread = Thread {
+                lines = runCatching { process.inputStream.bufferedReader().readLines() }.getOrNull()
+                exitCode = runCatching { process.waitFor() }.getOrDefault(-1)
+            }
+            workerThread.start()
+            workerThread.join(3000L)
+            if (workerThread.isAlive) {
                 process.destroy()
+                workerThread.interrupt()
                 return null
             }
-            val lines = process.inputStream.bufferedReader().readLines()
-            lines.mapNotNull { rawLine ->
+            if (exitCode != 0) return null
+            val outputLines = lines ?: return null
+            outputLines.mapNotNull { rawLine ->
                 val trimmed = rawLine.trim()
                 if (trimmed.isEmpty()) return@mapNotNull null
                 val isDir = trimmed.endsWith("/")
@@ -479,8 +485,8 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
     fun isSecondaryStoragePath(path: String): Boolean {
         val norm = path.replace('\\', '/').trimEnd('/')
         val primary = getPrimaryRootDirectory().absolutePath.replace('\\', '/').trimEnd('/')
-        if (norm.startsWith("$primary/") || norm == primary) return false
-        return norm.startsWith("/storage/") || norm.startsWith("/mnt/")
+        return !(norm.startsWith("$primary/") || norm == primary) &&
+            (norm.startsWith("/storage/") || norm.startsWith("/mnt/"))
     }
 
     override suspend fun delete(target: FileReference): Result<Boolean> = withContext(Dispatchers.IO) {
@@ -829,15 +835,19 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
             require(!trimmed.contains('/') && !trimmed.contains('\\') && trimmed != ".." && trimmed != ".") {
                 "File name contains invalid path characters."
             }
+            require(!trimmed.contains('\u0000') && !trimmed.contains('\r') && !trimmed.contains('\n')) {
+                "File name contains invalid control characters."
+            }
             return trimmed
         }
 
         fun guessMimeType(ext: String): String = when (ext.lowercase()) {
-            "txt", "md", "log", "ini", "conf", "kt", "java", "py", "js", "sh", "yaml", "yml", "c", "cpp", "h", "hpp", "rs", "go", "rb", "php", "sql", "gradle", "properties", "toml" -> "text/plain"
+            "txt", "md", "markdown", "log", "ini", "conf", "kt", "java", "py", "js", "sh", "yaml", "yml", "c", "cpp", "h", "hpp", "rs", "go", "rb", "php", "sql", "gradle", "properties", "toml" -> "text/plain"
             "json" -> "application/json"
             "xml" -> "application/xml"
             "html", "htm" -> "text/html"
             "csv" -> "text/csv"
+            "tsv" -> "text/tab-separated-values"
             "pdf" -> "application/pdf"
             "doc" -> "application/msword"
             "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -848,8 +858,11 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
             "odt" -> "application/vnd.oasis.opendocument.text"
             "ods" -> "application/vnd.oasis.opendocument.spreadsheet"
             "odp" -> "application/vnd.oasis.opendocument.presentation"
+            "odf" -> "application/vnd.oasis.opendocument.formula"
             "rtf" -> "application/rtf"
             "epub" -> "application/epub+zip"
+            "cbz" -> "application/vnd.comicbook+zip"
+            "cbr" -> "application/vnd.comicbook-rar"
             "zip" -> "application/zip"
             "rar" -> "application/vnd.rar"
             "tar" -> "application/x-tar"
@@ -896,13 +909,9 @@ class SafDocumentProvider(private val context: Context) : VirtualFileSystemProvi
 
     fun isUriPermissionValid(uri: Uri): Boolean {
         val persisted = context.contentResolver.persistedUriPermissions
-        val hasPersisted = persisted.any {
-            it.uri == uri && it.isReadPermission
-        }
-        if (!hasPersisted) return false
-        return runCatching {
-            val doc = DocumentFile.fromTreeUri(context, uri)
-            doc != null && doc.canRead()
+        val hasPersisted = persisted.any { it.uri == uri && it.isReadPermission }
+        return hasPersisted && runCatching {
+            DocumentFile.fromTreeUri(context, uri)?.canRead() == true
         }.getOrDefault(false)
     }
 
@@ -1322,13 +1331,14 @@ class MediaStoreProvider(
         }
 
         val collected = ArrayList<FileReference>(256)
-        val topDirs = primaryRoot.listFiles()?.filter { dir ->
+        val allRootChildren = primaryRoot.listFiles().orEmpty()
+        val topDirs = allRootChildren.filter { dir ->
             dir.isDirectory &&
                 !dir.name.startsWith(".") &&
                 !dir.name.equals("Android", ignoreCase = true)
-        }.orEmpty()
+        }
 
-        primaryRoot.listFiles()?.forEach { file ->
+        allRootChildren.forEach { file ->
             if (!file.isDirectory && !file.name.startsWith(".")) {
                 collected.add(localProvider.toFileReference(file))
             }
@@ -1505,6 +1515,7 @@ object NaturalOrderComparator : Comparator<String> {
         val len2 = s2.length
         var idx1 = 0
         var idx2 = 0
+        var bias = 0
 
         while (idx1 < len1 && idx2 < len2) {
             val c1 = s1[idx1]
@@ -1527,10 +1538,12 @@ object NaturalOrderComparator : Comparator<String> {
                 val effLen1 = end1 - nz1
                 val effLen2 = end2 - nz2
 
+                // If numerical lengths differ, the one with more significant digits is larger
                 if (effLen1 != effLen2) {
                     return effLen1 - effLen2
                 }
 
+                // Compare significant digits from most to least significant
                 var p1 = nz1
                 var p2 = nz2
                 while (p1 < end1 && p2 < end2) {
@@ -1541,10 +1554,12 @@ object NaturalOrderComparator : Comparator<String> {
                     p2++
                 }
 
+                // Numbers are numerically equal. Record leading zeros difference as tie-breaker bias,
+                // but continue comparing subsequent characters in the strings.
                 val fullLen1 = end1 - start1
                 val fullLen2 = end2 - start2
-                if (fullLen1 != fullLen2) {
-                    return fullLen1 - fullLen2
+                if (bias == 0 && fullLen1 != fullLen2) {
+                    bias = fullLen1 - fullLen2
                 }
             } else {
                 val lc1 = c1.lowercaseChar()
@@ -1557,7 +1572,10 @@ object NaturalOrderComparator : Comparator<String> {
             }
         }
 
-        return len1 - len2
+        if (idx1 == len1 && idx2 == len2 && bias != 0) {
+            return bias
+        }
+        return if (len1 != len2) len1 - len2 else bias
     }
 }
 
