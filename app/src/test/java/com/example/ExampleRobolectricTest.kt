@@ -19,6 +19,8 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.core.archive.ArchiveEngine
 import com.example.core.database.NetworkProfileEntity
 import com.example.core.database.OpenFileDatabase
+import com.example.core.datastore.FileOpenAction
+import com.example.ui.components.formatMediaDuration
 import com.example.core.filesystem.ClipboardMode
 import com.example.core.filesystem.FileSortAndFilterEngine
 import com.example.core.filesystem.LocalFileSystemProvider
@@ -65,6 +67,14 @@ class ExampleRobolectricTest {
 
     @get:Rule
     val composeTestRule = createAndroidComposeRule<MainActivity>()
+
+    @org.junit.Before
+    fun setUp() = runBlocking {
+        composeTestRule.runOnUiThread {
+            composeTestRule.activity.viewModel.setFileOpenAction(FileOpenAction.BUILT_IN_FIRST)
+        }
+        composeTestRule.waitForIdle()
+    }
 
     @Test
     fun `app name resource is OpenFile`() {
@@ -1742,7 +1752,139 @@ class ExampleRobolectricTest {
             discoveredImages.size >= 1100
         )
     }
+
+    @Test
+    fun `formatMediaDuration formats durations accurately for audio and video`() {
+        assertEquals("00:00", formatMediaDuration(0L))
+        assertEquals("00:00", formatMediaDuration(-100L))
+        assertEquals("00:05", formatMediaDuration(5000L))
+        assertEquals("01:05", formatMediaDuration(65000L))
+        assertEquals("10:30", formatMediaDuration(630000L))
+        assertEquals("1:01:05", formatMediaDuration(3665000L))
+        assertEquals("12:34:56", formatMediaDuration(45296000L))
+    }
+
+    @Test
+    fun `clicking audio or video file opens built-in media player preview when action is BUILT_IN_FIRST`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+        try {
+            composeTestRule.runOnUiThread {
+                viewModel.setFileOpenAction(FileOpenAction.BUILT_IN_FIRST)
+            }
+            composeTestRule.waitForIdle()
+
+            val audioFile = FileReference(
+                providerType = ProviderType.LOCAL,
+                uriOrPath = "/sdcard/Music/test_track.mp3",
+                displayName = "test_track.mp3",
+                parentUriOrPath = "/sdcard/Music",
+                isDirectory = false,
+                sizeBytes = 1024L * 1024L,
+                mimeType = "audio/mpeg"
+            )
+            composeTestRule.runOnUiThread {
+                viewModel.onFileItemClicked(audioFile)
+            }
+            composeTestRule.waitForIdle()
+
+            val audioPreview = viewModel.previewState.value
+            assertNotNull("Audio file should open in built-in preview", audioPreview)
+            assertEquals("test_track.mp3", audioPreview?.currentFile?.displayName)
+
+            composeTestRule.runOnUiThread {
+                viewModel.closePreviewDialog()
+            }
+            assertNull("Preview should be cleared after close", viewModel.previewState.value)
+
+            val videoFile = FileReference(
+                providerType = ProviderType.LOCAL,
+                uriOrPath = "/sdcard/Movies/sample_clip.mp4",
+                displayName = "sample_clip.mp4",
+                parentUriOrPath = "/sdcard/Movies",
+                isDirectory = false,
+                sizeBytes = 5 * 1024L * 1024L,
+                mimeType = "video/mp4"
+            )
+            composeTestRule.runOnUiThread {
+                viewModel.onFileItemClicked(videoFile)
+            }
+            composeTestRule.waitForIdle()
+
+            val videoPreview = viewModel.previewState.value
+            assertNotNull("Video file should open in built-in preview", videoPreview)
+            assertEquals("sample_clip.mp4", videoPreview?.currentFile?.displayName)
+
+            composeTestRule.runOnUiThread {
+                viewModel.closePreviewDialog()
+            }
+        } finally {
+            composeTestRule.runOnUiThread {
+                viewModel.setFileOpenAction(FileOpenAction.BUILT_IN_FIRST)
+            }
+            composeTestRule.waitForIdle()
+        }
+    }
+
+    @Test
+    fun `file item click triggers OpenWithBottomSheet when action is ASK_OPEN_WITH`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+        try {
+            viewModel.setFileOpenAction(FileOpenAction.ASK_OPEN_WITH)
+            composeTestRule.waitForIdle()
+
+            val testDoc = FileReference(
+                providerType = ProviderType.LOCAL,
+                uriOrPath = "/sdcard/Documents/report.pdf",
+                displayName = "report.pdf",
+                parentUriOrPath = "/sdcard/Documents",
+                isDirectory = false,
+                sizeBytes = 2048L,
+                mimeType = "application/pdf"
+            )
+
+            composeTestRule.runOnUiThread {
+                viewModel.onFileItemClicked(testDoc)
+            }
+            composeTestRule.waitForIdle()
+
+            val openWith = viewModel.openWithFile.value
+            assertNotNull("OpenWithBottomSheet should be requested when action is ASK_OPEN_WITH", openWith)
+            assertEquals("report.pdf", openWith?.displayName)
+
+            composeTestRule.runOnUiThread {
+                viewModel.dismissOpenWith()
+            }
+            composeTestRule.waitForIdle()
+            assertNull("OpenWithBottomSheet should be dismissed", viewModel.openWithFile.value)
+        } finally {
+            viewModel.setFileOpenAction(FileOpenAction.BUILT_IN_FIRST)
+            composeTestRule.waitForIdle()
+        }
+    }
+
+    @Test
+    fun `FileOpenAction settings updates and persists correctly`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+        val settingsStore = viewModel.settingsStore
+
+        settingsStore.setFileOpenAction(FileOpenAction.ALWAYS_EXTERNAL)
+        var updated = settingsStore.settingsFlow.first()
+        assertEquals(FileOpenAction.ALWAYS_EXTERNAL, updated.fileOpenAction)
+
+        settingsStore.setFileOpenAction(FileOpenAction.BUILT_IN_FIRST)
+        updated = settingsStore.settingsFlow.first()
+        assertEquals(FileOpenAction.BUILT_IN_FIRST, updated.fileOpenAction)
+
+        composeTestRule.runOnUiThread {
+            viewModel.setFileOpenAction(FileOpenAction.BUILT_IN_FIRST)
+        }
+        composeTestRule.waitForIdle()
+    }
 }
+
 
 
 

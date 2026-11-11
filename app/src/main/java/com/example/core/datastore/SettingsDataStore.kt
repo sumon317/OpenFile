@@ -43,8 +43,15 @@ data class AppSettingsState(
     val ftpUseExplicitTls: Boolean = false,
     val ftpIdleTimeoutMinutes: Int = 15,
     val ftpRootPath: String = "",
-    val autoCheckUpdates: Boolean = true
+    val autoCheckUpdates: Boolean = true,
+    val fileOpenAction: FileOpenAction = FileOpenAction.BUILT_IN_FIRST
 )
+
+enum class FileOpenAction(val label: String, val description: String) {
+    BUILT_IN_FIRST("Built-in Viewer First", "Opens files in OpenFile's built-in readers and players (media, documents, images)"),
+    ASK_OPEN_WITH("Ask Every Time", "Shows the 'Open With...' bottom sheet to choose built-in or external app"),
+    ALWAYS_EXTERNAL("Always Use System Chooser", "Always shows Android's system App Chooser to pick an external app")
+}
 
 class SettingsDataStore(private val context: Context) {
 
@@ -84,6 +91,7 @@ class SettingsDataStore(private val context: Context) {
         val FTP_TIMEOUT_MIN = intPreferencesKey("ftp_timeout_min")
         val FTP_ROOT_PATH = stringPreferencesKey("ftp_root_path")
         val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
+        val FILE_OPEN_ACTION = stringPreferencesKey("file_open_action")
     }
 
     val settingsFlow: Flow<AppSettingsState> = context.openFileDataStore.data.map { prefs ->
@@ -125,7 +133,10 @@ class SettingsDataStore(private val context: Context) {
             ftpUseExplicitTls = prefs[Keys.FTP_USE_TLS] ?: false,
             ftpIdleTimeoutMinutes = prefs[Keys.FTP_TIMEOUT_MIN] ?: 15,
             ftpRootPath = prefs[Keys.FTP_ROOT_PATH] ?: "",
-            autoCheckUpdates = prefs[Keys.AUTO_CHECK_UPDATES] ?: true
+            autoCheckUpdates = prefs[Keys.AUTO_CHECK_UPDATES] ?: true,
+            fileOpenAction = runCatching {
+                FileOpenAction.valueOf(prefs[Keys.FILE_OPEN_ACTION] ?: FileOpenAction.BUILT_IN_FIRST.name)
+            }.getOrDefault(FileOpenAction.BUILT_IN_FIRST)
         )
     }
 
@@ -206,5 +217,9 @@ class SettingsDataStore(private val context: Context) {
 
     suspend fun setAutoCheckUpdates(enabled: Boolean) {
         context.openFileDataStore.edit { it[Keys.AUTO_CHECK_UPDATES] = enabled }
+    }
+
+    suspend fun setFileOpenAction(action: FileOpenAction) {
+        context.openFileDataStore.edit { it[Keys.FILE_OPEN_ACTION] = action.name }
     }
 }

@@ -21,6 +21,7 @@ import com.example.core.database.SearchQueryEntity
 import com.example.core.database.TransferJobEntity
 import com.example.core.database.TrashItemEntity
 import com.example.core.datastore.AppSettingsState
+import com.example.core.datastore.FileOpenAction
 import com.example.core.datastore.SettingsDataStore
 import com.example.core.filesystem.ChecksumAndDuplicateEngine
 import com.example.core.filesystem.ClipboardMode
@@ -304,6 +305,25 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     private val _previewFile = MutableStateFlow<FileReference?>(null)
     val previewFile: StateFlow<FileReference?> = _previewFile.asStateFlow()
+
+    // Open With Sheet State
+    private val _openWithFile = MutableStateFlow<FileReference?>(null)
+    val openWithFile: StateFlow<FileReference?> = _openWithFile.asStateFlow()
+
+    fun requestOpenWith(item: FileReference) {
+        _openWithFile.value = item
+    }
+
+    fun dismissOpenWith() {
+        _openWithFile.value = null
+    }
+
+    fun setFileOpenAction(action: FileOpenAction) {
+        _settings.value = _settings.value.copy(fileOpenAction = action)
+        viewModelScope.launch {
+            settingsStore.setFileOpenAction(action)
+        }
+    }
 
     private val _extractedArchiveImageCache = java.util.concurrent.ConcurrentHashMap<String, File>()
 
@@ -862,6 +882,17 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             )
         }
 
+        // Respect User's File Opening Action Preference
+        val currentAction = _settings.value.fileOpenAction
+        if (currentAction == FileOpenAction.ASK_OPEN_WITH) {
+            requestOpenWith(item)
+            return
+        }
+        if (currentAction == FileOpenAction.ALWAYS_EXTERNAL) {
+            openWithExternalApp(item, forceChooser = true)
+            return
+        }
+
         // 1. Check if supported archive (ZIP, TAR, GZ, XZ, 7Z, JAR) -> open native zip viewer
         val archiveExts = FileCategory.ARCHIVES.extensions + setOf("zip", "jar", "7z", "tar", "gz", "xz", "tgz", "txz")
         if (item.extension.lowercase() in archiveExts) {
@@ -895,13 +926,22 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             return
         }
 
-        // 5. For Remote Network files (FTP/SFTP/SMB), show built-in preview
+        // 5. For audio & video, open in built-in media player
+        if (item.extension.lowercase() in FileCategory.AUDIO.extensions ||
+            item.extension.lowercase() in FileCategory.VIDEOS.extensions ||
+            item.mimeType.startsWith("audio/") ||
+            item.mimeType.startsWith("video/")) {
+            openBuiltInPreview(item)
+            return
+        }
+
+        // 6. For Remote Network files (FTP/SFTP/SMB), show built-in preview
         if (item.providerType != ProviderType.LOCAL && item.providerType != ProviderType.MEDIA_STORE && item.providerType != ProviderType.SAF) {
             openBuiltInPreview(item)
             return
         }
 
-        // 6. Standard File Manager behavior: launch external / system handler (Video player, PDF viewer, Music player, Office app, etc.)
+        // 7. Standard File Manager behavior: launch external / system handler
         // Falls back to built-in previewer ONLY if no external app is installed for this file type.
         openWithExternalApp(item, forceChooser = false, fallbackToBuiltInPreview = true)
     }
@@ -1021,7 +1061,11 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         return ext in textExtensions ||
             ext == "pdf" ||
             ext in FileCategory.IMAGES.extensions ||
-            ext in FileCategory.AUDIO.extensions
+            ext in FileCategory.AUDIO.extensions ||
+            ext in FileCategory.VIDEOS.extensions ||
+            item.mimeType.startsWith("video/") ||
+            item.mimeType.startsWith("audio/") ||
+            ext in setOf("docx", "doc", "pptx", "ppt", "xlsx", "xls", "odt", "ods", "odp", "odf", "cbz", "cbr", "md")
     }
 
     private fun resolveMimeType(item: FileReference): String {

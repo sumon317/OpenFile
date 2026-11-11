@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -58,6 +59,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -82,6 +84,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.example.core.database.NetworkProfileEntity
 import com.example.core.datastore.AppSettingsState
+import com.example.core.datastore.FileOpenAction
 import com.example.core.model.FileReference
 import com.example.core.model.ViewMode
 import com.example.core.model.formatByteSize
@@ -1379,7 +1382,8 @@ fun SettingsScreen(
     onAutoCheckUpdatesChange: (Boolean) -> Unit = {},
     onCheckForUpdatesNow: () -> Unit = {},
     onDownloadAndInstallUpdate: () -> Unit = {},
-    onOpenReleasesInBrowser: () -> Unit = {}
+    onOpenReleasesInBrowser: () -> Unit = {},
+    onFileOpenActionChange: (FileOpenAction) -> Unit = {}
 ) {
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -1437,6 +1441,33 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("File Opening Behavior", style = MaterialTheme.typography.titleSmall)
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FileOpenAction.entries.forEach { action ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { onFileOpenActionChange(action) }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = settings.fileOpenAction == action,
+                                    onClick = { onFileOpenActionChange(action) },
+                                    modifier = Modifier.testTag("setting_file_action_${action.name}")
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(text = action.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                    Text(text = action.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    HorizontalDivider()
+                    Spacer(modifier = Modifier.height(6.dp))
                     SettingsToggleRow(
                         title = "Show Hidden Files (Dotfiles)",
                         checked = settings.showHiddenFiles,

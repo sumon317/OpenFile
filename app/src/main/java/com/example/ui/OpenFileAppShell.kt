@@ -75,10 +75,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.core.model.FileCategory
+import com.example.core.model.ProviderType
 import com.example.ui.components.ConflictResolutionDialog
 import com.example.ui.components.FilePreviewDialog
 import com.example.ui.components.FilePreviewScreen
 import com.example.ui.components.FilePropertiesModalSheet
+import com.example.ui.components.OpenWithBottomSheet
 import com.example.ui.components.TransferQueueBottomSheet
 import com.example.ui.screens.ApplicationsScreen
 import com.example.ui.screens.BookmarksScreen
@@ -456,6 +459,33 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                     .onFailure { viewModel.showStatus("Install failed: ${it.message}") }
             },
             onOpenExternal = { viewModel.openWithExternalApp(it, forceChooser = true) }
+        )
+    }
+
+    // Modern Material 3 "Open With..." Bottom Sheet
+    val openWithFile by viewModel.openWithFile.collectAsStateWithLifecycle()
+    if (openWithFile != null) {
+        OpenWithBottomSheet(
+            file = openWithFile!!,
+            currentAction = settings.fileOpenAction,
+            onOpenBuiltIn = { item ->
+                val archiveExts = FileCategory.ARCHIVES.extensions + setOf("zip", "jar", "7z", "tar", "gz", "xz", "tgz", "txz")
+                if (item.extension.lowercase() in archiveExts) {
+                    viewModel.inspectArchive(item)
+                } else if (item.extension.lowercase() == "apk" && item.providerType == ProviderType.LOCAL) {
+                    viewModel.appManager.installApkWithSystemInstaller(File(item.uriOrPath))
+                        .onFailure { viewModel.openPropertiesSheet(item) }
+                } else {
+                    viewModel.openBuiltInPreview(item)
+                }
+            },
+            onOpenExternal = { item ->
+                viewModel.openWithExternalApp(item, forceChooser = true)
+            },
+            onSetDefaultAction = { action ->
+                viewModel.setFileOpenAction(action)
+            },
+            onDismiss = { viewModel.dismissOpenWith() }
         )
     }
 
@@ -890,7 +920,7 @@ private fun DestinationRouter(
                 onExtractArchive = { archiveRef, entries -> viewModel.extractArchiveToFolder(archiveRef, entries) },
                 onCloseArchiveInspector = { viewModel.navigateUpInBrowser() },
                 onDownloadRemoteItem = { viewModel.downloadRemoteItemToDownloads(it) },
-                onOpenWithExternal = { viewModel.openWithExternalApp(it, forceChooser = true) },
+                onOpenWithExternal = { viewModel.requestOpenWith(it) },
                 onQuickPreview = { viewModel.openBuiltInPreview(it) },
                 onOpenParentFolder = { viewModel.openContainingFolder(it) },
                 onOpenLocalRoot = { viewModel.navigateToDestination(OpenFileDestination.INTERNAL_STORAGE) },
@@ -951,7 +981,7 @@ private fun DestinationRouter(
                 onShareItem = { viewModel.shareFileItem(it) },
                 onOpenProperties = { viewModel.openPropertiesSheet(it) },
                 onOpenParentFolder = { viewModel.openContainingFolder(it) },
-                onOpenWithExternal = { viewModel.openWithExternalApp(it, forceChooser = true) },
+                onOpenWithExternal = { viewModel.requestOpenWith(it) },
                 onQuickPreview = { viewModel.openBuiltInPreview(it) },
                 onCompressItems = { items, name, fmt ->
                     viewModel.createArchiveFromItems(items, name, fmt)
@@ -1135,7 +1165,8 @@ private fun DestinationRouter(
                 onAutoCheckUpdatesChange = { viewModel.setAutoCheckUpdates(it) },
                 onCheckForUpdatesNow = { viewModel.checkForAppUpdates(manualUserTrigger = true) },
                 onDownloadAndInstallUpdate = { viewModel.downloadAndInstallAppUpdate() },
-                onOpenReleasesInBrowser = { viewModel.appUpdateEngine.openReleasesPageInBrowser() }
+                onOpenReleasesInBrowser = { viewModel.appUpdateEngine.openReleasesPageInBrowser() },
+                onFileOpenActionChange = { viewModel.setFileOpenAction(it) }
             )
         }
     }

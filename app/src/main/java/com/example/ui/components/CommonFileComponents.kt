@@ -986,12 +986,13 @@ fun FilePreviewScreen(
     val file = state.currentFile
     val ext = file.extension.lowercase()
     val isImage = ext in FileCategory.IMAGES.extensions || state.archiveContext != null
-    val isImageOrComic = isImage || ext in setOf("cbz", "cbr")
+    val isVideo = ext in FileCategory.VIDEOS.extensions || file.mimeType.startsWith("video/")
+    val isImageOrDarkMedia = isImage || isVideo || ext in setOf("cbz", "cbr")
 
     var activeTitle by remember(file) { mutableStateOf(file.displayName) }
     var activeSubtitle by remember(file) {
         mutableStateOf(
-            if (isImageOrComic) {
+            if (isImageOrDarkMedia) {
                 file.formattedSize
             } else {
                 "${file.providerType.label} • ${file.mimeType} • ${file.formattedSize}"
@@ -1009,7 +1010,7 @@ fun FilePreviewScreen(
             .fillMaxSize()
             .statusBarsPadding()
             .navigationBarsPadding(),
-        color = if (isImageOrComic) Color.Black else MaterialTheme.colorScheme.background
+        color = if (isImageOrDarkMedia) Color.Black else MaterialTheme.colorScheme.background
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Full-Window Top App Bar
@@ -1025,7 +1026,7 @@ fun FilePreviewScreen(
                         Text(
                             text = activeSubtitle,
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (isImageOrComic) Color.LightGray else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (isImageOrDarkMedia) Color.LightGray else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 },
@@ -1034,7 +1035,7 @@ fun FilePreviewScreen(
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
-                            tint = if (isImageOrComic) Color.White else MaterialTheme.colorScheme.onSurface
+                            tint = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface
                         )
                     }
                 },
@@ -1044,24 +1045,24 @@ fun FilePreviewScreen(
                             imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                             contentDescription = null,
                             modifier = Modifier.size(18.dp),
-                            tint = if (isImageOrComic) Color.White else MaterialTheme.colorScheme.primary
+                            tint = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             "Open With",
-                            color = if (isImageOrComic) Color.White else MaterialTheme.colorScheme.primary
+                            color = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
                         )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = if (isImageOrComic) Color.Black.copy(alpha = 0.85f) else MaterialTheme.colorScheme.surfaceContainer,
-                    titleContentColor = if (isImageOrComic) Color.White else MaterialTheme.colorScheme.onSurface,
-                    navigationIconContentColor = if (isImageOrComic) Color.White else MaterialTheme.colorScheme.onSurface,
-                    actionIconContentColor = if (isImageOrComic) Color.White else MaterialTheme.colorScheme.primary
+                    containerColor = if (isImageOrDarkMedia) Color.Black.copy(alpha = 0.85f) else MaterialTheme.colorScheme.surfaceContainer,
+                    titleContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface,
+                    navigationIconContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface,
+                    actionIconContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
                 )
             )
 
-            if (!isImageOrComic) {
+            if (!isImageOrDarkMedia) {
                 HorizontalDivider()
             }
 
@@ -1069,7 +1070,7 @@ fun FilePreviewScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(if (isImage || ext in setOf("cbz", "cbr", "pdf")) 0.dp else 12.dp)
+                    .padding(if (isImage || isVideo || ext in setOf("cbz", "cbr", "pdf")) 0.dp else 12.dp)
             ) {
                 when {
                     isImage -> {
@@ -1101,10 +1102,10 @@ fun FilePreviewScreen(
                         MarkdownDocumentPreview(file = file, onSaveText = onSaveTextContent)
                     }
                     ext in FileCategory.AUDIO.extensions -> {
-                        AudioPlayerPreview(file, file.displayName)
+                        AudioPlayerPreview(file = file, onOpenExternal = { onOpenExternal(file) })
                     }
-                    ext in FileCategory.VIDEOS.extensions || file.mimeType.startsWith("video/") -> {
-                        VideoPreviewPlaceholder(file = file, onOpenExternal = { onOpenExternal(file) })
+                    isVideo -> {
+                        VideoPlayerPreview(file = file, onOpenExternal = { onOpenExternal(file) })
                     }
                     else -> {
                         TextAndCodePreview(file = file, onSaveTextContent = onSaveTextContent)
@@ -1366,57 +1367,6 @@ private fun ImagePagerPreview(
 }
 
 @Composable
-private fun VideoPreviewPlaceholder(
-    file: FileReference,
-    onOpenExternal: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.primaryContainer,
-            modifier = Modifier.size(96.dp)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = Icons.Filled.PlayArrow,
-                    contentDescription = "Play Video",
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.size(48.dp)
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = file.displayName,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = "${file.mimeType} • ${file.formattedSize}",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(modifier = Modifier.height(24.dp))
-        Button(
-            onClick = onOpenExternal
-        ) {
-            Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Open in Video Player")
-        }
-    }
-}
-
-@Composable
 private fun ZoomableImagePreview(
     imageModel: Any,
     title: String,
@@ -1515,99 +1465,6 @@ private fun ZoomableImagePreview(
                     translationY = offsetY
                 }
         )
-    }
-}
-
-@Composable
-private fun AudioPlayerPreview(file: FileReference, title: String) {
-    val context = LocalContext.current
-    var isPlaying by remember { mutableStateOf(false) }
-    var isPrepared by remember { mutableStateOf(false) }
-    var playerError by remember { mutableStateOf<String?>(null) }
-    var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
-
-    LaunchedEffect(file) {
-        isPrepared = false
-        isPlaying = false
-        playerError = null
-        val prepared = withContext(Dispatchers.IO) {
-            runCatching {
-                MediaPlayer().apply {
-                    val localFile = resolveLocalBackingFile(file)
-                    if (localFile != null) {
-                        setDataSource(localFile.absolutePath)
-                    } else {
-                        setDataSource(context, Uri.parse(file.uriOrPath))
-                    }
-                    prepare()
-                    setOnCompletionListener { isPlaying = false }
-                }
-            }
-        }
-        prepared.onSuccess {
-            mediaPlayer = it
-            isPrepared = true
-        }.onFailure {
-            playerError = it.message ?: "Unable to prepare audio"
-        }
-    }
-
-    DisposableEffect(file) {
-        onDispose {
-            val mp = mediaPlayer
-            mediaPlayer = null
-            runCatching {
-                mp?.stop()
-                mp?.release()
-            }
-        }
-    }
-
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Box(
-            modifier = Modifier
-                .size(88.dp)
-                .clip(CircleShape)
-                .background(AudioPurple.copy(alpha = 0.16f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Filled.AudioFile,
-                contentDescription = null,
-                tint = AudioPurple,
-                modifier = Modifier.size(44.dp)
-            )
-        }
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(text = title, style = MaterialTheme.typography.titleMedium)
-        Spacer(modifier = Modifier.height(16.dp))
-        if (playerError != null) {
-            Text("Audio preview unavailable: $playerError", style = MaterialTheme.typography.bodySmall)
-        } else {
-            Button(
-                onClick = {
-                    val mp = mediaPlayer ?: return@Button
-                    if (mp.isPlaying) {
-                        mp.pause()
-                        isPlaying = false
-                    } else {
-                        mp.start()
-                        isPlaying = true
-                    }
-                }
-            ) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = null
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(if (isPlaying) "Pause Audio" else "Play Audio")
-            }
-        }
     }
 }
 
