@@ -686,5 +686,52 @@ class ExampleUnitTest {
         assertTrue(table.rowInlines[0][1].any { it.isBold && it.text == "Active" })
         assertTrue(table.rowInlines[0][2].any { it.isItalic && it.text == "1.5x" })
     }
+
+    @Test
+    fun `FilePreviewState supports playlist sibling media navigation and index tracking`() {
+        val song1 = com.example.core.model.FileReference(
+            providerType = com.example.core.model.ProviderType.LOCAL,
+            uriOrPath = "/storage/emulated/0/Music/song1.mp3",
+            displayName = "song1.mp3",
+            parentUriOrPath = "/storage/emulated/0/Music",
+            isDirectory = false,
+            sizeBytes = 6_400_000L,
+            mimeType = "audio/mpeg"
+        )
+        val song2 = com.example.core.model.FileReference(
+            providerType = com.example.core.model.ProviderType.LOCAL,
+            uriOrPath = "/storage/emulated/0/Music/song2.mp3",
+            displayName = "song2.mp3",
+            parentUriOrPath = "/storage/emulated/0/Music",
+            isDirectory = false,
+            sizeBytes = 7_200_000L,
+            mimeType = "audio/mpeg"
+        )
+        val song3 = com.example.core.model.FileReference(
+            providerType = com.example.core.model.ProviderType.LOCAL,
+            uriOrPath = "/storage/emulated/0/Music/song3.mp3",
+            displayName = "song3.mp3",
+            parentUriOrPath = "/storage/emulated/0/Music",
+            isDirectory = false,
+            sizeBytes = 5_100_000L,
+            mimeType = "audio/mpeg"
+        )
+
+        val mediaList = listOf(song1, song2, song3)
+        val state = com.example.ui.FilePreviewState(
+            currentFile = song2,
+            siblingMedia = mediaList,
+            initialMediaIndex = 1
+        )
+
+        val currentIdx = state.siblingMedia.indexOfFirst { it.uriOrPath == state.currentFile.uriOrPath }
+        assertEquals(1, currentIdx)
+        assertTrue(currentIdx > 0) // hasPrevious
+        assertTrue(currentIdx < state.siblingMedia.size - 1) // hasNext
+        assertEquals("song1.mp3", state.siblingMedia[currentIdx - 1].displayName)
+        assertEquals("song3.mp3", state.siblingMedia[currentIdx + 1].displayName)
+        assertEquals("6.1 MB", song1.formattedSize)
+    }
 }
+
 

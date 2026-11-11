@@ -108,7 +108,9 @@ data class FilePreviewState(
     val currentFile: FileReference,
     val siblingImages: List<FileReference> = emptyList(),
     val initialImageIndex: Int = 0,
-    val archiveContext: ArchiveImagePreviewContext? = null
+    val archiveContext: ArchiveImagePreviewContext? = null,
+    val siblingMedia: List<FileReference> = emptyList(),
+    val initialMediaIndex: Int = 0
 )
 
 class OpenFileViewModel(application: Application) : AndroidViewModel(application) {
@@ -948,6 +950,8 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     fun openBuiltInPreview(item: FileReference) {
         val ext = item.extension.lowercase()
+        val isAudio = ext in FileCategory.AUDIO.extensions
+        val isVideo = ext in FileCategory.VIDEOS.extensions
         if (ext in FileCategory.IMAGES.extensions) {
             val currentItems = _browserState.value.items
             val images = currentItems.filter { it.extension.lowercase() in FileCategory.IMAGES.extensions }
@@ -957,10 +961,76 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 siblingImages = if (images.isNotEmpty()) images else listOf(item),
                 initialImageIndex = idx
             )
+        } else if (isAudio || isVideo) {
+            val targetCategory = if (isAudio) FileCategory.AUDIO else FileCategory.VIDEOS
+            val currentItems = _browserState.value.items
+            var mediaList = currentItems.filter { it.extension.lowercase() in targetCategory.extensions }
+            if (mediaList.isEmpty() || mediaList.none { it.uriOrPath == item.uriOrPath }) {
+                val localBacking = item.metadata["localBackingPath"] ?: if (item.providerType == ProviderType.LOCAL) item.uriOrPath else null
+                if (localBacking != null) {
+                    val parent = File(localBacking).parentFile
+                    val siblingFiles = parent?.listFiles()?.filter {
+                        !it.isDirectory && it.extension.lowercase() in targetCategory.extensions
+                    }?.sortedWith { a, b -> NaturalOrderComparator.compare(a.name, b.name) }
+                    if (!siblingFiles.isNullOrEmpty()) {
+                        mediaList = siblingFiles.map { f ->
+                            FileReference(
+                                providerType = ProviderType.LOCAL,
+                                uriOrPath = f.absolutePath,
+                                displayName = f.name,
+                                parentUriOrPath = parent.absolutePath,
+                                isDirectory = false,
+                                sizeBytes = f.length(),
+                                lastModifiedEpochMs = f.lastModified(),
+                                mimeType = if (isAudio) "audio/*" else "video/*"
+                            )
+                        }
+                    }
+                }
+            }
+            if (mediaList.isEmpty()) {
+                mediaList = listOf(item)
+            }
+            val idx = mediaList.indexOfFirst { it.uriOrPath == item.uriOrPath }.coerceAtLeast(0)
+            _previewState.value = FilePreviewState(
+                currentFile = item,
+                siblingMedia = mediaList,
+                initialMediaIndex = idx
+            )
         } else {
             _previewState.value = FilePreviewState(currentFile = item)
         }
         _previewFile.value = item
+    }
+
+    fun previewNextMedia() {
+        val state = _previewState.value ?: return
+        val list = state.siblingMedia
+        if (list.size <= 1) return
+        val currentIdx = list.indexOfFirst { it.uriOrPath == state.currentFile.uriOrPath }
+        if (currentIdx in 0 until list.size - 1) {
+            val nextFile = list[currentIdx + 1]
+            _previewState.value = state.copy(
+                currentFile = nextFile,
+                initialMediaIndex = currentIdx + 1
+            )
+            _previewFile.value = nextFile
+        }
+    }
+
+    fun previewPreviousMedia() {
+        val state = _previewState.value ?: return
+        val list = state.siblingMedia
+        if (list.size <= 1) return
+        val currentIdx = list.indexOfFirst { it.uriOrPath == state.currentFile.uriOrPath }
+        if (currentIdx > 0) {
+            val prevFile = list[currentIdx - 1]
+            _previewState.value = state.copy(
+                currentFile = prevFile,
+                initialMediaIndex = currentIdx - 1
+            )
+            _previewFile.value = prevFile
+        }
     }
 
     fun closePreviewDialog() {

@@ -981,13 +981,21 @@ fun FilePreviewScreen(
     onDismiss: () -> Unit,
     onOpenExternal: (FileReference) -> Unit,
     onSaveTextContent: ((FileReference, String) -> Unit)? = null,
-    onLoadArchiveImage: (suspend (ArchiveEntryItem) -> File?)? = null
+    onLoadArchiveImage: (suspend (ArchiveEntryItem) -> File?)? = null,
+    onPreviousMedia: (() -> Unit)? = null,
+    onNextMedia: (() -> Unit)? = null
 ) {
     val file = state.currentFile
     val ext = file.extension.lowercase()
     val isImage = ext in FileCategory.IMAGES.extensions || state.archiveContext != null
+    val isAudio = ext in FileCategory.AUDIO.extensions || file.mimeType.startsWith("audio/")
     val isVideo = ext in FileCategory.VIDEOS.extensions || file.mimeType.startsWith("video/")
-    val isImageOrDarkMedia = isImage || isVideo || ext in setOf("cbz", "cbr")
+    val isMedia = isAudio || isVideo
+    val isImageOrDarkMedia = isImage || isVideo || isAudio || ext in setOf("cbz", "cbr")
+
+    val currentMediaIndex = state.siblingMedia.indexOfFirst { it.uriOrPath == file.uriOrPath }
+    val hasPreviousMedia = currentMediaIndex > 0
+    val hasNextMedia = currentMediaIndex >= 0 && currentMediaIndex < state.siblingMedia.size - 1
 
     var activeTitle by remember(file) { mutableStateOf(file.displayName) }
     var activeSubtitle by remember(file) {
@@ -1013,64 +1021,66 @@ fun FilePreviewScreen(
         color = if (isImageOrDarkMedia) Color.Black else MaterialTheme.colorScheme.background
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Full-Window Top App Bar
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = activeTitle,
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = activeSubtitle,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (isImageOrDarkMedia) Color.LightGray else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                },
-                actions = {
-                    TextButton(onClick = { onOpenExternal(file) }) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                            tint = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            "Open With",
-                            color = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = if (isImageOrDarkMedia) Color.Black.copy(alpha = 0.85f) else MaterialTheme.colorScheme.surfaceContainer,
-                    titleContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface,
-                    navigationIconContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface,
-                    actionIconContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
+            // Full-Window Top App Bar: only for non-media document and image types
+            if (!isMedia) {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text(
+                                text = activeTitle,
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = activeSubtitle,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (isImageOrDarkMedia) Color.LightGray else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    },
+                    actions = {
+                        TextButton(onClick = { onOpenExternal(file) }) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                "Open With",
+                                color = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = if (isImageOrDarkMedia) Color.Black.copy(alpha = 0.85f) else MaterialTheme.colorScheme.surfaceContainer,
+                        titleContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface,
+                        navigationIconContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface,
+                        actionIconContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
+                    )
                 )
-            )
 
-            if (!isImageOrDarkMedia) {
-                HorizontalDivider()
+                if (!isImageOrDarkMedia) {
+                    HorizontalDivider()
+                }
             }
 
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(if (isImage || isVideo || ext in setOf("cbz", "cbr", "pdf")) 0.dp else 12.dp)
+                    .padding(if (isImage || isVideo || isAudio || ext in setOf("cbz", "cbr", "pdf")) 0.dp else 12.dp)
             ) {
                 when {
                     isImage -> {
@@ -1101,11 +1111,27 @@ fun FilePreviewScreen(
                     ext in setOf("md", "markdown") -> {
                         MarkdownDocumentPreview(file = file, onSaveText = onSaveTextContent)
                     }
-                    ext in FileCategory.AUDIO.extensions -> {
-                        AudioPlayerPreview(file = file, onOpenExternal = { onOpenExternal(file) })
+                    isAudio -> {
+                        AudioPlayerPreview(
+                            file = file,
+                            onOpenExternal = { onOpenExternal(file) },
+                            onPrevious = onPreviousMedia,
+                            onNext = onNextMedia,
+                            hasPrevious = hasPreviousMedia,
+                            hasNext = hasNextMedia,
+                            onDismiss = onDismiss
+                        )
                     }
                     isVideo -> {
-                        VideoPlayerPreview(file = file, onOpenExternal = { onOpenExternal(file) })
+                        VideoPlayerPreview(
+                            file = file,
+                            onOpenExternal = { onOpenExternal(file) },
+                            onPrevious = onPreviousMedia,
+                            onNext = onNextMedia,
+                            hasPrevious = hasPreviousMedia,
+                            hasNext = hasNextMedia,
+                            onDismiss = onDismiss
+                        )
                     }
                     else -> {
                         TextAndCodePreview(file = file, onSaveTextContent = onSaveTextContent)

@@ -441,7 +441,9 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                 previewState?.archiveContext?.let { ctx ->
                     viewModel.getOrExtractArchiveEntry(ctx.archiveRef, entry)
                 }
-            }
+            },
+            onPreviousMedia = { viewModel.previewPreviousMedia() },
+            onNextMedia = { viewModel.previewNextMedia() }
         )
     }
 

@@ -16,6 +16,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import android.content.res.Configuration
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -31,9 +32,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -44,6 +48,8 @@ import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOn
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -71,6 +77,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,6 +87,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -178,27 +186,44 @@ private fun extractAudioTrackInfo(context: Context, file: FileReference): AudioT
 @Composable
 fun AudioPlayerPreview(
     file: FileReference,
-    onOpenExternal: (() -> Unit)? = null
+    onOpenExternal: (() -> Unit)? = null,
+    onPrevious: (() -> Unit)? = null,
+    onNext: (() -> Unit)? = null,
+    hasPrevious: Boolean = false,
+    hasNext: Boolean = false,
+    onDismiss: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
-    var trackInfo by remember(file) { mutableStateOf<AudioTrackInfo?>(null) }
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    var trackInfo by remember(file.uriOrPath) { mutableStateOf<AudioTrackInfo?>(null) }
+    var currentPositionMs by rememberSaveable(file.uriOrPath) { mutableLongStateOf(0L) }
+    var durationMs by rememberSaveable(file.uriOrPath) { mutableLongStateOf(0L) }
+    var wasPlaying by rememberSaveable(file.uriOrPath) { mutableStateOf(true) }
+    var playbackSpeed by rememberSaveable(file.uriOrPath) { mutableFloatStateOf(1.0f) }
+    var isLooping by rememberSaveable(file.uriOrPath) { mutableStateOf(false) }
+
     var isPrepared by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
-    var isLooping by remember { mutableStateOf(false) }
-    var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
     var showSpeedMenu by remember { mutableStateOf(false) }
-    var currentPositionMs by remember { mutableLongStateOf(0L) }
-    var durationMs by remember { mutableLongStateOf(0L) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isUserSeeking by remember { mutableStateOf(false) }
     var seekFraction by remember { mutableFloatStateOf(0f) }
 
-    val exoPlayer = remember(file) {
+    val exoPlayer = remember(file.uriOrPath) {
         ExoPlayer.Builder(context).build().apply {
             val mediaItem = MediaItem.fromUri(resolveMediaUri(file))
             setMediaItem(mediaItem)
+            if (currentPositionMs > 0L) {
+                seekTo(currentPositionMs)
+            }
+            if (playbackSpeed != 1.0f) {
+                setPlaybackSpeed(playbackSpeed)
+            }
+            repeatMode = if (isLooping) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             prepare()
-            playWhenReady = true
+            playWhenReady = wasPlaying
         }
     }
 
@@ -211,10 +236,19 @@ fun AudioPlayerPreview(
                         isPrepared = true
                         val d = exoPlayer.duration
                         if (d > 0L) durationMs = d
+                        if (currentPositionMs > 0L && Math.abs(exoPlayer.currentPosition - currentPositionMs) > 1000L) {
+                            exoPlayer.seekTo(currentPositionMs)
+                        }
                     }
                     Player.STATE_ENDED -> {
-                        if (!isLooping) {
+                        if (isLooping) {
+                            exoPlayer.seekTo(0L)
+                            exoPlayer.play()
+                        } else if (hasNext && onNext != null) {
+                            onNext()
+                        } else {
                             isPlaying = false
+                            wasPlaying = false
                             currentPositionMs = durationMs
                         }
                     }
@@ -225,16 +259,20 @@ fun AudioPlayerPreview(
 
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
+                wasPlaying = playing
             }
 
             override fun onPlayerError(error: PlaybackException) {
                 errorMessage = error.localizedMessage ?: "ExoPlayer error (${error.errorCode})"
                 isPlaying = false
+                wasPlaying = false
             }
         }
         exoPlayer.addListener(listener)
 
         onDispose {
+            currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+            wasPlaying = exoPlayer.isPlaying
             exoPlayer.removeListener(listener)
             exoPlayer.stop()
             exoPlayer.release()
@@ -263,128 +301,8 @@ fun AudioPlayerPreview(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 24.dp, vertical = 16.dp)
-            .testTag("audio_player_preview"),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        if (errorMessage != null) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                modifier = Modifier.fillMaxWidth().padding(16.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.ErrorOutline,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(40.dp)
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = errorMessage ?: "Failed to play audio",
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        textAlign = TextAlign.Center
-                    )
-                    if (onOpenExternal != null) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        OutlinedButton(onClick = onOpenExternal) {
-                            Text("Open With Another App")
-                        }
-                    }
-                }
-            }
-            return@Column
-        }
-
-        // Album Artwork or Animated Musical Icon
-        val artwork = trackInfo?.artwork
-        Card(
-            modifier = Modifier
-                .size(240.dp)
-                .testTag("audio_album_card"),
-            shape = RoundedCornerShape(24.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-            )
-        ) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                if (artwork != null) {
-                    Image(
-                        bitmap = artwork,
-                        contentDescription = "Album Art",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    listOf(AudioPurple.copy(alpha = 0.4f), MaterialTheme.colorScheme.surfaceContainerHighest)
-                                )
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Audiotrack,
-                            contentDescription = null,
-                            tint = AudioPurple,
-                            modifier = Modifier.size(96.dp)
-                        )
-                    }
-                }
-
-                // Waveform bars overlay when playing
-                if (isPlaying) {
-                    AudioWaveformIndicator(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 12.dp)
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(28.dp))
-
-        // Title & Artist
-        Text(
-            text = trackInfo?.title ?: file.displayName,
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth().testTag("audio_track_title")
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = listOfNotNull(
-                trackInfo?.artist.takeIf { !it.isNullOrBlank() && it != "Unknown Artist" },
-                trackInfo?.album.takeIf { !it.isNullOrBlank() },
-                "ExoPlayer • ${file.extension.uppercase()}"
-            ).joinToString(" • ").ifBlank { file.formattedSize },
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center
-        )
-
-        Spacer(modifier = Modifier.height(24.dp))
-
+    // Common Player Controls Composable
+    val playerControls = @Composable {
         // Seek Bar (Slider)
         val progress = if (durationMs > 0L) {
             if (isUserSeeking) seekFraction else (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
@@ -483,6 +401,27 @@ fun AudioPlayerPreview(
                 )
             }
 
+            // Previous Track Button
+            IconButton(
+                onClick = {
+                    if (currentPositionMs > 3000L || !hasPrevious || onPrevious == null) {
+                        exoPlayer.seekTo(0L)
+                        currentPositionMs = 0L
+                        exoPlayer.play()
+                    } else {
+                        onPrevious()
+                    }
+                },
+                enabled = isPrepared
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.SkipPrevious,
+                    contentDescription = "Previous Track",
+                    modifier = Modifier.size(32.dp),
+                    tint = if (hasPrevious || currentPositionMs > 3000L) AudioPurple else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                )
+            }
+
             // Rewind 10s
             IconButton(
                 onClick = {
@@ -495,7 +434,7 @@ fun AudioPlayerPreview(
                 Icon(
                     imageVector = Icons.Filled.Replay10,
                     contentDescription = "Rewind 10 seconds",
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(30.dp)
                 )
             }
 
@@ -513,7 +452,7 @@ fun AudioPlayerPreview(
                     }
                 },
                 modifier = Modifier
-                    .size(64.dp)
+                    .size(60.dp)
                     .testTag("audio_play_pause_button"),
                 shape = CircleShape,
                 colors = IconButtonDefaults.filledIconButtonColors(
@@ -532,7 +471,7 @@ fun AudioPlayerPreview(
                     Icon(
                         imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                         contentDescription = if (isPlaying) "Pause" else "Play",
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(34.dp)
                     )
                 }
             }
@@ -549,7 +488,28 @@ fun AudioPlayerPreview(
                 Icon(
                     imageVector = Icons.Filled.Forward10,
                     contentDescription = "Forward 10 seconds",
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(30.dp)
+                )
+            }
+
+            // Next Track Button
+            IconButton(
+                onClick = {
+                    if (hasNext && onNext != null) {
+                        onNext()
+                    } else {
+                        exoPlayer.seekTo(0L)
+                        currentPositionMs = 0L
+                        exoPlayer.play()
+                    }
+                },
+                enabled = isPrepared
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.SkipNext,
+                    contentDescription = "Next Track",
+                    modifier = Modifier.size(32.dp),
+                    tint = if (hasNext) AudioPurple else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
                 )
             }
 
@@ -580,6 +540,230 @@ fun AudioPlayerPreview(
                 Spacer(modifier = Modifier.width(6.dp))
                 Text("Open in External Player")
             }
+        }
+    }
+
+    // Artwork Card Composable
+    val artwork = trackInfo?.artwork
+    val artworkCard = @Composable { sizeDp: Int ->
+        Card(
+            modifier = Modifier
+                .size(sizeDp.dp)
+                .testTag("audio_album_card"),
+            shape = RoundedCornerShape(24.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            )
+        ) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                if (artwork != null) {
+                    Image(
+                        bitmap = artwork,
+                        contentDescription = "Album Art",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(AudioPurple.copy(alpha = 0.4f), MaterialTheme.colorScheme.surfaceContainerHighest)
+                                )
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Audiotrack,
+                            contentDescription = null,
+                            tint = AudioPurple,
+                            modifier = Modifier.size((sizeDp * 0.4f).dp)
+                        )
+                    }
+                }
+
+                // Waveform bars overlay when playing
+                if (isPlaying) {
+                    AudioWaveformIndicator(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 12.dp)
+                    )
+                }
+            }
+        }
+    }
+
+    if (errorMessage != null) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp)
+                .testTag("audio_player_preview"),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            if (onDismiss != null) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            }
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                modifier = Modifier.fillMaxWidth().padding(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ErrorOutline,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(40.dp)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = errorMessage ?: "Failed to play audio",
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        textAlign = TextAlign.Center
+                    )
+                    if (onOpenExternal != null) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedButton(onClick = onOpenExternal) {
+                            Text("Open With Another App")
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    if (isLandscape) {
+        // Landscape Mode: Side-by-side artwork and controls
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp, vertical = 12.dp)
+                .testTag("audio_player_preview"),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(end = 24.dp)
+            ) {
+                if (onDismiss != null) {
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.align(Alignment.Start)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+                artworkCard(180)
+            }
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = trackInfo?.title ?: file.displayName,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().testTag("audio_track_title")
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = listOfNotNull(
+                        trackInfo?.artist.takeIf { !it.isNullOrBlank() && it != "Unknown Artist" },
+                        trackInfo?.album.takeIf { !it.isNullOrBlank() },
+                        "ExoPlayer • ${file.extension.uppercase()} • ${file.formattedSize}"
+                    ).joinToString(" • ").ifBlank { file.formattedSize },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+                playerControls()
+            }
+        }
+    } else {
+        // Portrait Mode: Vertical layout
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp, vertical = 16.dp)
+                .verticalScroll(rememberScrollState())
+                .testTag("audio_player_preview"),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            if (onDismiss != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Start
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+
+            artworkCard(240)
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Title & Artist
+            Text(
+                text = trackInfo?.title ?: file.displayName,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().testTag("audio_track_title")
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = listOfNotNull(
+                    trackInfo?.artist.takeIf { !it.isNullOrBlank() && it != "Unknown Artist" },
+                    trackInfo?.album.takeIf { !it.isNullOrBlank() },
+                    "ExoPlayer • ${file.extension.uppercase()} • ${file.formattedSize}"
+                ).joinToString(" • ").ifBlank { file.formattedSize },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(20.dp))
+            playerControls()
         }
     }
 }
@@ -631,27 +815,41 @@ private fun AudioWaveformIndicator(modifier: Modifier = Modifier) {
 @Composable
 fun VideoPlayerPreview(
     file: FileReference,
-    onOpenExternal: (() -> Unit)? = null
+    onOpenExternal: (() -> Unit)? = null,
+    onPrevious: (() -> Unit)? = null,
+    onNext: (() -> Unit)? = null,
+    hasPrevious: Boolean = false,
+    hasNext: Boolean = false,
+    onDismiss: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    var currentPositionMs by rememberSaveable(file.uriOrPath) { mutableLongStateOf(0L) }
+    var durationMs by rememberSaveable(file.uriOrPath) { mutableLongStateOf(0L) }
+    var wasPlaying by rememberSaveable(file.uriOrPath) { mutableStateOf(true) }
+    var playbackSpeed by rememberSaveable(file.uriOrPath) { mutableFloatStateOf(1.0f) }
+    var isLooping by rememberSaveable(file.uriOrPath) { mutableStateOf(false) }
+
     var isPrepared by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
-    var isLooping by remember { mutableStateOf(false) }
-    var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
     var showSpeedMenu by remember { mutableStateOf(false) }
-    var currentPositionMs by remember { mutableLongStateOf(0L) }
-    var durationMs by remember { mutableLongStateOf(0L) }
     var showControls by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isUserSeeking by remember { mutableStateOf(false) }
     var seekFraction by remember { mutableFloatStateOf(0f) }
 
-    val exoPlayer = remember(file) {
+    val exoPlayer = remember(file.uriOrPath) {
         ExoPlayer.Builder(context).build().apply {
             val mediaItem = MediaItem.fromUri(resolveMediaUri(file))
             setMediaItem(mediaItem)
+            if (currentPositionMs > 0L) {
+                seekTo(currentPositionMs)
+            }
+            if (playbackSpeed != 1.0f) {
+                setPlaybackSpeed(playbackSpeed)
+            }
+            repeatMode = if (isLooping) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             prepare()
-            playWhenReady = true
+            playWhenReady = wasPlaying
         }
     }
 
@@ -664,10 +862,19 @@ fun VideoPlayerPreview(
                         isPrepared = true
                         val d = exoPlayer.duration
                         if (d > 0L) durationMs = d
+                        if (currentPositionMs > 0L && Math.abs(exoPlayer.currentPosition - currentPositionMs) > 1000L) {
+                            exoPlayer.seekTo(currentPositionMs)
+                        }
                     }
                     Player.STATE_ENDED -> {
-                        if (!isLooping) {
+                        if (isLooping) {
+                            exoPlayer.seekTo(0L)
+                            exoPlayer.play()
+                        } else if (hasNext && onNext != null) {
+                            onNext()
+                        } else {
                             isPlaying = false
+                            wasPlaying = false
                             currentPositionMs = durationMs
                             showControls = true
                         }
@@ -679,16 +886,20 @@ fun VideoPlayerPreview(
 
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
+                wasPlaying = playing
             }
 
             override fun onPlayerError(error: PlaybackException) {
                 errorMessage = error.localizedMessage ?: "ExoPlayer video error (${error.errorCode})"
                 isPlaying = false
+                wasPlaying = false
             }
         }
         exoPlayer.addListener(listener)
 
         onDispose {
+            currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+            wasPlaying = exoPlayer.isPlaying
             exoPlayer.removeListener(listener)
             exoPlayer.stop()
             exoPlayer.release()
@@ -733,6 +944,18 @@ fun VideoPlayerPreview(
                     .padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                if (onDismiss != null) {
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.align(Alignment.Start)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = Color.White
+                        )
+                    }
+                }
                 Icon(
                     imageVector = Icons.Filled.ErrorOutline,
                     contentDescription = null,
@@ -797,7 +1020,7 @@ fun VideoPlayerPreview(
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.5f))
             ) {
-                // Top Overlay Bar: Title & External Open
+                // Top Overlay Bar: Back, Title, Size & External Open
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -806,39 +1029,78 @@ fun VideoPlayerPreview(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                        Text(
-                            text = file.displayName,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "ExoPlayer • ${file.extension.uppercase()} • ${file.formattedSize}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.LightGray
-                        )
+                    Row(
+                        modifier = Modifier.weight(1f).padding(end = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (onDismiss != null) {
+                            IconButton(onClick = onDismiss) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Back",
+                                    tint = Color.White
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = file.displayName,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "ExoPlayer • ${file.extension.uppercase()} • ${file.formattedSize}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.LightGray
+                            )
+                        }
                     }
 
                     if (onOpenExternal != null) {
                         IconButton(onClick = onOpenExternal) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                                contentDescription = "Open with external player",
+                                contentDescription = "Open in External Player",
                                 tint = Color.White
                             )
                         }
                     }
                 }
 
-                // Center Play / Pause & Skip 10s buttons
+                // Center Play / Pause & Prev / Next buttons
                 Row(
                     modifier = Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(32.dp),
+                    horizontalArrangement = Arrangement.spacedBy(20.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // Previous Video Button
+                    FilledTonalIconButton(
+                        onClick = {
+                            if (currentPositionMs > 3000L || !hasPrevious || onPrevious == null) {
+                                exoPlayer.seekTo(0L)
+                                currentPositionMs = 0L
+                                exoPlayer.play()
+                            } else {
+                                onPrevious()
+                            }
+                        },
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = Color.Black.copy(alpha = 0.6f),
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.SkipPrevious,
+                            contentDescription = "Previous Video",
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+
                     // Rewind 10s
                     FilledTonalIconButton(
                         onClick = {
@@ -905,6 +1167,30 @@ fun VideoPlayerPreview(
                             imageVector = Icons.Filled.Forward10,
                             contentDescription = "Forward 10s",
                             modifier = Modifier.size(28.dp)
+                        )
+                    }
+
+                    // Next Video Button
+                    FilledTonalIconButton(
+                        onClick = {
+                            if (hasNext && onNext != null) {
+                                onNext()
+                            } else {
+                                exoPlayer.seekTo(0L)
+                                currentPositionMs = 0L
+                                exoPlayer.play()
+                            }
+                        },
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = Color.Black.copy(alpha = 0.6f),
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.SkipNext,
+                            contentDescription = "Next Video",
+                            modifier = Modifier.size(26.dp)
                         )
                     }
                 }
