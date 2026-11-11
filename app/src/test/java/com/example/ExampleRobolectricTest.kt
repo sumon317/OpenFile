@@ -1,7 +1,9 @@
 package com.example
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.provider.MediaStore
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -20,6 +22,7 @@ import com.example.core.database.OpenFileDatabase
 import com.example.core.filesystem.ClipboardMode
 import com.example.core.filesystem.FileSortAndFilterEngine
 import com.example.core.filesystem.LocalFileSystemProvider
+import com.example.core.filesystem.MediaStoreProvider
 import com.example.core.filesystem.SafDocumentProvider
 import com.example.core.filesystem.TransferQueueEngine
 import com.example.core.model.FileCategory
@@ -1696,6 +1699,48 @@ class ExampleRobolectricTest {
         } finally {
             tempDir.deleteRecursively()
         }
+    }
+
+    @Test
+    fun `mediaStoreProvider discovers more than 1000 audio files and photos without truncation`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val context = composeTestRule.activity.applicationContext
+        val localProvider = composeTestRule.activity.viewModel.localProvider
+        val provider = MediaStoreProvider(context, localProvider)
+
+        val audioUri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        val audioValues = Array(1250) { i ->
+            ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, "track_${i}.mp3")
+                put(MediaStore.MediaColumns.SIZE, 2048L)
+                put(MediaStore.MediaColumns.DATE_MODIFIED, 1700000000L + i)
+                put(MediaStore.MediaColumns.MIME_TYPE, "audio/mpeg")
+            }
+        }
+        context.contentResolver.bulkInsert(audioUri, audioValues)
+
+        val discoveredAudio = provider.queryByCategory(FileCategory.AUDIO)
+        assertTrue(
+            "Discovered audio files should exceed 1000 without artificial cutoff, was ${discoveredAudio.size}",
+            discoveredAudio.size >= 1250
+        )
+
+        val imagesUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val imageValues = Array(1100) { i ->
+            ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, "photo_${i}.jpg")
+                put(MediaStore.MediaColumns.SIZE, 4096L)
+                put(MediaStore.MediaColumns.DATE_MODIFIED, 1700000000L + i)
+                put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            }
+        }
+        context.contentResolver.bulkInsert(imagesUri, imageValues)
+
+        val discoveredImages = provider.queryByCategory(FileCategory.IMAGES)
+        assertTrue(
+            "Discovered images should exceed 1000 without artificial cutoff, was ${discoveredImages.size}",
+            discoveredImages.size >= 1100
+        )
     }
 }
 

@@ -206,7 +206,8 @@ enum class FileCategory(val title: String, val extensions: Set<String>) {
         "Images",
         setOf(
             "jpg", "jpeg", "png", "webp", "gif", "bmp", "svg", "heic", "heif",
-            "avif", "ico", "tif", "tiff", "raw", "dng", "cr2", "nef", "arw"
+            "avif", "ico", "tif", "tiff", "raw", "dng", "cr2", "nef", "arw",
+            "rw2", "orf", "pef", "raf", "srw", "psd", "hdr"
         )
     ),
     VIDEOS(
@@ -220,7 +221,9 @@ enum class FileCategory(val title: String, val extensions: Set<String>) {
         "Audio",
         setOf(
             "mp3", "flac", "wav", "ogg", "oga", "m4a", "m4b", "aac", "opus",
-            "wma", "amr", "mid", "midi", "aiff", "ape", "alac"
+            "wma", "amr", "mid", "midi", "aiff", "aif", "ape", "alac",
+            "mka", "ra", "ram", "wv", "dsf", "dff", "ac3", "eac3", "dts",
+            "mp2", "3ga", "caf"
         )
     ),
     DOCUMENTS(

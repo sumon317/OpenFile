@@ -1345,7 +1345,7 @@ class MediaStoreProvider(
         }
 
         fun scanDirRecursive(dir: File, depth: Int) {
-            if (depth > 3 || collected.size >= 1200) return
+            if (depth > 8 || collected.size >= 50_000) return
             val children = dir.listFiles() ?: return
             for (file in children) {
                 if (file.name.startsWith(".")) continue
@@ -1355,14 +1355,14 @@ class MediaStoreProvider(
                     }
                 } else {
                     collected.add(localProvider.toFileReference(file))
-                    if (collected.size >= 1200) return
+                    if (collected.size >= 50_000) return
                 }
             }
         }
 
         for (folder in topDirs) {
             scanDirRecursive(folder, 1)
-            if (collected.size >= 1200) break
+            if (collected.size >= 50_000) break
         }
 
         cachedSupplementalFiles = collected
@@ -1394,45 +1394,47 @@ class MediaStoreProvider(
             val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
             val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
 
-            var count = 0
-            while (cursor.moveToNext() && count < 1000) {
-                count++
-                val id = cursor.getLong(idCol)
-                val name = cursor.getString(nameCol) ?: "Media_$id"
-                val size = cursor.getLong(sizeCol)
-                val dateSec = cursor.getLong(dateCol)
-                val mime = cursor.getString(mimeCol) ?: "application/octet-stream"
-                val rawPath = if (dataCol >= 0) cursor.getString(dataCol) else null
-                val ext = name.substringAfterLast('.', "").lowercase()
+            while (cursor.moveToNext()) {
+                try {
+                    val id = cursor.getLong(idCol)
+                    val name = cursor.getString(nameCol) ?: "Media_$id"
+                    val size = cursor.getLong(sizeCol)
+                    val dateSec = cursor.getLong(dateCol)
+                    val mime = cursor.getString(mimeCol) ?: "application/octet-stream"
+                    val rawPath = if (dataCol >= 0) cursor.getString(dataCol) else null
+                    val ext = name.substringAfterLast('.', "").lowercase()
 
-                if (!rawPath.isNullOrBlank() && rawPath.startsWith("/")) {
-                    val parentPath = rawPath.substringBeforeLast('/', "").ifEmpty { null }
-                    sink[rawPath] = FileReference(
-                        providerType = ProviderType.LOCAL,
-                        uriOrPath = rawPath,
-                        displayName = name,
-                        parentUriOrPath = parentPath,
-                        isDirectory = false,
-                        sizeBytes = size,
-                        lastModifiedEpochMs = dateSec * 1000L,
-                        mimeType = mime,
-                        extension = ext,
-                        isHidden = name.startsWith(".") || isPathInsideHiddenDirectory(rawPath) || isPathInsideHiddenDirectory(parentPath)
-                    )
-                } else {
-                    val contentUri = ContentUris.withAppendedId(collectionUri, id)
-                    sink[contentUri.toString()] = FileReference(
-                        providerType = ProviderType.MEDIA_STORE,
-                        uriOrPath = contentUri.toString(),
-                        displayName = name,
-                        parentUriOrPath = null,
-                        isDirectory = false,
-                        sizeBytes = size,
-                        lastModifiedEpochMs = dateSec * 1000L,
-                        mimeType = mime,
-                        extension = ext,
-                        isHidden = name.startsWith(".") || isPathInsideHiddenDirectory(contentUri.toString())
-                    )
+                    if (!rawPath.isNullOrBlank() && rawPath.startsWith("/")) {
+                        val parentPath = rawPath.substringBeforeLast('/', "").ifEmpty { null }
+                        sink[rawPath] = FileReference(
+                            providerType = ProviderType.LOCAL,
+                            uriOrPath = rawPath,
+                            displayName = name,
+                            parentUriOrPath = parentPath,
+                            isDirectory = false,
+                            sizeBytes = size,
+                            lastModifiedEpochMs = dateSec * 1000L,
+                            mimeType = mime,
+                            extension = ext,
+                            isHidden = name.startsWith(".") || isPathInsideHiddenDirectory(rawPath) || isPathInsideHiddenDirectory(parentPath)
+                        )
+                    } else {
+                        val contentUri = ContentUris.withAppendedId(collectionUri, id)
+                        sink[contentUri.toString()] = FileReference(
+                            providerType = ProviderType.MEDIA_STORE,
+                            uriOrPath = contentUri.toString(),
+                            displayName = name,
+                            parentUriOrPath = null,
+                            isDirectory = false,
+                            sizeBytes = size,
+                            lastModifiedEpochMs = dateSec * 1000L,
+                            mimeType = mime,
+                            extension = ext,
+                            isHidden = name.startsWith(".") || isPathInsideHiddenDirectory(contentUri.toString())
+                        )
+                    }
+                } catch (_: Throwable) {
+                    // Ignore corrupted or unreadable individual row and proceed with remaining media
                 }
             }
         }
