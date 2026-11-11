@@ -93,17 +93,51 @@ data class MarkdownInline(
     val isItalic: Boolean = false,
     val isCode: Boolean = false,
     val isStrikethrough: Boolean = false,
-    val linkUrl: String? = null
+    val isUnderline: Boolean = false,
+    val isHighlight: Boolean = false,
+    val linkUrl: String? = null,
+    val imageUrl: String? = null
 )
 
 sealed interface MarkdownNode {
-    data class Header(val level: Int, val text: String) : MarkdownNode
+    data class Header(
+        val level: Int,
+        val text: String,
+        val inlines: List<MarkdownInline> = emptyList()
+    ) : MarkdownNode
+
     data class Paragraph(val inlines: List<MarkdownInline>) : MarkdownNode
+
     data class CodeBlock(val language: String, val code: String) : MarkdownNode
-    data class Blockquote(val text: String) : MarkdownNode
-    data class ListItem(val text: String, val isOrdered: Boolean, val orderNumber: Int = 1) : MarkdownNode
-    data class ChecklistItem(val text: String, val isChecked: Boolean) : MarkdownNode
-    data class Table(val headers: List<String>, val rows: List<List<String>>) : MarkdownNode
+
+    data class Blockquote(
+        val text: String,
+        val inlines: List<MarkdownInline> = emptyList()
+    ) : MarkdownNode
+
+    data class ListItem(
+        val text: String,
+        val isOrdered: Boolean,
+        val orderNumber: Int = 1,
+        val level: Int = 0,
+        val inlines: List<MarkdownInline> = emptyList()
+    ) : MarkdownNode
+
+    data class ChecklistItem(
+        val text: String,
+        val isChecked: Boolean,
+        val inlines: List<MarkdownInline> = emptyList()
+    ) : MarkdownNode
+
+    data class Table(
+        val headers: List<String>,
+        val rows: List<List<String>>,
+        val headerInlines: List<List<MarkdownInline>> = emptyList(),
+        val rowInlines: List<List<List<MarkdownInline>>> = emptyList()
+    ) : MarkdownNode
+
+    data class Image(val alt: String, val url: String) : MarkdownNode
+
     object HorizontalRule : MarkdownNode
 }
 
@@ -964,196 +998,547 @@ object DocumentReaderEngine {
             val line = lines[i]
             val trimmed = line.trim()
 
-            // 1. Code Block
-            if (trimmed.startsWith("```")) {
-                val lang = trimmed.removePrefix("```").trim()
-                val codeBuilder = StringBuilder()
-                i++
-                while (i < lines.size && !lines[i].trim().startsWith("```")) {
-                    codeBuilder.append(lines[i]).append("\n")
-                    i++
-                }
-                nodes.add(MarkdownNode.CodeBlock(lang, codeBuilder.toString().trimEnd()))
+            // Skip blank lines
+            if (trimmed.isEmpty()) {
                 i++
                 continue
             }
 
-            // 2. Horizontal Rule
-            if (trimmed == "---" || trimmed == "***" || trimmed == "___") {
+            // 1. Fenced Code Block (``` or ~~~)
+            if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+                val fence = if (trimmed.startsWith("```")) "```" else "~~~"
+                val lang = trimmed.removePrefix(fence).trim()
+                val codeBuilder = StringBuilder()
+                i++
+                while (i < lines.size && !lines[i].trim().startsWith(fence)) {
+                    codeBuilder.append(lines[i]).append("\n")
+                    i++
+                }
+                nodes.add(MarkdownNode.CodeBlock(lang, codeBuilder.toString().trimEnd()))
+                if (i < lines.size) i++ // skip closing fence
+                continue
+            }
+
+            // 2. Horizontal Rule (---, ***, ___, - - -, * * *)
+            if (isDelimiterRule(trimmed)) {
                 nodes.add(MarkdownNode.HorizontalRule)
                 i++
                 continue
             }
 
-            // 3. Header (# to ######)
+            // 3. Setext Headers (line followed by === or ---)
+            if (i + 1 < lines.size) {
+                val nextTrimmed = lines[i + 1].trim()
+                if (nextTrimmed.isNotEmpty() && nextTrimmed.all { it == '=' } && nextTrimmed.length >= 2) {
+                    val headerInlines = parseMarkdownInlines(trimmed)
+                    nodes.add(MarkdownNode.Header(1, trimmed, headerInlines))
+                    i += 2
+                    continue
+                } else if (nextTrimmed.isNotEmpty() && nextTrimmed.all { it == '-' } && nextTrimmed.length >= 2 && !trimmed.startsWith("-") && !trimmed.startsWith("*") && !trimmed.startsWith("+")) {
+                    val headerInlines = parseMarkdownInlines(trimmed)
+                    nodes.add(MarkdownNode.Header(2, trimmed, headerInlines))
+                    i += 2
+                    continue
+                }
+            }
+
+            // 4. ATX Header (# to ######)
             if (trimmed.startsWith("#")) {
                 val level = trimmed.takeWhile { it == '#' }.length.coerceIn(1, 6)
-                val headerText = trimmed.drop(level).trim()
-                nodes.add(MarkdownNode.Header(level, headerText))
-                i++
-                continue
+                if (trimmed.length == level || trimmed[level] == ' ' || trimmed[level] == '\t') {
+                    val headerText = trimmed.drop(level).trim().trimEnd { it == '#' }.trim()
+                    val headerInlines = parseMarkdownInlines(headerText)
+                    nodes.add(MarkdownNode.Header(level, headerText, headerInlines))
+                    i++
+                    continue
+                }
             }
 
-            // 4. Blockquote (> )
+            // 5. Blockquote (> )
             if (trimmed.startsWith(">")) {
-                val quoteText = trimmed.removePrefix(">").trim()
-                nodes.add(MarkdownNode.Blockquote(quoteText))
+                val quoteLines = mutableListOf<String>()
+                while (i < lines.size && lines[i].trim().startsWith(">")) {
+                    quoteLines.add(lines[i].trim().removePrefix(">").trim())
+                    i++
+                }
+                val combined = quoteLines.joinToString(" ")
+                val inlines = parseMarkdownInlines(combined)
+                nodes.add(MarkdownNode.Blockquote(combined, inlines))
+                continue
+            }
+
+            // 6. Checklist (- [ ] or - [x] or * [ ] or + [ ])
+            val checklistMatch = Regex("^[-*+]\\s+\\[([ xX])\\]\\s+(.*)").find(trimmed)
+            if (checklistMatch != null) {
+                val isChecked = checklistMatch.groupValues[1].equals("x", ignoreCase = true)
+                val content = checklistMatch.groupValues[2]
+                val inlines = parseMarkdownInlines(content)
+                nodes.add(MarkdownNode.ChecklistItem(content, isChecked = isChecked, inlines = inlines))
                 i++
                 continue
             }
 
-            // 5. Checklist (- [ ] or - [x])
-            if (trimmed.startsWith("- [ ] ") || trimmed.startsWith("* [ ] ")) {
-                nodes.add(MarkdownNode.ChecklistItem(trimmed.drop(6).trim(), isChecked = false))
-                i++
-                continue
-            }
-            if (trimmed.startsWith("- [x] ") || trimmed.startsWith("* [x] ") ||
-                trimmed.startsWith("- [X] ") || trimmed.startsWith("* [X] ")) {
-                nodes.add(MarkdownNode.ChecklistItem(trimmed.drop(6).trim(), isChecked = true))
-                i++
-                continue
-            }
-
-            // 6. Bullet List (- or *)
-            if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-                nodes.add(MarkdownNode.ListItem(trimmed.drop(2).trim(), isOrdered = false))
+            // 7. Bullet List (- , * , + )
+            val bulletMatch = Regex("^(\\s*)([-*+])\\s+(.*)").find(line)
+            if (bulletMatch != null && !isDelimiterRule(trimmed)) {
+                val indentSpaces = bulletMatch.groupValues[1].length
+                val level = (indentSpaces / 2).coerceIn(0, 5)
+                val content = bulletMatch.groupValues[3].trim()
+                val inlines = parseMarkdownInlines(content)
+                nodes.add(MarkdownNode.ListItem(content, isOrdered = false, level = level, inlines = inlines))
                 i++
                 continue
             }
 
-            // 7. Numbered List (1. )
-            val numberMatch = Regex("^(\\d+)\\.\\s+(.*)").find(trimmed)
+            // 8. Numbered List (1. or 1) )
+            val numberMatch = Regex("^(\\s*)(\\d+)[.)]\\s+(.*)").find(line)
             if (numberMatch != null) {
-                val num = numberMatch.groupValues[1].toIntOrNull() ?: 1
-                val content = numberMatch.groupValues[2]
-                nodes.add(MarkdownNode.ListItem(content, isOrdered = true, orderNumber = num))
+                val indentSpaces = numberMatch.groupValues[1].length
+                val level = (indentSpaces / 2).coerceIn(0, 5)
+                val num = numberMatch.groupValues[2].toIntOrNull() ?: 1
+                val content = numberMatch.groupValues[3].trim()
+                val inlines = parseMarkdownInlines(content)
+                nodes.add(MarkdownNode.ListItem(content, isOrdered = true, orderNumber = num, level = level, inlines = inlines))
                 i++
                 continue
             }
 
-            // 8. Markdown Table (| Col 1 | Col 2 |)
-            if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+            // 9. Markdown Table (| Col 1 | Col 2 |)
+            if (trimmed.startsWith("|") || (trimmed.contains("|") && i + 1 < lines.size && lines[i + 1].trim().contains("---"))) {
                 val headers = trimmed.split("|").map { it.trim() }.filter { it.isNotEmpty() }
+                val headerInlines = headers.map { parseMarkdownInlines(it) }
                 val tableRows = mutableListOf<List<String>>()
+                val rowInlines = mutableListOf<List<List<MarkdownInline>>>()
                 i++
                 // Skip separator row (|---|---|)
-                if (i < lines.size && lines[i].trim().startsWith("|") && lines[i].contains("---")) {
+                if (i < lines.size && lines[i].contains("---") && lines[i].contains("|")) {
                     i++
                 }
-                while (i < lines.size && lines[i].trim().startsWith("|") && lines[i].trim().endsWith("|")) {
+                while (i < lines.size && lines[i].trim().contains("|") && !lines[i].trim().startsWith("```")) {
                     val rowCells = lines[i].trim().split("|").map { it.trim() }.filter { it.isNotEmpty() }
-                    tableRows.add(rowCells)
+                    if (rowCells.isNotEmpty()) {
+                        tableRows.add(rowCells)
+                        rowInlines.add(rowCells.map { parseMarkdownInlines(it) })
+                    }
                     i++
                 }
-                nodes.add(MarkdownNode.Table(headers, tableRows))
+                nodes.add(MarkdownNode.Table(headers, tableRows, headerInlines, rowInlines))
                 continue
             }
 
-            // 9. Standard Paragraph (with inline formatting)
-            if (trimmed.isNotBlank()) {
-                val inlines = parseMarkdownInlines(trimmed)
-                nodes.add(MarkdownNode.Paragraph(inlines))
+            // 10. Standalone Image: ![alt](url)
+            val standaloneImgMatch = Regex("^!\\[(.*?)\\]\\((.*?)\\)$").find(trimmed)
+            if (standaloneImgMatch != null) {
+                val alt = standaloneImgMatch.groupValues[1]
+                val url = standaloneImgMatch.groupValues[2].trim()
+                nodes.add(MarkdownNode.Image(alt = alt.ifEmpty { "Image" }, url = url))
+                i++
+                continue
             }
 
-            i++
+            // 11. Multi-line Paragraph
+            val paraLines = mutableListOf<String>()
+            while (i < lines.size) {
+                val curLine = lines[i]
+                val curTrim = curLine.trim()
+                if (curTrim.isEmpty()) break
+                if (curTrim.startsWith("```") || curTrim.startsWith("~~~") || isDelimiterRule(curTrim)) break
+                if (curTrim.startsWith("#") && curTrim.takeWhile { it == '#' }.length in 1..6) {
+                    val hLen = curTrim.takeWhile { it == '#' }.length
+                    if (curTrim.length == hLen || curTrim[hLen] == ' ' || curTrim[hLen] == '\t') break
+                }
+                if (curTrim.startsWith(">")) break
+                if (Regex("^[-*+]\\s+\\[[ xX]\\]").containsMatchIn(curTrim)) break
+                if (Regex("^(\\s*)([-*+])\\s+").containsMatchIn(curLine) && !isDelimiterRule(curTrim)) break
+                if (Regex("^(\\s*)(\\d+)[.)]\\s+").containsMatchIn(curLine)) break
+                if (curTrim.startsWith("|") && curTrim.endsWith("|")) break
+
+                paraLines.add(curLine)
+                i++
+            }
+
+            if (paraLines.isNotEmpty()) {
+                val joinedText = buildString {
+                    for (pIdx in paraLines.indices) {
+                        val pLine = paraLines[pIdx]
+                        if (pIdx > 0) {
+                            val prev = paraLines[pIdx - 1]
+                            if (prev.endsWith("  ") || prev.endsWith("\\")) {
+                                append("\n")
+                            } else {
+                                append(" ")
+                            }
+                        }
+                        append(pLine.trim())
+                    }
+                }
+                val inlines = parseMarkdownInlines(joinedText)
+                nodes.add(MarkdownNode.Paragraph(inlines))
+            }
         }
 
         return MarkdownDocument(title = title, nodes = nodes, rawText = text)
     }
 
-    private fun parseMarkdownInlines(text: String): List<MarkdownInline> {
+    private fun isDelimiterRule(trimmed: String): Boolean {
+        val clean = trimmed.replace(" ", "")
+        return clean.length >= 3 && (clean.all { it == '-' } || clean.all { it == '*' } || clean.all { it == '_' })
+    }
+
+    fun parseMarkdownInlines(
+        text: String,
+        baseBold: Boolean = false,
+        baseItalic: Boolean = false,
+        baseStrikethrough: Boolean = false,
+        baseUnderline: Boolean = false,
+        baseHighlight: Boolean = false,
+        baseLinkUrl: String? = null
+    ): List<MarkdownInline> {
+        if (text.isEmpty()) return emptyList()
+
         val inlines = mutableListOf<MarkdownInline>()
-        var remaining = text
+        val plainBuilder = StringBuilder()
 
-        while (remaining.isNotEmpty()) {
-            // Bold & Italic (***text***)
-            if (remaining.startsWith("***")) {
-                val end = remaining.indexOf("***", 3)
-                if (end != -1) {
-                    val content = remaining.substring(3, end)
-                    inlines.add(MarkdownInline(content, isBold = true, isItalic = true))
-                    remaining = remaining.substring(end + 3)
+        fun flushPlain() {
+            if (plainBuilder.isNotEmpty()) {
+                inlines.add(
+                    MarkdownInline(
+                        text = plainBuilder.toString(),
+                        isBold = baseBold,
+                        isItalic = baseItalic,
+                        isStrikethrough = baseStrikethrough,
+                        isUnderline = baseUnderline,
+                        isHighlight = baseHighlight,
+                        linkUrl = baseLinkUrl
+                    )
+                )
+                plainBuilder.clear()
+            }
+        }
+
+        var i = 0
+        val len = text.length
+
+        while (i < len) {
+            val ch = text[i]
+
+            // 1. Escaped characters: \*, \_, \`, \~, \[, etc.
+            if (ch == '\\' && i + 1 < len) {
+                val next = text[i + 1]
+                if ("*`_~[]()#+-=!<>\\".contains(next)) {
+                    plainBuilder.append(next)
+                    i += 2
                     continue
                 }
             }
 
-            // Bold (**text** or __text__)
-            if (remaining.startsWith("**") || remaining.startsWith("__")) {
-                val delim = remaining.substring(0, 2)
-                val end = remaining.indexOf(delim, 2)
-                if (end != -1) {
-                    val content = remaining.substring(2, end)
-                    inlines.add(MarkdownInline(content, isBold = true))
-                    remaining = remaining.substring(end + 2)
+            // 2. Inline Code: `code` or ``code``
+            if (ch == '`') {
+                val backticks = text.substring(i).takeWhile { it == '`' }
+                val count = backticks.length
+                val closeIndex = text.indexOf(backticks, i + count)
+                if (closeIndex != -1) {
+                    flushPlain()
+                    val codeContent = text.substring(i + count, closeIndex)
+                    inlines.add(
+                        MarkdownInline(
+                            text = codeContent,
+                            isCode = true,
+                            linkUrl = baseLinkUrl
+                        )
+                    )
+                    i = closeIndex + count
                     continue
                 }
             }
 
-            // Strikethrough (~~text~~)
-            if (remaining.startsWith("~~")) {
-                val end = remaining.indexOf("~~", 2)
-                if (end != -1) {
-                    val content = remaining.substring(2, end)
-                    inlines.add(MarkdownInline(content, isStrikethrough = true))
-                    remaining = remaining.substring(end + 2)
-                    continue
+            // 3. HTML tags: <b>, <strong>, <i>, <em>, <code>, <del>, <s>, <u>, <mark>, <br>
+            if (ch == '<') {
+                val remaining = text.substring(i)
+                when {
+                    remaining.startsWith("<br>", ignoreCase = true) -> {
+                        plainBuilder.append("\n")
+                        i += 4
+                        continue
+                    }
+                    remaining.startsWith("<br/>", ignoreCase = true) || remaining.startsWith("<br />", ignoreCase = true) -> {
+                        plainBuilder.append("\n")
+                        i += if (remaining.startsWith("<br/>", ignoreCase = true)) 5 else 6
+                        continue
+                    }
+                    remaining.startsWith("<b>", ignoreCase = true) || remaining.startsWith("<strong>", ignoreCase = true) -> {
+                        val tagLen = if (remaining.startsWith("<b>", ignoreCase = true)) 3 else 8
+                        val closeTag = if (tagLen == 3) "</b>" else "</strong>"
+                        val closeIdx = remaining.indexOf(closeTag, ignoreCase = true)
+                        if (closeIdx != -1) {
+                            flushPlain()
+                            val inner = remaining.substring(tagLen, closeIdx)
+                            inlines.addAll(parseMarkdownInlines(inner, baseBold = true, baseItalic = baseItalic, baseStrikethrough = baseStrikethrough, baseUnderline = baseUnderline, baseHighlight = baseHighlight, baseLinkUrl = baseLinkUrl))
+                            i += closeIdx + closeTag.length
+                            continue
+                        }
+                    }
+                    remaining.startsWith("<i>", ignoreCase = true) || remaining.startsWith("<em>", ignoreCase = true) -> {
+                        val tagLen = if (remaining.startsWith("<i>", ignoreCase = true)) 3 else 4
+                        val closeTag = if (tagLen == 3) "</i>" else "</em>"
+                        val closeIdx = remaining.indexOf(closeTag, ignoreCase = true)
+                        if (closeIdx != -1) {
+                            flushPlain()
+                            val inner = remaining.substring(tagLen, closeIdx)
+                            inlines.addAll(parseMarkdownInlines(inner, baseBold = baseBold, baseItalic = true, baseStrikethrough = baseStrikethrough, baseUnderline = baseUnderline, baseHighlight = baseHighlight, baseLinkUrl = baseLinkUrl))
+                            i += closeIdx + closeTag.length
+                            continue
+                        }
+                    }
+                    remaining.startsWith("<u>", ignoreCase = true) || remaining.startsWith("<ins>", ignoreCase = true) -> {
+                        val tagLen = if (remaining.startsWith("<u>", ignoreCase = true)) 3 else 5
+                        val closeTag = if (tagLen == 3) "</u>" else "</ins>"
+                        val closeIdx = remaining.indexOf(closeTag, ignoreCase = true)
+                        if (closeIdx != -1) {
+                            flushPlain()
+                            val inner = remaining.substring(tagLen, closeIdx)
+                            inlines.addAll(parseMarkdownInlines(inner, baseBold = baseBold, baseItalic = baseItalic, baseStrikethrough = baseStrikethrough, baseUnderline = true, baseHighlight = baseHighlight, baseLinkUrl = baseLinkUrl))
+                            i += closeIdx + closeTag.length
+                            continue
+                        }
+                    }
+                    remaining.startsWith("<del>", ignoreCase = true) || remaining.startsWith("<s>", ignoreCase = true) -> {
+                        val tagLen = if (remaining.startsWith("<del>", ignoreCase = true)) 5 else 3
+                        val closeTag = if (tagLen == 5) "</del>" else "</s>"
+                        val closeIdx = remaining.indexOf(closeTag, ignoreCase = true)
+                        if (closeIdx != -1) {
+                            flushPlain()
+                            val inner = remaining.substring(tagLen, closeIdx)
+                            inlines.addAll(parseMarkdownInlines(inner, baseBold = baseBold, baseItalic = baseItalic, baseStrikethrough = true, baseUnderline = baseUnderline, baseHighlight = baseHighlight, baseLinkUrl = baseLinkUrl))
+                            i += closeIdx + closeTag.length
+                            continue
+                        }
+                    }
+                    remaining.startsWith("<mark>", ignoreCase = true) -> {
+                        val closeIdx = remaining.indexOf("</mark>", ignoreCase = true)
+                        if (closeIdx != -1) {
+                            flushPlain()
+                            val inner = remaining.substring(6, closeIdx)
+                            inlines.addAll(parseMarkdownInlines(inner, baseBold = baseBold, baseItalic = baseItalic, baseStrikethrough = baseStrikethrough, baseUnderline = baseUnderline, baseHighlight = true, baseLinkUrl = baseLinkUrl))
+                            i += closeIdx + 7
+                            continue
+                        }
+                    }
+                    remaining.startsWith("<code>", ignoreCase = true) -> {
+                        val closeIdx = remaining.indexOf("</code>", ignoreCase = true)
+                        if (closeIdx != -1) {
+                            flushPlain()
+                            val inner = remaining.substring(6, closeIdx)
+                            inlines.add(MarkdownInline(text = inner, isCode = true, linkUrl = baseLinkUrl))
+                            i += closeIdx + 7
+                            continue
+                        }
+                    }
+                    remaining.startsWith("<http://") || remaining.startsWith("<https://") || remaining.startsWith("<mailto:") -> {
+                        val closeIdx = remaining.indexOf(">")
+                        if (closeIdx != -1) {
+                            flushPlain()
+                            val url = remaining.substring(1, closeIdx)
+                            inlines.add(MarkdownInline(text = url, linkUrl = url))
+                            i += closeIdx + 1
+                            continue
+                        }
+                    }
                 }
             }
 
-            // Inline Code (`code`)
-            if (remaining.startsWith("`")) {
-                val end = remaining.indexOf("`", 1)
-                if (end != -1) {
-                    val content = remaining.substring(1, end)
-                    inlines.add(MarkdownInline(content, isCode = true))
-                    remaining = remaining.substring(end + 1)
-                    continue
-                }
-            }
-
-            // Link ([title](url))
-            if (remaining.startsWith("[")) {
-                val closeBracket = remaining.indexOf("](")
+            // 4. Image: ![alt](url)
+            if (ch == '!' && i + 1 < len && text[i + 1] == '[') {
+                val closeBracket = text.indexOf("](", i + 2)
                 if (closeBracket != -1) {
-                    val closeParen = remaining.indexOf(")", closeBracket + 2)
+                    val closeParen = text.indexOf(")", closeBracket + 2)
                     if (closeParen != -1) {
-                        val linkTitle = remaining.substring(1, closeBracket)
-                        val linkUrl = remaining.substring(closeBracket + 2, closeParen)
-                        inlines.add(MarkdownInline(linkTitle, linkUrl = linkUrl))
-                        remaining = remaining.substring(closeParen + 1)
+                        flushPlain()
+                        val altText = text.substring(i + 2, closeBracket)
+                        val imgUrl = text.substring(closeBracket + 2, closeParen).trim()
+                        inlines.add(MarkdownInline(text = altText.ifEmpty { "Image" }, imageUrl = imgUrl))
+                        i = closeParen + 1
                         continue
                     }
                 }
             }
 
-            // Italic (*text* or _text_)
-            if (remaining.startsWith("*") || remaining.startsWith("_")) {
-                val delim = remaining.substring(0, 1)
-                val end = remaining.indexOf(delim, 1)
-                if (end != -1 && end > 1) {
-                    val content = remaining.substring(1, end)
-                    inlines.add(MarkdownInline(content, isItalic = true))
-                    remaining = remaining.substring(end + 1)
+            // 5. Link: [label](url)
+            if (ch == '[') {
+                val closeBracket = text.indexOf("](", i + 1)
+                if (closeBracket != -1) {
+                    val closeParen = text.indexOf(")", closeBracket + 2)
+                    if (closeParen != -1) {
+                        flushPlain()
+                        val label = text.substring(i + 1, closeBracket)
+                        val url = text.substring(closeBracket + 2, closeParen).trim()
+                        val linkInlines = parseMarkdownInlines(label, baseBold = baseBold, baseItalic = baseItalic, baseStrikethrough = baseStrikethrough, baseUnderline = baseUnderline, baseHighlight = baseHighlight, baseLinkUrl = url)
+                        inlines.addAll(linkInlines)
+                        i = closeParen + 1
+                        continue
+                    }
+                }
+            }
+
+            // 6. Bold + Italic: ***text*** or ___text___
+            if (text.startsWith("***", i) || text.startsWith("___", i)) {
+                val delim = text.substring(i, i + 3)
+                val closeIdx = findClosingDelimiter(text, delim, i + 3)
+                if (closeIdx != -1) {
+                    flushPlain()
+                    val inner = text.substring(i + 3, closeIdx)
+                    inlines.addAll(parseMarkdownInlines(inner, baseBold = true, baseItalic = true, baseStrikethrough = baseStrikethrough, baseUnderline = baseUnderline, baseHighlight = baseHighlight, baseLinkUrl = baseLinkUrl))
+                    i = closeIdx + 3
                     continue
                 }
             }
 
-            // Plain text run until next special character
-            val nextSpecial = remaining.indexOfAny(listOf("**", "__", "*", "_", "~~", "`", "[", "***"))
-            if (nextSpecial == -1) {
-                inlines.add(MarkdownInline(remaining))
-                break
-            } else if (nextSpecial == 0) {
-                inlines.add(MarkdownInline(remaining.substring(0, 1)))
-                remaining = remaining.substring(1)
-            } else {
-                inlines.add(MarkdownInline(remaining.substring(0, nextSpecial)))
-                remaining = remaining.substring(nextSpecial)
+            // 7. Bold: **text** or __text__
+            if (text.startsWith("**", i) || text.startsWith("__", i)) {
+                val delim = text.substring(i, i + 2)
+                val isUnderscore = delim == "__"
+                val isIntraWord = isUnderscore && i > 0 && text[i - 1].isLetterOrDigit()
+                if (!isIntraWord) {
+                    val closeIdx = findClosingDelimiter(text, delim, i + 2)
+                    if (closeIdx != -1) {
+                        flushPlain()
+                        val inner = text.substring(i + 2, closeIdx)
+                        inlines.addAll(parseMarkdownInlines(inner, baseBold = true, baseItalic = baseItalic, baseStrikethrough = baseStrikethrough, baseUnderline = baseUnderline, baseHighlight = baseHighlight, baseLinkUrl = baseLinkUrl))
+                        i = closeIdx + 2
+                        continue
+                    }
+                }
             }
+
+            // 8. Strikethrough: ~~text~~
+            if (text.startsWith("~~", i)) {
+                val closeIdx = findClosingDelimiter(text, "~~", i + 2)
+                if (closeIdx != -1) {
+                    flushPlain()
+                    val inner = text.substring(i + 2, closeIdx)
+                    inlines.addAll(parseMarkdownInlines(inner, baseBold = baseBold, baseItalic = baseItalic, baseStrikethrough = true, baseUnderline = baseUnderline, baseHighlight = baseHighlight, baseLinkUrl = baseLinkUrl))
+                    i = closeIdx + 2
+                    continue
+                }
+            }
+
+            // 9. Highlight: ==text==
+            if (text.startsWith("==", i)) {
+                val closeIdx = findClosingDelimiter(text, "==", i + 2)
+                if (closeIdx != -1) {
+                    flushPlain()
+                    val inner = text.substring(i + 2, closeIdx)
+                    inlines.addAll(parseMarkdownInlines(inner, baseBold = baseBold, baseItalic = baseItalic, baseStrikethrough = baseStrikethrough, baseUnderline = baseUnderline, baseHighlight = true, baseLinkUrl = baseLinkUrl))
+                    i = closeIdx + 2
+                    continue
+                }
+            }
+
+            // 10. Italic: *text* or _text_
+            if (ch == '*' || ch == '_') {
+                val delim = ch.toString()
+                val isUnderscore = ch == '_'
+                val isIntraWord = isUnderscore && i > 0 && text[i - 1].isLetterOrDigit()
+                val nextChar = if (i + 1 < len) text[i + 1] else ' '
+                if (!isIntraWord && nextChar != ' ' && nextChar != '\t') {
+                    val closeIdx = findClosingDelimiter(text, delim, i + 1)
+                    if (closeIdx != -1) {
+                        flushPlain()
+                        val inner = text.substring(i + 1, closeIdx)
+                        inlines.addAll(parseMarkdownInlines(inner, baseBold = baseBold, baseItalic = true, baseStrikethrough = baseStrikethrough, baseUnderline = baseUnderline, baseHighlight = baseHighlight, baseLinkUrl = baseLinkUrl))
+                        i = closeIdx + 1
+                        continue
+                    }
+                }
+            }
+
+            // 11. Bare URLs: https://... or http://...
+            if ((ch == 'h' || ch == 'H') && (text.startsWith("http://", i, ignoreCase = true) || text.startsWith("https://", i, ignoreCase = true))) {
+                val urlEnd = findUrlEnd(text, i)
+                if (urlEnd > i) {
+                    flushPlain()
+                    val url = text.substring(i, urlEnd)
+                    inlines.add(MarkdownInline(text = url, linkUrl = url))
+                    i = urlEnd
+                    continue
+                }
+            }
+
+            plainBuilder.append(ch)
+            i++
         }
 
-        return inlines
+        flushPlain()
+        return collapseAdjacentInlines(inlines)
+    }
+
+    private fun findClosingDelimiter(text: String, delim: String, startIndex: Int): Int {
+        var pos = startIndex
+        val dLen = delim.length
+        while (pos <= text.length - dLen) {
+            if (text.startsWith(delim, pos)) {
+                var backslashCount = 0
+                var b = pos - 1
+                while (b >= 0 && text[b] == '\\') {
+                    backslashCount++
+                    b--
+                }
+                if (backslashCount % 2 == 0) {
+                    val prevChar = text[pos - 1]
+                    if (!prevChar.isWhitespace()) {
+                        if (delim == "_" && pos + 1 < text.length && text[pos + 1].isLetterOrDigit()) {
+                            pos++
+                            continue
+                        }
+                        return pos
+                    }
+                }
+            }
+            pos++
+        }
+        return -1
+    }
+
+    private fun findUrlEnd(text: String, startIndex: Int): Int {
+        var end = startIndex
+        while (end < text.length && !text[end].isWhitespace()) {
+            end++
+        }
+        while (end > startIndex && ".,!?:;)\">]".contains(text[end - 1])) {
+            if (text[end - 1] == ')') {
+                val openCount = text.substring(startIndex, end).count { it == '(' }
+                val closeCount = text.substring(startIndex, end).count { it == ')' }
+                if (closeCount <= openCount) break
+            }
+            end--
+        }
+        return end
+    }
+
+    private fun collapseAdjacentInlines(inlines: List<MarkdownInline>): List<MarkdownInline> {
+        if (inlines.size <= 1) return inlines
+        val result = mutableListOf<MarkdownInline>()
+        var current = inlines[0]
+
+        for (j in 1 until inlines.size) {
+            val next = inlines[j]
+            if (current.isBold == next.isBold &&
+                current.isItalic == next.isItalic &&
+                current.isCode == next.isCode &&
+                current.isStrikethrough == next.isStrikethrough &&
+                current.isUnderline == next.isUnderline &&
+                current.isHighlight == next.isHighlight &&
+                current.linkUrl == next.linkUrl &&
+                current.imageUrl == null && next.imageUrl == null
+            ) {
+                current = current.copy(text = current.text + next.text)
+            } else {
+                result.add(current)
+                current = next
+            }
+        }
+        result.add(current)
+        return result
     }
 
     private fun extractPrintableText(file: File): String {

@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -94,8 +95,13 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -103,6 +109,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -905,11 +912,11 @@ fun MarkdownDocumentPreview(
                                     4 -> 16.sp to FontWeight.SemiBold
                                     else -> 15.sp to FontWeight.Medium
                                 }
-                                Text(
-                                    text = node.text,
-                                    fontSize = fontSize,
-                                    fontWeight = weight,
+                                MarkdownInlinesText(
+                                    inlines = node.inlines.ifEmpty { listOf(MarkdownInline(node.text, isBold = true)) },
+                                    style = MaterialTheme.typography.titleLarge.copy(fontSize = fontSize, fontWeight = weight),
                                     color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = weight,
                                     modifier = Modifier.padding(top = 10.dp, bottom = 4.dp)
                                 )
                             }
@@ -963,8 +970,8 @@ fun MarkdownDocumentPreview(
                                             .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp))
                                     )
                                     Spacer(modifier = Modifier.width(10.dp))
-                                    Text(
-                                        text = node.text,
+                                    MarkdownInlinesText(
+                                        inlines = node.inlines.ifEmpty { listOf(MarkdownInline(node.text, isItalic = true)) },
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontStyle = FontStyle.Italic
                                     )
@@ -982,17 +989,16 @@ fun MarkdownDocumentPreview(
                                         modifier = Modifier.size(20.dp)
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = node.text,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        textDecoration = if (node.isChecked) TextDecoration.LineThrough else TextDecoration.None
+                                    MarkdownInlinesText(
+                                        inlines = node.inlines.ifEmpty { listOf(MarkdownInline(node.text, isStrikethrough = node.isChecked)) },
+                                        style = MaterialTheme.typography.bodyMedium
                                     )
                                 }
                             }
                             is MarkdownNode.ListItem -> {
                                 Row(
                                     verticalAlignment = Alignment.Top,
-                                    modifier = Modifier.padding(start = 8.dp, top = 2.dp, bottom = 2.dp)
+                                    modifier = Modifier.padding(start = (8 + node.level * 16).dp, top = 2.dp, bottom = 2.dp)
                                 ) {
                                     Text(
                                         text = if (node.isOrdered) "${node.orderNumber}. " else "• ",
@@ -1000,7 +1006,10 @@ fun MarkdownDocumentPreview(
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.primary
                                     )
-                                    Text(text = node.text, style = MaterialTheme.typography.bodyMedium)
+                                    MarkdownInlinesText(
+                                        inlines = node.inlines.ifEmpty { listOf(MarkdownInline(node.text)) },
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
                                 }
                             }
                             is MarkdownNode.HorizontalRule -> {
@@ -1012,32 +1021,40 @@ fun MarkdownDocumentPreview(
                             is MarkdownNode.Table -> {
                                 MarkdownTableView(node)
                             }
-                            is MarkdownNode.Paragraph -> {
-                                val codeBackground = MaterialTheme.colorScheme.surfaceContainerHighest
-                                val linkColor = MaterialTheme.colorScheme.primary
-                                val annotated = remember(node, codeBackground, linkColor) {
-                                    buildAnnotatedString {
-                                        node.inlines.forEach { inline ->
-                                            val styles = SpanStyle(
-                                                fontWeight = if (inline.isBold) FontWeight.Bold else FontWeight.Normal,
-                                                fontStyle = if (inline.isItalic) FontStyle.Italic else FontStyle.Normal,
-                                                fontFamily = if (inline.isCode) FontFamily.Monospace else FontFamily.Default,
-                                                background = if (inline.isCode) codeBackground else Color.Transparent,
-                                                color = if (inline.linkUrl != null) linkColor else Color.Unspecified,
-                                                textDecoration = when {
-                                                    inline.isStrikethrough -> TextDecoration.LineThrough
-                                                    inline.linkUrl != null -> TextDecoration.Underline
-                                                    else -> TextDecoration.None
-                                                }
+                            is MarkdownNode.Image -> {
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 6.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(8.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        AsyncImage(
+                                            model = node.url,
+                                            contentDescription = node.alt,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .heightIn(max = 300.dp)
+                                                .clip(RoundedCornerShape(8.dp)),
+                                            contentScale = ContentScale.Fit
+                                        )
+                                        if (node.alt.isNotBlank()) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = node.alt,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
-                                            withStyle(styles) {
-                                                append(inline.text)
-                                            }
                                         }
                                     }
                                 }
-                                Text(
-                                    text = annotated,
+                            }
+                            is MarkdownNode.Paragraph -> {
+                                MarkdownInlinesText(
+                                    inlines = node.inlines,
                                     style = MaterialTheme.typography.bodyMedium,
                                     lineHeight = 22.sp
                                 )
@@ -1048,6 +1065,78 @@ fun MarkdownDocumentPreview(
             }
         }
     }
+}
+
+@Composable
+fun MarkdownInlinesText(
+    inlines: List<MarkdownInline>,
+    modifier: Modifier = Modifier,
+    style: TextStyle = MaterialTheme.typography.bodyMedium,
+    color: Color = Color.Unspecified,
+    lineHeight: TextUnit = TextUnit.Unspecified,
+    fontWeight: FontWeight? = null,
+    fontStyle: FontStyle? = null
+) {
+    val codeBackground = MaterialTheme.colorScheme.surfaceContainerHighest
+    val codeTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val linkColor = MaterialTheme.colorScheme.primary
+    val highlightColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
+    val uriHandler = LocalUriHandler.current
+
+    val annotated = remember(inlines, codeBackground, codeTextColor, linkColor, highlightColor) {
+        buildAnnotatedString {
+            inlines.forEach { inline ->
+                val spanStyle = SpanStyle(
+                    fontWeight = if (inline.isBold) FontWeight.Bold else (fontWeight ?: FontWeight.Normal),
+                    fontStyle = if (inline.isItalic) FontStyle.Italic else (fontStyle ?: FontStyle.Normal),
+                    fontFamily = if (inline.isCode) FontFamily.Monospace else FontFamily.Default,
+                    background = when {
+                        inline.isCode -> codeBackground
+                        inline.isHighlight -> highlightColor
+                        else -> Color.Transparent
+                    },
+                    color = when {
+                        inline.linkUrl != null -> linkColor
+                        inline.isCode -> codeTextColor
+                        color != Color.Unspecified -> color
+                        else -> Color.Unspecified
+                    },
+                    textDecoration = when {
+                        inline.isStrikethrough && (inline.isUnderline || inline.linkUrl != null) ->
+                            TextDecoration.combine(listOf(TextDecoration.LineThrough, TextDecoration.Underline))
+                        inline.isStrikethrough -> TextDecoration.LineThrough
+                        inline.isUnderline || inline.linkUrl != null -> TextDecoration.Underline
+                        else -> TextDecoration.None
+                    }
+                )
+
+                val start = length
+                append(inline.text)
+                val end = length
+                addStyle(spanStyle, start, end)
+
+                if (inline.linkUrl != null) {
+                    addLink(
+                        LinkAnnotation.Url(
+                            url = inline.linkUrl,
+                            linkInteractionListener = {
+                                runCatching { uriHandler.openUri(inline.linkUrl) }
+                            }
+                        ),
+                        start,
+                        end
+                    )
+                }
+            }
+        }
+    }
+
+    Text(
+        text = annotated,
+        style = style,
+        lineHeight = lineHeight,
+        modifier = modifier
+    )
 }
 
 @Composable
@@ -1068,29 +1157,40 @@ private fun MarkdownTableView(table: MarkdownNode.Table) {
             // Headers
             if (table.headers.isNotEmpty()) {
                 Row(modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
-                    table.headers.forEach { header ->
+                    table.headers.forEachIndexed { colIdx, header ->
+                        val cellInlines = table.headerInlines.getOrNull(colIdx)
+                            ?: listOf(MarkdownInline(header, isBold = true))
                         Box(
                             modifier = Modifier
                                 .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
                                 .padding(horizontal = 10.dp, vertical = 6.dp)
-                                .widthIn(min = 80.dp, max = 200.dp)
+                                .widthIn(min = 80.dp, max = 220.dp)
                         ) {
-                            Text(header, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            MarkdownInlinesText(
+                                inlines = cellInlines,
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                            )
                         }
                     }
                 }
             }
             // Rows
-            table.rows.forEach { row ->
+            table.rows.forEachIndexed { rowIdx, row ->
+                val rowInlinesList = table.rowInlines.getOrNull(rowIdx)
                 Row {
-                    row.forEach { cell ->
+                    row.forEachIndexed { colIdx, cell ->
+                        val cellInlines = rowInlinesList?.getOrNull(colIdx)
+                            ?: listOf(MarkdownInline(cell))
                         Box(
                             modifier = Modifier
                                 .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
                                 .padding(horizontal = 10.dp, vertical = 6.dp)
-                                .widthIn(min = 80.dp, max = 200.dp)
+                                .widthIn(min = 80.dp, max = 220.dp)
                         ) {
-                            Text(cell, style = MaterialTheme.typography.bodySmall)
+                            MarkdownInlinesText(
+                                inlines = cellInlines,
+                                style = MaterialTheme.typography.bodySmall
+                            )
                         }
                     }
                 }

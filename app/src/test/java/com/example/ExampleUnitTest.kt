@@ -606,6 +606,85 @@ class ExampleUnitTest {
         assertEquals(listOf("Feature", "Status"), table.headers)
         assertEquals(2, table.rows.size)
         assertEquals(listOf("PDF", "Supported"), table.rows[0])
+
+        val p = mdDoc.nodes.first { it is com.example.core.document.MarkdownNode.Paragraph } as com.example.core.document.MarkdownNode.Paragraph
+        assertTrue(p.inlines.any { it.isBold && it.text.contains("bold statement") })
+        assertTrue(p.inlines.any { it.isItalic && it.text.contains("italics") })
+        assertTrue(p.inlines.any { it.isCode && it.text.contains("inline code") })
+    }
+
+    @Test
+    fun `DocumentReaderEngine correctly parses markdown conventions including bold italics nested inlines lists and tables`() {
+        val sample = """
+            # Header with **bold** and *italic*
+            
+            This has **bold text**, *italic text*, ***bold italic***, and __another bold__ with _another italic_.
+            Here is **bold with *nested italic* inside** and `val x = 42`.
+            Also supports ~~strikethrough~~, ==highlighted text==, and <b>HTML bold</b> with <i>HTML italic</i>.
+            Visit [OpenFile GitHub](https://github.com/sumon317/OpenFile) or https://android.com.
+            
+            - **First item** with *emphasis*
+            - Second item with `code`
+            
+            1. **Step 1:** Download
+            2. *Step 2:* Install
+            
+            > **Important Note:** This is a *crucial* architecture tip.
+            
+            | Option | **Status** | *Speed* |
+            |---|---|---|
+            | `ExoPlayer` | **Active** | *1.5x* |
+            
+            ---
+        """.trimIndent()
+
+        val doc = com.example.core.document.DocumentReaderEngine.parseMarkdown(sample, "markdown_conventions.md")
+
+        // 1. Header has parsed inlines
+        val header = doc.nodes.filterIsInstance<com.example.core.document.MarkdownNode.Header>().first()
+        assertEquals(1, header.level)
+        assertTrue(header.inlines.any { it.isBold && it.text == "bold" })
+        assertTrue(header.inlines.any { it.isItalic && it.text == "italic" })
+
+        // 2. Paragraphs parse all inline conventions
+        val p = doc.nodes.filterIsInstance<com.example.core.document.MarkdownNode.Paragraph>().first()
+        assertTrue(p.inlines.any { it.isBold && it.text == "bold text" })
+        assertTrue(p.inlines.any { it.isItalic && it.text == "italic text" })
+        assertTrue(p.inlines.any { it.isBold && it.isItalic && it.text == "bold italic" })
+        assertTrue(p.inlines.any { it.isBold && it.text == "another bold" })
+        assertTrue(p.inlines.any { it.isItalic && it.text == "another italic" })
+        // Nested bold + italic
+        assertTrue(p.inlines.any { it.isBold && it.isItalic && it.text == "nested italic" })
+        assertTrue(p.inlines.any { it.isCode && it.text == "val x = 42" })
+        assertTrue(p.inlines.any { it.isStrikethrough && it.text == "strikethrough" })
+        assertTrue(p.inlines.any { it.isHighlight && it.text == "highlighted text" })
+        assertTrue(p.inlines.any { it.isBold && it.text == "HTML bold" })
+        assertTrue(p.inlines.any { it.isItalic && it.text == "HTML italic" })
+        // Links
+        assertTrue(p.inlines.any { it.linkUrl == "https://github.com/sumon317/OpenFile" && it.text == "OpenFile GitHub" })
+        assertTrue(p.inlines.any { it.linkUrl == "https://android.com" })
+
+        // 3. List items have inlines
+        val listItems = doc.nodes.filterIsInstance<com.example.core.document.MarkdownNode.ListItem>()
+        val bullet1 = listItems[0]
+        assertTrue(bullet1.inlines.any { it.isBold && it.text == "First item" })
+        assertTrue(bullet1.inlines.any { it.isItalic && it.text == "emphasis" })
+
+        val ordered1 = listItems.first { it.isOrdered }
+        assertTrue(ordered1.inlines.any { it.isBold && it.text == "Step 1:" })
+
+        // 4. Blockquote has inlines
+        val blockquote = doc.nodes.filterIsInstance<com.example.core.document.MarkdownNode.Blockquote>().first()
+        assertTrue(blockquote.inlines.any { it.isBold && it.text == "Important Note:" })
+        assertTrue(blockquote.inlines.any { it.isItalic && it.text == "crucial" })
+
+        // 5. Table has cell inlines
+        val table = doc.nodes.filterIsInstance<com.example.core.document.MarkdownNode.Table>().first()
+        assertTrue(table.headerInlines[1].any { it.isBold && it.text == "Status" })
+        assertTrue(table.headerInlines[2].any { it.isItalic && it.text == "Speed" })
+        assertTrue(table.rowInlines[0][0].any { it.isCode && it.text == "ExoPlayer" })
+        assertTrue(table.rowInlines[0][1].any { it.isBold && it.text == "Active" })
+        assertTrue(table.rowInlines[0][2].any { it.isItalic && it.text == "1.5x" })
     }
 }
 
