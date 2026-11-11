@@ -983,7 +983,8 @@ fun FilePreviewScreen(
     onSaveTextContent: ((FileReference, String) -> Unit)? = null,
     onLoadArchiveImage: (suspend (ArchiveEntryItem) -> File?)? = null,
     onPreviousMedia: (() -> Unit)? = null,
-    onNextMedia: (() -> Unit)? = null
+    onNextMedia: (() -> Unit)? = null,
+    onSelectMedia: ((FileReference) -> Unit)? = null
 ) {
     val file = state.currentFile
     val ext = file.extension.lowercase()
@@ -1125,6 +1126,8 @@ fun FilePreviewScreen(
                     isVideo -> {
                         VideoPlayerPreview(
                             file = file,
+                            playlist = state.siblingMedia,
+                            onSelectMedia = onSelectMedia,
                             onOpenExternal = { onOpenExternal(file) },
                             onPrevious = onPreviousMedia,
                             onNext = onNextMedia,
@@ -1163,7 +1166,6 @@ private fun ImagePagerPreview(
     onLoadArchiveImage: (suspend (ArchiveEntryItem) -> File?)? = null,
     onPageTitleChanged: (title: String, subtitle: String) -> Unit
 ) {
-    val coroutineScope = rememberCoroutineScope()
     var isCurrentPageZoomed by remember { mutableStateOf(false) }
 
     val archiveContext = state.archiveContext
@@ -1236,60 +1238,6 @@ private fun ImagePagerPreview(
                     }
                 }
             }
-
-            // Left Previous Button
-            if (pagerState.currentPage > 0) {
-                Surface(
-                    shape = CircleShape,
-                    color = Color.Black.copy(alpha = 0.5f),
-                    modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .padding(start = 12.dp)
-                        .size(44.dp)
-                ) {
-                    IconButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                pagerState.animateScrollToPage(pagerState.currentPage - 1)
-                            }
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                            contentDescription = "Previous Image",
-                            tint = Color.White,
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
-                }
-            }
-
-            // Right Next Button
-            if (pagerState.currentPage < entries.size - 1) {
-                Surface(
-                    shape = CircleShape,
-                    color = Color.Black.copy(alpha = 0.5f),
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 12.dp)
-                        .size(44.dp)
-                ) {
-                    IconButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                pagerState.animateScrollToPage(pagerState.currentPage + 1)
-                            }
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = "Next Image",
-                            tint = Color.White,
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
-                }
-            }
         }
     } else {
         val images = if (state.siblingImages.isNotEmpty()) state.siblingImages else listOf(state.currentFile)
@@ -1333,60 +1281,6 @@ private fun ImagePagerPreview(
                         }
                     }
                 )
-            }
-
-            // Left Previous Button
-            if (pagerState.currentPage > 0) {
-                Surface(
-                    shape = CircleShape,
-                    color = Color.Black.copy(alpha = 0.5f),
-                    modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .padding(start = 12.dp)
-                        .size(44.dp)
-                ) {
-                    IconButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                pagerState.animateScrollToPage(pagerState.currentPage - 1)
-                            }
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                            contentDescription = "Previous Image",
-                            tint = Color.White,
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
-                }
-            }
-
-            // Right Next Button
-            if (pagerState.currentPage < images.size - 1) {
-                Surface(
-                    shape = CircleShape,
-                    color = Color.Black.copy(alpha = 0.5f),
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 12.dp)
-                        .size(44.dp)
-                ) {
-                    IconButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                pagerState.animateScrollToPage(pagerState.currentPage + 1)
-                            }
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = "Next Image",
-                            tint = Color.White,
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
-                }
             }
         }
     }

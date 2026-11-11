@@ -443,7 +443,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                 }
             },
             onPreviousMedia = { viewModel.previewPreviousMedia() },
-            onNextMedia = { viewModel.previewNextMedia() }
+            onNextMedia = { viewModel.previewNextMedia() },
+            onSelectMedia = { viewModel.previewMediaAt(it) }
         )
     }
 

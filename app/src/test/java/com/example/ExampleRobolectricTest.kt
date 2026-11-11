@@ -1181,10 +1181,9 @@ class ExampleRobolectricTest {
             assertNotNull(extracted)
             assertTrue(extracted!!.exists())
 
-            // Verify UI displays archive image pager with back/forth navigation
+            // Verify UI displays archive image pager
             composeTestRule.waitForIdle()
             composeTestRule.onNodeWithTag("archive_image_pager").assertIsDisplayed()
-            composeTestRule.onNodeWithContentDescription("Previous Image").assertIsDisplayed().performClick()
             composeTestRule.waitForIdle()
 
             composeTestRule.runOnUiThread {

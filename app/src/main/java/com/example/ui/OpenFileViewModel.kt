@@ -1033,6 +1033,17 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun previewMediaAt(targetFile: FileReference) {
+        val state = _previewState.value ?: return
+        val list = state.siblingMedia
+        val idx = list.indexOfFirst { it.uriOrPath == targetFile.uriOrPath }
+        _previewState.value = state.copy(
+            currentFile = targetFile,
+            initialMediaIndex = if (idx >= 0) idx else 0
+        )
+        _previewFile.value = targetFile
+    }
+
     fun closePreviewDialog() {
         _previewState.value = null
         _previewFile.value = null
