@@ -3,10 +3,10 @@ package com.example.ui.components
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
-import android.media.MediaPlayer
 import android.net.Uri
+import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.VideoView
+import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -36,7 +35,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
-import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Forward10
@@ -46,11 +44,13 @@ import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOn
-import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
@@ -68,11 +68,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -89,6 +87,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import com.example.core.model.FileReference
 import com.example.core.model.ProviderType
 import com.example.ui.theme.AudioPurple
@@ -96,9 +100,9 @@ import com.example.ui.theme.VideoCoral
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 
 /**
  * Formats duration in milliseconds to mm:ss or hh:mm:ss.
@@ -110,9 +114,9 @@ fun formatMediaDuration(ms: Long): String {
     val minutes = (totalSeconds % 3600) / 60
     val seconds = totalSeconds % 60
     return if (hours > 0) {
-        String.format("%d:%02d:%02d", hours, minutes, seconds)
+        String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, seconds)
     } else {
-        String.format("%02d:%02d", minutes, seconds)
+        String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
     }
 }
 
@@ -121,8 +125,19 @@ data class AudioTrackInfo(
     val artist: String,
     val album: String,
     val durationMs: Long,
-    val artwork: ImageBitmap? = null
+    val artwork: ImageBitmap? = null,
 )
+
+private fun resolveMediaUri(file: FileReference): Uri {
+    val localBacking = file.metadata["localBackingPath"]?.let { File(it) }
+        ?: if (file.providerType == ProviderType.LOCAL) File(file.uriOrPath) else null
+
+    return if (localBacking != null && localBacking.exists()) {
+        Uri.fromFile(localBacking)
+    } else {
+        Uri.parse(file.uriOrPath)
+    }
+}
 
 private fun extractAudioTrackInfo(context: Context, file: FileReference): AudioTrackInfo {
     var title = file.displayName.substringBeforeLast('.')
@@ -134,7 +149,7 @@ private fun extractAudioTrackInfo(context: Context, file: FileReference): AudioT
         val retriever = MediaMetadataRetriever()
         val localBacking = file.metadata["localBackingPath"]?.let { File(it) }
             ?: if (file.providerType == ProviderType.LOCAL) File(file.uriOrPath) else null
-        if (localBacking != null && localBacking.exists()) {
+        if ((localBacking != null) && localBacking.exists()) {
             retriever.setDataSource(localBacking.absolutePath)
         } else {
             retriever.setDataSource(context, Uri.parse(file.uriOrPath))
@@ -156,8 +171,9 @@ private fun extractAudioTrackInfo(context: Context, file: FileReference): AudioT
 }
 
 /**
- * Built-in Modern Audio Player with embedded album art, seekable progress bar,
- * waveform animation, and playback controls.
+ * Built-in Modern Audio Player powered by Jetpack Media3 ExoPlayer.
+ * Features: High-fidelity audio playback, embedded album art, seek scrubber,
+ * waveform animation, playback speeds, and repeat loop modes.
  */
 @Composable
 fun AudioPlayerPreview(
@@ -169,13 +185,61 @@ fun AudioPlayerPreview(
     var isPrepared by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
     var isLooping by remember { mutableStateOf(false) }
+    var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
+    var showSpeedMenu by remember { mutableStateOf(false) }
     var currentPositionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isUserSeeking by remember { mutableStateOf(false) }
     var seekFraction by remember { mutableFloatStateOf(0f) }
 
-    var playerRef by remember { mutableStateOf<MediaPlayer?>(null) }
+    val exoPlayer = remember(file) {
+        ExoPlayer.Builder(context).build().apply {
+            val mediaItem = MediaItem.fromUri(resolveMediaUri(file))
+            setMediaItem(mediaItem)
+            prepare()
+            playWhenReady = true
+        }
+    }
+
+    // Attach ExoPlayer Listener
+    DisposableEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                when (playbackState) {
+                    Player.STATE_READY -> {
+                        isPrepared = true
+                        val d = exoPlayer.duration
+                        if (d > 0L) durationMs = d
+                    }
+                    Player.STATE_ENDED -> {
+                        if (!isLooping) {
+                            isPlaying = false
+                            currentPositionMs = durationMs
+                        }
+                    }
+                    Player.STATE_BUFFERING -> {}
+                    Player.STATE_IDLE -> {}
+                }
+            }
+
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                errorMessage = error.localizedMessage ?: "ExoPlayer error (${error.errorCode})"
+                isPlaying = false
+            }
+        }
+        exoPlayer.addListener(listener)
+
+        onDispose {
+            exoPlayer.removeListener(listener)
+            exoPlayer.stop()
+            exoPlayer.release()
+        }
+    }
 
     // Load track metadata off the main thread
     LaunchedEffect(file) {
@@ -183,79 +247,19 @@ fun AudioPlayerPreview(
             extractAudioTrackInfo(context, file)
         }
         trackInfo = info
-        if (info.durationMs > 0) {
+        if (info.durationMs > 0 && durationMs == 0L) {
             durationMs = info.durationMs
-        }
-    }
-
-    // Initialize MediaPlayer
-    LaunchedEffect(file) {
-        isPrepared = false
-        isPlaying = false
-        errorMessage = null
-        currentPositionMs = 0L
-
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val mp = MediaPlayer()
-                val localBacking = file.metadata["localBackingPath"]?.let { File(it) }
-                    ?: if (file.providerType == ProviderType.LOCAL) File(file.uriOrPath) else null
-
-                if (localBacking != null && localBacking.exists()) {
-                    mp.setDataSource(localBacking.absolutePath)
-                } else {
-                    mp.setDataSource(context, Uri.parse(file.uriOrPath))
-                }
-
-                mp.setOnPreparedListener { player ->
-                    playerRef = player
-                    durationMs = player.duration.toLong().coerceAtLeast(0L)
-                    isPrepared = true
-                    player.start()
-                    isPlaying = true
-                }
-
-                mp.setOnCompletionListener {
-                    if (!isLooping) {
-                        isPlaying = false
-                        currentPositionMs = durationMs
-                    }
-                }
-
-                mp.setOnErrorListener { _, what, extra ->
-                    errorMessage = "Audio playback error ($what, $extra)"
-                    isPlaying = false
-                    true
-                }
-
-                mp.prepareAsync()
-            }.onFailure { err ->
-                errorMessage = err.message ?: "Unable to play audio file"
-            }
         }
     }
 
     // Polling position updater
     LaunchedEffect(isPlaying, isPrepared, isUserSeeking) {
         while (isActive && isPlaying && !isUserSeeking) {
-            playerRef?.let { mp ->
-                if (runCatching { mp.isPlaying }.getOrDefault(false)) {
-                    currentPositionMs = mp.currentPosition.toLong().coerceAtLeast(0L)
-                }
-            }
+            val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
+            currentPositionMs = pos
+            val dur = exoPlayer.duration
+            if (dur > 0L) durationMs = dur
             delay(250)
-        }
-    }
-
-    // Clean up on exit
-    DisposableEffect(file) {
-        onDispose {
-            val mp = playerRef
-            playerRef = null
-            runCatching {
-                if (mp?.isPlaying == true) mp.stop()
-                mp?.release()
-            }
         }
     }
 
@@ -370,7 +374,7 @@ fun AudioPlayerPreview(
             text = listOfNotNull(
                 trackInfo?.artist.takeIf { !it.isNullOrBlank() && it != "Unknown Artist" },
                 trackInfo?.album.takeIf { !it.isNullOrBlank() },
-                file.extension.uppercase()
+                "ExoPlayer • ${file.extension.uppercase()}"
             ).joinToString(" • ").ifBlank { file.formattedSize },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -394,9 +398,9 @@ fun AudioPlayerPreview(
                 currentPositionMs = (frac * durationMs).toLong()
             },
             onValueChangeFinished = {
-                val targetMs = (seekFraction * durationMs).toInt()
-                playerRef?.seekTo(targetMs)
-                currentPositionMs = targetMs.toLong()
+                val targetMs = (seekFraction * durationMs).toLong()
+                exoPlayer.seekTo(targetMs)
+                currentPositionMs = targetMs
                 isUserSeeking = false
             },
             enabled = isPrepared && durationMs > 0L,
@@ -408,16 +412,46 @@ fun AudioPlayerPreview(
             modifier = Modifier.fillMaxWidth().testTag("audio_seek_slider")
         )
 
-        // Time labels
+        // Time labels & Speed Selector
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = formatMediaDuration(currentPositionMs),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+
+            // Speed dropdown selector
+            Box {
+                TextButton(
+                    onClick = { showSpeedMenu = true },
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Icon(Icons.Filled.Speed, contentDescription = null, modifier = Modifier.size(14.dp), tint = AudioPurple)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(text = "${playbackSpeed}x", style = MaterialTheme.typography.labelSmall, color = AudioPurple)
+                }
+
+                DropdownMenu(
+                    expanded = showSpeedMenu,
+                    onDismissRequest = { showSpeedMenu = false }
+                ) {
+                    listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { speed ->
+                        DropdownMenuItem(
+                            text = { Text("${speed}x") },
+                            onClick = {
+                                playbackSpeed = speed
+                                exoPlayer.setPlaybackSpeed(speed)
+                                showSpeedMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+
             Text(
                 text = formatMediaDuration(durationMs),
                 style = MaterialTheme.typography.labelSmall,
@@ -438,7 +472,7 @@ fun AudioPlayerPreview(
                 onClick = {
                     val newLoop = !isLooping
                     isLooping = newLoop
-                    playerRef?.isLooping = newLoop
+                    exoPlayer.repeatMode = if (newLoop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
                 },
                 enabled = isPrepared
             ) {
@@ -452,9 +486,9 @@ fun AudioPlayerPreview(
             // Rewind 10s
             IconButton(
                 onClick = {
-                    val newPos = (currentPositionMs - 10000L).coerceAtLeast(0L).toInt()
-                    playerRef?.seekTo(newPos)
-                    currentPositionMs = newPos.toLong()
+                    val newPos = (currentPositionMs - 10000L).coerceAtLeast(0L)
+                    exoPlayer.seekTo(newPos)
+                    currentPositionMs = newPos
                 },
                 enabled = isPrepared
             ) {
@@ -468,17 +502,14 @@ fun AudioPlayerPreview(
             // Play / Pause Circle
             FilledIconButton(
                 onClick = {
-                    val mp = playerRef ?: return@FilledIconButton
                     if (isPlaying) {
-                        mp.pause()
-                        isPlaying = false
+                        exoPlayer.pause()
                     } else {
                         if (currentPositionMs >= durationMs && durationMs > 0L) {
-                            mp.seekTo(0)
+                            exoPlayer.seekTo(0L)
                             currentPositionMs = 0L
                         }
-                        mp.start()
-                        isPlaying = true
+                        exoPlayer.play()
                     }
                 },
                 modifier = Modifier
@@ -509,9 +540,9 @@ fun AudioPlayerPreview(
             // Forward 10s
             IconButton(
                 onClick = {
-                    val newPos = (currentPositionMs + 10000L).coerceAtMost(durationMs).toInt()
-                    playerRef?.seekTo(newPos)
-                    currentPositionMs = newPos.toLong()
+                    val newPos = (currentPositionMs + 10000L).coerceAtMost(durationMs)
+                    exoPlayer.seekTo(newPos)
+                    currentPositionMs = newPos
                 },
                 enabled = isPrepared
             ) {
@@ -525,12 +556,9 @@ fun AudioPlayerPreview(
             // Replay from start
             IconButton(
                 onClick = {
-                    playerRef?.seekTo(0)
+                    exoPlayer.seekTo(0L)
                     currentPositionMs = 0L
-                    if (!isPlaying) {
-                        playerRef?.start()
-                        isPlaying = true
-                    }
+                    exoPlayer.play()
                 },
                 enabled = isPrepared
             ) {
@@ -595,28 +623,79 @@ private fun AudioWaveformIndicator(modifier: Modifier = Modifier) {
 }
 
 /**
- * Built-in Video Player using Android VideoView with custom overlay controls,
- * auto-hiding scrubbers, aspect ratio toggle, and full video playback.
+ * Built-in Modern Video Player powered by Jetpack Media3 ExoPlayer & PlayerView.
+ * Features: High-performance hardware acceleration, MKV/MP4/WebM/TS playback,
+ * auto-hiding gesture controls, playback speed selector, and loop mode.
  */
+@OptIn(UnstableApi::class)
 @Composable
 fun VideoPlayerPreview(
     file: FileReference,
     onOpenExternal: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
-    var videoViewRef by remember { mutableStateOf<VideoView?>(null) }
     var isPrepared by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
     var isLooping by remember { mutableStateOf(false) }
+    var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
+    var showSpeedMenu by remember { mutableStateOf(false) }
     var currentPositionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
     var showControls by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isUserSeeking by remember { mutableStateOf(false) }
     var seekFraction by remember { mutableFloatStateOf(0f) }
-    var fitAspectRatio by remember { mutableStateOf(true) }
 
-    // Auto-hide controls after 3.5 seconds of user inactivity when playing
+    val exoPlayer = remember(file) {
+        ExoPlayer.Builder(context).build().apply {
+            val mediaItem = MediaItem.fromUri(resolveMediaUri(file))
+            setMediaItem(mediaItem)
+            prepare()
+            playWhenReady = true
+        }
+    }
+
+    // Attach ExoPlayer Listener
+    DisposableEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                when (playbackState) {
+                    Player.STATE_READY -> {
+                        isPrepared = true
+                        val d = exoPlayer.duration
+                        if (d > 0L) durationMs = d
+                    }
+                    Player.STATE_ENDED -> {
+                        if (!isLooping) {
+                            isPlaying = false
+                            currentPositionMs = durationMs
+                            showControls = true
+                        }
+                    }
+                    Player.STATE_BUFFERING -> {}
+                    Player.STATE_IDLE -> {}
+                }
+            }
+
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                errorMessage = error.localizedMessage ?: "ExoPlayer video error (${error.errorCode})"
+                isPlaying = false
+            }
+        }
+        exoPlayer.addListener(listener)
+
+        onDispose {
+            exoPlayer.removeListener(listener)
+            exoPlayer.stop()
+            exoPlayer.release()
+        }
+    }
+
+    // Auto-hide controls after 3.5 seconds of inactivity when playing
     LaunchedEffect(showControls, isPlaying, isUserSeeking) {
         if (showControls && isPlaying && !isUserSeeking) {
             delay(3500)
@@ -627,23 +706,11 @@ fun VideoPlayerPreview(
     // Polling progress updater
     LaunchedEffect(isPlaying, isPrepared, isUserSeeking) {
         while (isActive && isPlaying && !isUserSeeking) {
-            videoViewRef?.let { vv ->
-                if (runCatching { vv.isPlaying }.getOrDefault(false)) {
-                    currentPositionMs = vv.currentPosition.toLong().coerceAtLeast(0L)
-                }
-            }
+            val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
+            currentPositionMs = pos
+            val dur = exoPlayer.duration
+            if (dur > 0L) durationMs = dur
             delay(250)
-        }
-    }
-
-    // Clean up
-    DisposableEffect(file) {
-        onDispose {
-            val vv = videoViewRef
-            videoViewRef = null
-            runCatching {
-                vv?.stopPlayback()
-            }
         }
     }
 
@@ -688,53 +755,25 @@ fun VideoPlayerPreview(
             return@Box
         }
 
-        // Native VideoView Container
+        // Native Media3 PlayerView Container
         AndroidView(
             modifier = Modifier
                 .fillMaxSize()
                 .align(Alignment.Center),
             factory = { ctx ->
-                VideoView(ctx).apply {
+                PlayerView(ctx).apply {
                     layoutParams = FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.MATCH_PARENT,
-                        FrameLayout.LayoutParams.MATCH_PARENT
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
                     )
-
-                    val localBacking = file.metadata["localBackingPath"]?.let { File(it) }
-                        ?: if (file.providerType == ProviderType.LOCAL) File(file.uriOrPath) else null
-
-                    if (localBacking != null && localBacking.exists()) {
-                        setVideoPath(localBacking.absolutePath)
-                    } else {
-                        setVideoURI(Uri.parse(file.uriOrPath))
-                    }
-
-                    setOnPreparedListener { mp ->
-                        videoViewRef = this
-                        durationMs = mp.duration.toLong().coerceAtLeast(0L)
-                        isPrepared = true
-                        mp.isLooping = isLooping
-                        start()
-                        isPlaying = true
-                    }
-
-                    setOnCompletionListener {
-                        if (!isLooping) {
-                            isPlaying = false
-                            currentPositionMs = durationMs
-                            showControls = true
-                        }
-                    }
-
-                    setOnErrorListener { _, what, extra ->
-                        errorMessage = "Video format or codec error ($what, $extra)"
-                        isPlaying = false
-                        true
-                    }
+                    useController = false // Custom Compose UI controller used
+                    player = exoPlayer
                 }
             },
             update = { view ->
-                videoViewRef = view
+                if (view.player != exoPlayer) {
+                    view.player = exoPlayer
+                }
             }
         )
 
@@ -746,7 +785,7 @@ fun VideoPlayerPreview(
             )
         }
 
-        // Controls Overlay
+        // Custom Compose Controls Overlay
         AnimatedVisibility(
             visible = showControls || !isPlaying,
             enter = fadeIn(tween(200)),
@@ -777,7 +816,7 @@ fun VideoPlayerPreview(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "${file.extension.uppercase()} • ${file.formattedSize}",
+                            text = "ExoPlayer • ${file.extension.uppercase()} • ${file.formattedSize}",
                             style = MaterialTheme.typography.labelSmall,
                             color = Color.LightGray
                         )
@@ -803,9 +842,9 @@ fun VideoPlayerPreview(
                     // Rewind 10s
                     FilledTonalIconButton(
                         onClick = {
-                            val target = (currentPositionMs - 10000L).coerceAtLeast(0L).toInt()
-                            videoViewRef?.seekTo(target)
-                            currentPositionMs = target.toLong()
+                            val target = (currentPositionMs - 10000L).coerceAtLeast(0L)
+                            exoPlayer.seekTo(target)
+                            currentPositionMs = target
                         },
                         colors = IconButtonDefaults.filledTonalIconButtonColors(
                             containerColor = Color.Black.copy(alpha = 0.6f),
@@ -823,17 +862,14 @@ fun VideoPlayerPreview(
                     // Main Big Play/Pause
                     FilledIconButton(
                         onClick = {
-                            val vv = videoViewRef ?: return@FilledIconButton
                             if (isPlaying) {
-                                vv.pause()
-                                isPlaying = false
+                                exoPlayer.pause()
                             } else {
                                 if (currentPositionMs >= durationMs && durationMs > 0L) {
-                                    vv.seekTo(0)
+                                    exoPlayer.seekTo(0L)
                                     currentPositionMs = 0L
                                 }
-                                vv.start()
-                                isPlaying = true
+                                exoPlayer.play()
                             }
                         },
                         modifier = Modifier
@@ -855,9 +891,9 @@ fun VideoPlayerPreview(
                     // Forward 10s
                     FilledTonalIconButton(
                         onClick = {
-                            val target = (currentPositionMs + 10000L).coerceAtMost(durationMs).toInt()
-                            videoViewRef?.seekTo(target)
-                            currentPositionMs = target.toLong()
+                            val target = (currentPositionMs + 10000L).coerceAtMost(durationMs)
+                            exoPlayer.seekTo(target)
+                            currentPositionMs = target
                         },
                         colors = IconButtonDefaults.filledTonalIconButtonColors(
                             containerColor = Color.Black.copy(alpha = 0.6f),
@@ -892,9 +928,9 @@ fun VideoPlayerPreview(
                             currentPositionMs = (frac * durationMs).toLong()
                         },
                         onValueChangeFinished = {
-                            val targetMs = (seekFraction * durationMs).toInt()
-                            videoViewRef?.seekTo(targetMs)
-                            currentPositionMs = targetMs.toLong()
+                            val targetMs = (seekFraction * durationMs).toLong()
+                            exoPlayer.seekTo(targetMs)
+                            currentPositionMs = targetMs
                             isUserSeeking = false
                         },
                         enabled = isPrepared && durationMs > 0L,
@@ -917,12 +953,44 @@ fun VideoPlayerPreview(
                             color = Color.White
                         )
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Speed selector dropdown
+                            Box {
+                                TextButton(
+                                    onClick = { showSpeedMenu = true },
+                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(Icons.Filled.Speed, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(text = "${playbackSpeed}x", style = MaterialTheme.typography.labelSmall, color = Color.White)
+                                }
+
+                                DropdownMenu(
+                                    expanded = showSpeedMenu,
+                                    onDismissRequest = { showSpeedMenu = false }
+                                ) {
+                                    listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { speed ->
+                                        DropdownMenuItem(
+                                            text = { Text("${speed}x") },
+                                            onClick = {
+                                                playbackSpeed = speed
+                                                exoPlayer.setPlaybackSpeed(speed)
+                                                showSpeedMenu = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+
                             // Repeat / Loop button
                             IconButton(
                                 onClick = {
                                     val newLoop = !isLooping
                                     isLooping = newLoop
+                                    exoPlayer.repeatMode = if (newLoop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
                                 }
                             ) {
                                 Icon(

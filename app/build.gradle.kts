@@ -142,6 +142,9 @@ dependencies {
   implementation(libs.commons.net)
   implementation(libs.jsch)
   implementation(libs.smbj)
+  implementation(libs.androidx.media3.exoplayer)
+  implementation(libs.androidx.media3.ui)
+  implementation(libs.androidx.media3.common)
 
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
