@@ -1017,8 +1017,10 @@ fun FilePreviewScreen(
     Surface(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding(),
+            .then(
+                if (isVideo) Modifier
+                else Modifier.statusBarsPadding().navigationBarsPadding()
+            ),
         color = if (isImageOrDarkMedia) Color.Black else MaterialTheme.colorScheme.background
     ) {
         Column(modifier = Modifier.fillMaxSize()) {

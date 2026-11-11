@@ -16,6 +16,9 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import kotlin.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -40,12 +43,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -1225,6 +1231,27 @@ fun VideoPlayerPreview(
         }
     }
 
+    // Completely Fullscreen Immersive Mode (No status bar)
+    DisposableEffect(activity, showControls) {
+        val window = activity?.window
+        if (window != null) {
+            val controller = WindowCompat.getInsetsController(window, window.decorView)
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            if (!showControls) {
+                controller.hide(WindowInsetsCompat.Type.systemBars())
+            } else {
+                controller.hide(WindowInsetsCompat.Type.statusBars())
+            }
+        }
+        onDispose {
+            val window = activity?.window
+            if (window != null) {
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                controller.show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+    }
+
     // Auto-hide controls after 4 seconds of inactivity
     LaunchedEffect(showControls, isPlaying, isUserSeeking, isControlsLocked) {
         if (showControls && isPlaying && !isUserSeeking && !isControlsLocked) {
@@ -1652,7 +1679,9 @@ fun VideoPlayerPreview(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.TopCenter)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .statusBarsPadding()
+                        .displayCutoutPadding()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -1825,7 +1854,9 @@ fun VideoPlayerPreview(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.BottomCenter)
-                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                        .navigationBarsPadding()
+                        .displayCutoutPadding()
+                        .padding(horizontal = 14.dp, vertical = 6.dp)
                 ) {
                     // Time Label (Left) and Speed / Rotate Buttons (Right)
                     Row(
