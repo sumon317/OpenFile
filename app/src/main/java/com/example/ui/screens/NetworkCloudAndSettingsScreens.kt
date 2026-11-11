@@ -70,11 +70,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -663,28 +665,57 @@ private fun FtpServerControlTab(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val screenConfig = LocalConfiguration.current
+                    val isNarrowScreen = screenConfig.screenWidthDp < 420
+
+                    if (isNarrowScreen) {
                         OutlinedTextField(
                             value = portText,
                             onValueChange = { portText = it },
                             label = { Text("Command Port") },
                             singleLine = true,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.fillMaxWidth()
                         )
-                        OutlinedTextField(
-                            value = pasvStartText,
-                            onValueChange = { pasvStartText = it },
-                            label = { Text("PASV Start") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        OutlinedTextField(
-                            value = pasvEndText,
-                            onValueChange = { pasvEndText = it },
-                            label = { Text("PASV End") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = pasvStartText,
+                                onValueChange = { pasvStartText = it },
+                                label = { Text("PASV Start") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = pasvEndText,
+                                onValueChange = { pasvEndText = it },
+                                label = { Text("PASV End") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = portText,
+                                onValueChange = { portText = it },
+                                label = { Text("Command Port") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = pasvStartText,
+                                onValueChange = { pasvStartText = it },
+                                label = { Text("PASV Start") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = pasvEndText,
+                                onValueChange = { pasvEndText = it },
+                                label = { Text("PASV End") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                     }
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -967,19 +998,28 @@ private fun RemoteClientsTab(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(profile.displayName, style = MaterialTheme.typography.titleSmall)
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text(
+                                text = profile.displayName,
+                                style = MaterialTheme.typography.titleSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                             Text(
                                 text = "${profile.protocol}://${profile.host}:${profile.port}${profile.remoteInitialPath} • User: ${if (profile.isAnonymous) "Anonymous" else profile.username}",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontFamily = JetBrainsMonoFamily,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                             if (!profile.expectedHostKeyFingerprint.isNullOrBlank()) {
                                 Text(
                                     text = "Pinned SSH Key: ${profile.expectedHostKeyFingerprint.take(26)}...",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = ApkGreen
+                                    color = ApkGreen,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                             Text(

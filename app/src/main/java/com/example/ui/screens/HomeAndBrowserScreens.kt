@@ -21,10 +21,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -190,12 +197,38 @@ fun HomeScreen(
     appUpdateState: AppUpdateUiState? = null,
     onOpenUpdateDialog: () -> Unit = {},
     showHiddenFiles: Boolean = false,
-    onClearRecentFiles: () -> Unit = {}
+    onClearRecentFiles: () -> Unit = {},
+    onSaveScrollPosition: ((key: String, index: Int, offset: Int) -> Unit)? = null,
+    onGetScrollPosition: ((key: String) -> Pair<Int, Int>)? = null
 ) {
+    val initialHomePos = remember {
+        onGetScrollPosition?.invoke("HOME") ?: (0 to 0)
+    }
+    val homeListState = rememberSaveable(saver = LazyListState.Saver) {
+        LazyListState(initialHomePos.first, initialHomePos.second)
+    }
+    LaunchedEffect(homeListState) {
+        snapshotFlow { homeListState.firstVisibleItemIndex to homeListState.firstVisibleItemScrollOffset }
+            .collect { (idx, offset) ->
+                if (idx >= 0) {
+                    onSaveScrollPosition?.invoke("HOME", idx, offset)
+                }
+            }
+    }
     val displayRecentFiles = remember(recentFiles, showHiddenFiles) {
         if (showHiddenFiles) recentFiles else recentFiles.filter { !it.displayName.startsWith(".") && !isPathInsideHiddenDirectory(it.uriOrPath) }
     }
-    val gridTiles = remember(categoryCounts, remoteProfilesCount, ftpState.isRunning) {
+    val screenConfig = LocalConfiguration.current
+    val homeScreenWidthDp = screenConfig.screenWidthDp
+    val adaptiveShortcutColumns = remember(homeScreenWidthDp) {
+        when {
+            homeScreenWidthDp < 360 -> 2
+            homeScreenWidthDp >= 840 -> 6
+            homeScreenWidthDp >= 600 -> 4
+            else -> 3
+        }
+    }
+    val gridTiles = remember(categoryCounts, remoteProfilesCount, ftpState.isRunning, adaptiveShortcutColumns) {
         fun countLabel(cat: FileCategory, fallback: String): String {
             val c = categoryCounts[cat]
             return if (c != null) "$c items" else fallback
@@ -297,10 +330,11 @@ fun HomeScreen(
                 testTag = "shortcut_${OpenFileDestination.STORAGE_ANALYSIS.route}",
                 onClick = { onNavigateDestination(OpenFileDestination.STORAGE_ANALYSIS) }
             )
-        ).chunked(3)
+        ).chunked(adaptiveShortcutColumns)
     }
 
     LazyColumn(
+        state = homeListState,
         modifier = Modifier
             .fillMaxSize()
             .testTag("home_screen_list"),
@@ -586,17 +620,22 @@ fun HomeScreen(
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             text = "${formatByteSize(vol.usedBytes)} / ${formatByteSize(vol.totalBytes)}",
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp)
                         )
                         Text(
                             text = "${formatByteSize(vol.availableBytes)} free",
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
                         )
                     }
                 }
@@ -749,39 +788,56 @@ fun HomeScreen(
 
         // Section 5: Recently Accessed Files
         item(key = "recent_files_header", contentType = "section_header") {
+            val isSmallScreen = LocalConfiguration.current.screenWidthDp < 390
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Recently Opened Files",
+                    text = if (isSmallScreen) "Recent Files" else "Recently Opened Files",
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 4.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 if (displayRecentFiles.isNotEmpty()) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         TextButton(
                             onClick = onClearRecentFiles,
-                            modifier = Modifier.testTag("home_clear_recent_button")
+                            modifier = Modifier.testTag("home_clear_recent_button"),
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
                         ) {
                             Icon(
                                 Icons.Filled.Delete,
-                                contentDescription = null,
+                                contentDescription = "Clear Recent",
                                 modifier = Modifier.size(16.dp),
                                 tint = MaterialTheme.colorScheme.error
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
+                            Spacer(modifier = Modifier.width(3.dp))
                             Text(
-                                "Clear Recent",
-                                color = MaterialTheme.colorScheme.error
+                                text = if (isSmallScreen) "Clear" else "Clear Recent",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1
                             )
                         }
-                        TextButton(onClick = { onNavigateDestination(OpenFileDestination.RECENT_FILES) }) {
-                            Text("More")
+                        TextButton(
+                            onClick = { onNavigateDestination(OpenFileDestination.RECENT_FILES) },
+                            modifier = Modifier.testTag("home_more_recent_button"),
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                        ) {
+                            Text(
+                                text = "More",
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1
+                            )
                         }
                     }
                 }
@@ -851,6 +907,12 @@ private fun CategoryShortcutCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val configuration = LocalConfiguration.current
+    val screenWidthDp = configuration.screenWidthDp
+    val labelStyle = when {
+        screenWidthDp < 360 -> MaterialTheme.typography.labelMedium
+        else -> MaterialTheme.typography.labelLarge
+    }
     Surface(
         onClick = onClick,
         shape = CategoryCardShape,
@@ -861,13 +923,13 @@ private fun CategoryShortcutCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 14.dp, horizontal = 4.dp),
+                .padding(vertical = 12.dp, horizontal = 4.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .size(46.dp)
+                    .size(44.dp)
                     .background(badgeColor.copy(alpha = 0.18f), CategoryIconBadgeShape),
                 contentAlignment = Alignment.Center
             ) {
@@ -880,9 +942,10 @@ private fun CategoryShortcutCard(
             }
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelLarge,
+                style = labelStyle,
                 fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
+                minLines = 2,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center
             )
@@ -973,7 +1036,9 @@ fun FileBrowserScreen(
     onRequestAllFilesAccess: (() -> Unit)? = null,
     onToggleShowHidden: (() -> Unit)? = null,
     onRequestSafForPath: ((String?) -> Unit)? = null,
-    onClearRecentFiles: (() -> Unit)? = null
+    onClearRecentFiles: (() -> Unit)? = null,
+    onSaveScrollPosition: ((key: String, index: Int, offset: Int) -> Unit)? = null,
+    onGetScrollPosition: ((key: String) -> Pair<Int, Int>)? = null
 ) {
     if (browserState.inspectArchiveFile != null) {
         NativeZipViewer(
@@ -1018,6 +1083,67 @@ fun FileBrowserScreen(
                 extensionFilter = extensionFilter,
                 showHidden = showHidden
             )
+        }
+    }
+
+    val locationKey = remember(
+        browserState.currentDirectory?.uriOrPath,
+        browserState.activeCategoryFilter,
+        browserState.activeRemoteProfile?.id
+    ) {
+        when {
+            browserState.activeCategoryFilter != null ->
+                "CATEGORY:${browserState.activeCategoryFilter.name}"
+            browserState.currentDirectory != null ->
+                "DIR:${browserState.currentDirectory.uriOrPath}"
+            browserState.activeRemoteProfile != null ->
+                "REMOTE:${browserState.activeRemoteProfile.id}:${browserState.currentDirectory?.uriOrPath}"
+            else -> "BROWSER_DEFAULT"
+        }
+    }
+
+    val initialPos = remember(locationKey) {
+        onGetScrollPosition?.invoke(locationKey) ?: (0 to 0)
+    }
+    val listState = rememberSaveable(
+        locationKey,
+        saver = LazyListState.Saver
+    ) {
+        LazyListState(initialPos.first, initialPos.second)
+    }
+    val gridState = rememberSaveable(
+        locationKey,
+        saver = LazyGridState.Saver
+    ) {
+        LazyGridState(initialPos.first, initialPos.second)
+    }
+
+    LaunchedEffect(listState, locationKey) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (idx, offset) ->
+                if (filteredItems.isNotEmpty() && idx >= 0) {
+                    onSaveScrollPosition?.invoke(locationKey, idx, offset)
+                }
+            }
+    }
+    LaunchedEffect(gridState, locationKey) {
+        snapshotFlow { gridState.firstVisibleItemIndex to gridState.firstVisibleItemScrollOffset }
+            .collect { (idx, offset) ->
+                if (filteredItems.isNotEmpty() && idx >= 0) {
+                    onSaveScrollPosition?.invoke(locationKey, idx, offset)
+                }
+            }
+    }
+
+    LaunchedEffect(locationKey, filteredItems.isNotEmpty()) {
+        if (filteredItems.isNotEmpty() && initialPos.first > 0) {
+            val targetIdx = initialPos.first.coerceAtMost(filteredItems.lastIndex)
+            if (listState.firstVisibleItemIndex == 0) {
+                listState.scrollToItem(targetIdx, initialPos.second)
+            }
+            if (gridState.firstVisibleItemIndex == 0) {
+                gridState.scrollToItem(targetIdx, initialPos.second)
+            }
         }
     }
 
@@ -1178,7 +1304,10 @@ fun FileBrowserScreen(
                         text = "Category: ${browserState.activeCategoryFilter.title}",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f, fill = false).padding(end = 6.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -1483,6 +1612,7 @@ fun FileBrowserScreen(
                         }
                         settings.defaultViewMode == ViewMode.GRID -> {
                             LazyVerticalGrid(
+                                state = gridState,
                                 columns = GridCells.Adaptive(minSize = 140.dp),
                                 contentPadding = PaddingValues(12.dp),
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1508,7 +1638,10 @@ fun FileBrowserScreen(
                         }
                         else -> {
                             val isRemote = browserState.activeRemoteProfile != null
-                            LazyColumn(modifier = Modifier.fillMaxSize().testTag("browser_list_view")) {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier.fillMaxSize().testTag("browser_list_view")
+                            ) {
                                 items(
                                     items = filteredItems,
                                     key = { it.uriOrPath },
@@ -1758,12 +1891,16 @@ fun FileBrowserScreen(
                 Text(
                     text = totalSummary,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp)
                 )
                 Text(
                     text = "${browserState.currentSortField.label} (${if (browserState.currentSortOrder == SortOrder.ASCENDING) "↑" else "↓"})",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1
                 )
             }
         }
@@ -2564,7 +2701,15 @@ fun NativeZipViewer(
                 }
             }
         } else {
+            val zipListState = rememberSaveable(
+                archiveRef.uriOrPath,
+                currentSubPath,
+                saver = LazyListState.Saver
+            ) {
+                LazyListState()
+            }
             LazyColumn(
+                state = zipListState,
                 modifier = Modifier
                     .fillMaxSize()
                     .testTag("zip_entry_list")

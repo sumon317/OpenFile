@@ -301,6 +301,9 @@ object RemoteNetworkClients {
             }
             client.setFileType(FTP.BINARY_FILE_TYPE)
             client.bufferSize = 256 * 1024
+            client.setReceiveBufferSize(512 * 1024)
+            client.setSendBufferSize(512 * 1024)
+            client.tcpNoDelay = true
             return client
         } catch (e: Exception) {
             runCatching { if (client.isConnected) client.disconnect() }
@@ -362,6 +365,12 @@ object RemoteNetworkClients {
                 ?: throw IllegalStateException("FTP cannot store '$remotePath': ${client.replyString}")
             return object : java.io.FilterOutputStream(raw) {
                 private var closed = false
+                override fun write(b: ByteArray, off: Int, len: Int) {
+                    out.write(b, off, len)
+                }
+                override fun write(b: ByteArray) {
+                    out.write(b, 0, b.size)
+                }
                 override fun close() {
                     if (closed) return
                     closed = true
@@ -418,7 +427,7 @@ object RemoteNetworkClients {
         remotePath: String,
         localFile: File
     ) = withFtpClient(profile, decryptedSecret) { client ->
-        localFile.outputStream().buffered().use { out ->
+        localFile.outputStream().buffered(256 * 1024).use { out ->
             if (!client.retrieveFile(remotePath, out)) {
                 throw IllegalStateException("FTP download failed: ${client.replyString}")
             }
@@ -431,7 +440,7 @@ object RemoteNetworkClients {
         localFile: File,
         remotePath: String
     ) = withFtpClient(profile, decryptedSecret) { client ->
-        localFile.inputStream().buffered().use { input ->
+        localFile.inputStream().buffered(256 * 1024).use { input ->
             if (!client.storeFile(remotePath, input)) {
                 throw IllegalStateException("FTP upload failed: ${client.replyString}")
             }
@@ -560,6 +569,12 @@ object RemoteNetworkClients {
             val raw = channel.put(remotePath)
             return object : java.io.FilterOutputStream(raw) {
                 private var closed = false
+                override fun write(b: ByteArray, off: Int, len: Int) {
+                    out.write(b, off, len)
+                }
+                override fun write(b: ByteArray) {
+                    out.write(b, 0, b.size)
+                }
                 override fun close() {
                     if (closed) return
                     closed = true
@@ -620,7 +635,7 @@ object RemoteNetworkClients {
         remotePath: String,
         localFile: File
     ) = withSftpChannel(profile, decryptedSecret) { channel ->
-        localFile.outputStream().buffered().use { out ->
+        localFile.outputStream().buffered(256 * 1024).use { out ->
             channel.get(remotePath, out)
         }
     }
@@ -631,7 +646,7 @@ object RemoteNetworkClients {
         localFile: File,
         remotePath: String
     ) = withSftpChannel(profile, decryptedSecret) { channel ->
-        localFile.inputStream().buffered().use { input ->
+        localFile.inputStream().buffered(256 * 1024).use { input ->
             channel.put(input, remotePath)
         }
     }
@@ -753,6 +768,12 @@ object RemoteNetworkClients {
             val raw = file.outputStream
             return object : java.io.FilterOutputStream(raw) {
                 private var closed = false
+                override fun write(b: ByteArray, off: Int, len: Int) {
+                    out.write(b, off, len)
+                }
+                override fun write(b: ByteArray) {
+                    out.write(b, 0, b.size)
+                }
                 override fun close() {
                     if (closed) return
                     closed = true
@@ -813,8 +834,8 @@ object RemoteNetworkClients {
             null
         ).use { remoteFile ->
             remoteFile.inputStream.use { input ->
-                localFile.outputStream().buffered().use { out ->
-                    input.copyTo(out)
+                localFile.outputStream().buffered(256 * 1024).use { out ->
+                    input.copyTo(out, bufferSize = 256 * 1024)
                 }
             }
         }
@@ -836,8 +857,8 @@ object RemoteNetworkClients {
             null
         ).use { remoteFile ->
             remoteFile.outputStream.use { out ->
-                localFile.inputStream().buffered().use { input ->
-                    input.copyTo(out)
+                localFile.inputStream().buffered(256 * 1024).use { input ->
+                    input.copyTo(out, bufferSize = 256 * 1024)
                 }
             }
         }

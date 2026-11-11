@@ -147,6 +147,19 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     private val _statusMessage = MutableStateFlow<Pair<Long, String>?>(null)
     val statusMessage: StateFlow<Pair<Long, String>?> = _statusMessage.asStateFlow()
 
+    // Persistent scroll positions per directory / category / screen key
+    private val scrollPositions = java.util.concurrent.ConcurrentHashMap<String, Pair<Int, Int>>()
+
+    fun saveScrollPosition(key: String, index: Int, offset: Int) {
+        if (index >= 0) {
+            scrollPositions[key] = index to offset
+        }
+    }
+
+    fun getScrollPosition(key: String): Pair<Int, Int> {
+        return scrollPositions[key] ?: (0 to 0)
+    }
+
     // Reactive streams from Room & DataStore (pre-warmed with cached theme to eliminate startup flash)
     private val _settings = MutableStateFlow(
         AppSettingsState(
@@ -1179,24 +1192,22 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     fun pasteClipboardHere() {
         val destDir = _browserState.value.currentDirectory ?: return
-        viewModelScope.launch {
-            val verify = settings.first().verifyChecksumAfterTransfer
-            transferEngine.enqueuePasteFromClipboard(
-                destinationDir = destDir,
-                verifyChecksum = verify,
-                onComplete = { result ->
-                    result.onSuccess { msg ->
-                        categoryCache.clear()
-                        mediaStoreProvider.invalidateSupplementalCache()
-                        showStatus(msg)
-                        refreshCurrentDirectory()
-                    }.onFailure { err ->
-                        showStatus("Transfer error: ${err.message}")
-                        refreshCurrentDirectory()
-                    }
+        val verify = settings.value.verifyChecksumAfterTransfer
+        transferEngine.enqueuePasteFromClipboard(
+            destinationDir = destDir,
+            verifyChecksum = verify,
+            onComplete = { result ->
+                result.onSuccess { msg ->
+                    categoryCache.clear()
+                    mediaStoreProvider.invalidateSupplementalCache()
+                    showStatus(msg)
+                    refreshCurrentDirectory()
+                }.onFailure { err ->
+                    showStatus("Transfer error: ${err.message}")
+                    refreshCurrentDirectory()
                 }
-            )
-        }
+            }
+        )
     }
 
     fun deleteItems(items: List<FileReference>, moveToTrash: Boolean) {

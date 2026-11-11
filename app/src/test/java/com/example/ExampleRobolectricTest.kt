@@ -619,23 +619,19 @@ class ExampleRobolectricTest {
 
         // Cycle theme modes via TopAppBar button (SYSTEM -> LIGHT -> DARK -> AMOLED -> SYSTEM)
         composeTestRule.onNodeWithTag("top_bar_theme_button").assertIsDisplayed().performClick()
-        delay(50)
-        composeTestRule.waitForIdle()
+        composeTestRule.waitUntil(timeoutMillis = 3_000L) { vm.settings.value.themeMode == ThemeMode.LIGHT }
         assertEquals(ThemeMode.LIGHT, vm.settings.value.themeMode)
 
         composeTestRule.onNodeWithTag("top_bar_theme_button").performClick()
-        delay(50)
-        composeTestRule.waitForIdle()
+        composeTestRule.waitUntil(timeoutMillis = 3_000L) { vm.settings.value.themeMode == ThemeMode.DARK }
         assertEquals(ThemeMode.DARK, vm.settings.value.themeMode)
 
         composeTestRule.onNodeWithTag("top_bar_theme_button").performClick()
-        delay(50)
-        composeTestRule.waitForIdle()
+        composeTestRule.waitUntil(timeoutMillis = 3_000L) { vm.settings.value.themeMode == ThemeMode.AMOLED }
         assertEquals(ThemeMode.AMOLED, vm.settings.value.themeMode)
 
         composeTestRule.onNodeWithTag("top_bar_theme_button").performClick()
-        delay(50)
-        composeTestRule.waitForIdle()
+        composeTestRule.waitUntil(timeoutMillis = 3_000L) { vm.settings.value.themeMode == ThemeMode.SYSTEM }
         assertEquals(ThemeMode.SYSTEM, vm.settings.value.themeMode)
 
         // Navigate to Internal Storage Browser
@@ -850,6 +846,11 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("bottom_clipboard_bar").assertIsDisplayed()
         composeTestRule.onNodeWithTag("browser_paste_button").assertIsDisplayed()
+
+        // 6. Tap Paste Here -> verify Bottom Clipboard Bar immediately goes away
+        composeTestRule.onNodeWithTag("browser_paste_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("bottom_clipboard_bar").assertDoesNotExist()
     }
 
     @Test
@@ -1473,6 +1474,230 @@ class ExampleRobolectricTest {
             tempDir.deleteRecursively()
         }
     }
+
+    @Test
+    fun `SpreadsheetParser correctly parses synthetic XLSX with custom numFmts, frozen panes, and merges`() {
+        val tempDir = java.nio.file.Files.createTempDirectory("xlsx_robo_test").toFile()
+        try {
+            val xlsxFile = File(tempDir, "financials.xlsx")
+            java.util.zip.ZipOutputStream(java.io.FileOutputStream(xlsxFile)).use { zos ->
+                // [Content_Types].xml
+                zos.putNextEntry(java.util.zip.ZipEntry("[Content_Types].xml"))
+                zos.write("<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"xml\" ContentType=\"application/xml\"/></Types>".toByteArray())
+                zos.closeEntry()
+
+                // xl/workbook.xml
+                zos.putNextEntry(java.util.zip.ZipEntry("xl/workbook.xml"))
+                zos.write("<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheets><sheet name=\"Q1 Report\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>".toByteArray())
+                zos.closeEntry()
+
+                // xl/sharedStrings.xml
+                zos.putNextEntry(java.util.zip.ZipEntry("xl/sharedStrings.xml"))
+                zos.write("<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" count=\"2\"><si><t>Revenue</t></si><si><t>Profit</t></si></sst>".toByteArray())
+                zos.closeEntry()
+
+                // xl/styles.xml
+                zos.putNextEntry(java.util.zip.ZipEntry("xl/styles.xml"))
+                zos.write("<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><numFmts count=\"1\"><numFmt numFmtId=\"164\" formatCode=\"$#,##0.00\"/></numFmts><fonts count=\"1\"><font><sz val=\"11\"/></font></fonts><fills count=\"1\"><fill><patternFill patternType=\"none\"/></fill></fills><borders count=\"1\"><border/></borders><cellXfs count=\"2\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/><xf numFmtId=\"164\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellXfs></styleSheet>".toByteArray())
+                zos.closeEntry()
+
+                // xl/worksheets/sheet1.xml
+                zos.putNextEntry(java.util.zip.ZipEntry("xl/worksheets/sheet1.xml"))
+                zos.write("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetViews><sheetView showGridLines=\"1\"><pane xSplit=\"1\" ySplit=\"1\" state=\"frozen\"/></sheetView></sheetViews><sheetData><row r=\"1\"><c r=\"A1\" t=\"s\"><v>0</v></c><c r=\"B1\" s=\"1\"><v>25000.5</v></c></row><row r=\"2\"><c r=\"A2\" t=\"s\"><v>1</v></c><c r=\"B2\" s=\"1\"><v>12300</v></c></row></sheetData><mergeCells count=\"1\"><mergeCell ref=\"C1:D2\"/></mergeCells></worksheet>".toByteArray())
+                zos.closeEntry()
+            }
+
+            val model = com.example.core.document.SpreadsheetParser.parseXlsx(xlsxFile)
+            val sheet = model.sheets.first()
+            assertEquals("Q1 Report", sheet.name)
+            assertEquals(1, sheet.view.frozenCols)
+            assertEquals(1, sheet.view.frozenRows)
+            assertEquals(1, sheet.mergedRanges.size)
+            assertEquals(com.example.core.document.CellRange(0, 1, 2, 3), sheet.mergedRanges[0])
+
+            assertEquals("Revenue", sheet.getCell(0, 0)?.displayValue)
+            assertEquals("Profit", sheet.getCell(1, 0)?.displayValue)
+            assertEquals("$25,000.50", sheet.getCell(0, 1)?.displayValue)
+            assertEquals("$12,300.00", sheet.getCell(1, 1)?.displayValue)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `PresentationParser correctly parses synthetic PPTX with ordered slides, shapes, and tables`() {
+        val tempDir = java.nio.file.Files.createTempDirectory("pptx_robo_test").toFile()
+        try {
+            val pptxFile = File(tempDir, "deck.pptx")
+            java.util.zip.ZipOutputStream(java.io.FileOutputStream(pptxFile)).use { zos ->
+                // [Content_Types].xml
+                zos.putNextEntry(java.util.zip.ZipEntry("[Content_Types].xml"))
+                zos.write("<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"xml\" ContentType=\"application/xml\"/></Types>".toByteArray())
+                zos.closeEntry()
+
+                // ppt/presentation.xml
+                zos.putNextEntry(java.util.zip.ZipEntry("ppt/presentation.xml"))
+                zos.write("<presentation xmlns=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><sldSz cx=\"9144000\" cy=\"5143500\"/><sldIdLst><sldId id=\"256\" r:id=\"rId1\"/></sldIdLst></presentation>".toByteArray())
+                zos.closeEntry()
+
+                // ppt/_rels/presentation.xml.rels
+                zos.putNextEntry(java.util.zip.ZipEntry("ppt/_rels/presentation.xml.rels"))
+                zos.write("<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide\" Target=\"slides/slide1.xml\"/></Relationships>".toByteArray())
+                zos.closeEntry()
+
+                // ppt/slides/slide1.xml
+                zos.putNextEntry(java.util.zip.ZipEntry("ppt/slides/slide1.xml"))
+                zos.write(
+                    """
+                    <sld xmlns="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                        <cSld>
+                            <spTree>
+                                <sp>
+                                    <spPr>
+                                        <xfrm rot="0"><off x="914400" y="914400"/><ext cx="7315200" cy="1828800"/></xfrm>
+                                        <prstGeom prst="roundRect"/>
+                                        <solidFill><srgbClr val="1976D2"/></solidFill>
+                                    </spPr>
+                                    <txBody>
+                                        <p><r><rPr b="1" sz="2800"/><t>Keynote Presentation</t></r></p>
+                                        <p><pPr algn="l"/><buChar char="•"/><r><t>Point 1: High performance</t></r></p>
+                                    </txBody>
+                                </sp>
+                            </spTree>
+                        </cSld>
+                    </sld>
+                    """.trimIndent().toByteArray()
+                )
+                zos.closeEntry()
+            }
+
+            val doc = com.example.core.document.PresentationParser.parsePptx(pptxFile)
+            assertEquals("deck.pptx", doc.title)
+            assertEquals(9144000L, doc.slideWidthEmu)
+            assertEquals(5143500L, doc.slideHeightEmu)
+            assertEquals(1, doc.slides.size)
+
+            val slide1 = doc.slides[0]
+            assertEquals("Keynote Presentation", slide1.title)
+            assertEquals(1, slide1.elements.size)
+
+            val shape = slide1.elements[0] as com.example.core.document.SlideElement.Shape
+            assertEquals(com.example.core.document.ShapePreset.ROUND_RECT, shape.preset)
+            assertEquals(914400L, shape.bounds.xEmu)
+            assertEquals(7315200L, shape.bounds.widthEmu)
+            assertEquals(2, shape.paragraphs.size)
+            assertEquals("Keynote Presentation", shape.paragraphs[0].runs[0].text)
+            assertTrue(shape.paragraphs[0].runs[0].isBold)
+            assertEquals(28f, shape.paragraphs[0].runs[0].fontSizePt, 0.01f)
+            assertTrue(slide1.plainTextSummary.contains("Point 1: High performance"))
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `in-built reader dismisses on a single back press without navigating browser background`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+        val tempDir = Files.createTempDirectory("openfile_back_gesture_test").toFile()
+        try {
+            val subFolder = File(tempDir, "SubDir").apply { mkdirs() }
+            val testDoc = File(subFolder, "test_file.txt").apply { writeText("Sample reader content") }
+            val subFolderRef = viewModel.localProvider.toFileReference(subFolder)
+            val docRef = viewModel.localProvider.toFileReference(testDoc)
+
+            // 1. Navigate into a subfolder in the browser
+            composeTestRule.runOnUiThread {
+                viewModel.openDirectory(subFolderRef)
+            }
+            composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                viewModel.browserState.value.currentDirectory?.uriOrPath == subFolder.absolutePath
+            }
+            assertEquals(subFolder.absolutePath, viewModel.browserState.value.currentDirectory?.uriOrPath)
+
+            // 2. Open file in in-built reader
+            composeTestRule.runOnUiThread {
+                viewModel.onFileItemClicked(docRef)
+            }
+            composeTestRule.waitForIdle()
+            assertNotNull("Preview state must be active", viewModel.previewState.value)
+
+            // 3. Perform a single system back gesture / back press
+            composeTestRule.runOnUiThread {
+                composeTestRule.activity.onBackPressedDispatcher.onBackPressed()
+            }
+            composeTestRule.waitForIdle()
+
+            // 4. Verify preview is closed immediately on the FIRST back press
+            assertNull("File preview must be dismissed on a single back press", viewModel.previewState.value)
+            // 5. Verify the background browser directory stack is preserved (did NOT navigate up or to HOME)
+            assertEquals(
+                "Browser directory must remain in the current folder after closing preview",
+                subFolder.absolutePath,
+                viewModel.browserState.value.currentDirectory?.uriOrPath
+            )
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `scroll position is persistent when scrolling files, opening a file, and pressing back`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+        val tempDir = Files.createTempDirectory("openfile_scroll_persist_test").toFile()
+        try {
+            val subFolder = File(tempDir, "ScrollFolder").apply { mkdirs() }
+            for (i in 0 until 40) {
+                File(subFolder, "item_%02d.txt".format(i)).writeText("Content $i")
+            }
+            val subFolderRef = viewModel.localProvider.toFileReference(subFolder)
+
+            // 1. Navigate into folder
+            composeTestRule.runOnUiThread {
+                viewModel.openDirectory(subFolderRef)
+            }
+            composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                viewModel.browserState.value.currentDirectory?.uriOrPath == subFolder.absolutePath &&
+                    viewModel.browserState.value.items.size == 40
+            }
+
+            // 2. Simulate scrolling to index 18
+            val locationKey = "DIR:${subFolder.absolutePath}"
+            composeTestRule.runOnUiThread {
+                viewModel.saveScrollPosition(locationKey, 18, 45)
+            }
+            val savedPos = viewModel.getScrollPosition(locationKey)
+            assertEquals(18, savedPos.first)
+            assertEquals(45, savedPos.second)
+
+            // 3. Open a file item
+            val targetFile = File(subFolder, "item_18.txt")
+            val targetRef = viewModel.localProvider.toFileReference(targetFile)
+            composeTestRule.runOnUiThread {
+                viewModel.onFileItemClicked(targetRef)
+            }
+            composeTestRule.waitForIdle()
+            assertNotNull("Preview must be open", viewModel.previewState.value)
+
+            // 4. Press back to dismiss preview
+            composeTestRule.runOnUiThread {
+                composeTestRule.activity.onBackPressedDispatcher.onBackPressed()
+            }
+            composeTestRule.waitForIdle()
+            assertNull("Preview must be closed", viewModel.previewState.value)
+
+            // 5. Verify scroll position for this directory is still preserved at index 18
+            val retainedPos = viewModel.getScrollPosition(locationKey)
+            assertEquals("Scroll index must remain at 18 after returning from preview", 18, retainedPos.first)
+            assertEquals("Scroll offset must remain at 45 after returning from preview", 45, retainedPos.second)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
 }
+
 
 

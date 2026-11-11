@@ -2,7 +2,9 @@ package com.example
 
 import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -13,6 +15,8 @@ import coil.Coil
 import coil.ImageLoader
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
+import com.example.core.model.FileReference
+import com.example.core.model.ProviderType
 import com.example.ui.OpenFileAppShell
 import com.example.ui.OpenFileViewModel
 import com.example.ui.theme.OpenFileTheme
@@ -41,6 +45,55 @@ class MainActivity : ComponentActivity() {
             ) {
                 OpenFileAppShell(viewModel = viewModel)
             }
+        }
+        handleIncomingIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent == null) return
+        val uri: Uri? = when (intent.action) {
+            Intent.ACTION_VIEW -> intent.data
+            Intent.ACTION_SEND -> {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+                }
+            }
+            else -> null
+        }
+
+        if (uri != null) {
+            var name = "Document"
+            var size = 0L
+            try {
+                contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    if (cursor.moveToFirst()) {
+                        if (nameIdx != -1) name = cursor.getString(nameIdx) ?: name
+                        if (sizeIdx != -1) size = cursor.getLong(sizeIdx)
+                    }
+                }
+            } catch (_: Exception) {}
+
+            val ref = FileReference(
+                providerType = ProviderType.SAF,
+                uriOrPath = uri.toString(),
+                displayName = name,
+                parentUriOrPath = null,
+                isDirectory = false,
+                sizeBytes = size,
+                mimeType = intent.type ?: contentResolver.getType(uri) ?: "application/octet-stream"
+            )
+            viewModel.openBuiltInPreview(ref)
         }
     }
 

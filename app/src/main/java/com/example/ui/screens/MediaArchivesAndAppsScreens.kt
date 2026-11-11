@@ -82,6 +82,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -1070,18 +1071,23 @@ private fun StorageOverviewTab(
                         .fillMaxWidth()
                         .padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(20.dp)
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
+                    val configuration = LocalConfiguration.current
+                    val isSmallScreen = configuration.screenWidthDp < 360
+                    val chartBoxSize = if (isSmallScreen) 96.dp else 120.dp
+                    val ringSpacerSize = if (isSmallScreen) 88.dp else 110.dp
+
                     // Custom Canvas Multi-Segment Ring Chart cached across recompositions
                     Box(
-                        modifier = Modifier.size(120.dp),
+                        modifier = Modifier.size(chartBoxSize),
                         contentAlignment = Alignment.Center
                     ) {
                         Spacer(
                             modifier = Modifier
-                                .size(110.dp)
+                                .size(ringSpacerSize)
                                 .drawWithCache {
-                                    val strokeWidth = 18.dp.toPx()
+                                    val strokeWidth = (if (isSmallScreen) 14.dp else 18.dp).toPx()
                                     val baseStroke = Stroke(width = strokeWidth)
                                     val arcStroke = Stroke(width = strokeWidth, cap = StrokeCap.Butt)
                                     onDrawBehind {
@@ -1117,17 +1123,29 @@ private fun StorageOverviewTab(
                         )
                     }
 
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Total Capacity: ${formatByteSize(report.totalBytes)}", style = MaterialTheme.typography.bodyMedium)
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = if (isSmallScreen) "Total: ${formatByteSize(report.totalBytes)}" else "Total Capacity: ${formatByteSize(report.totalBytes)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                         Text(
                             text = "Used: ${formatByteSize(report.usedBytes)}",
                             style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.primary
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "Available: ${formatByteSize(report.freeBytes)}",
+                            text = if (isSmallScreen) "Free: ${formatByteSize(report.freeBytes)}" else "Available: ${formatByteSize(report.freeBytes)}",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = ApkGreen
+                            color = ApkGreen,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -1156,7 +1174,10 @@ private fun StorageOverviewTab(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Box(
                             modifier = Modifier
                                 .size(12.dp)
@@ -1164,9 +1185,18 @@ private fun StorageOverviewTab(
                                 .background(Color(bucket.colorHex))
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("${bucket.categoryName} (${bucket.fileCount} files)", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = "${bucket.categoryName} (${bucket.fileCount} files)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
-                    Text(formatByteSize(bucket.bytesUsed), style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        text = formatByteSize(bucket.bytesUsed),
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1
+                    )
                 }
                 LinearProgressIndicator(
                     progress = { bucket.fractionOfTotal },
@@ -1591,7 +1621,7 @@ fun ApplicationsScreen(
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f).padding(end = 8.dp)
                                 ) {
                                     Icon(
                                         Icons.Filled.Android,
@@ -1600,19 +1630,27 @@ fun ApplicationsScreen(
                                         modifier = Modifier.size(32.dp)
                                     )
                                     Spacer(modifier = Modifier.width(10.dp))
-                                    Column {
-                                        Text(app.appName, style = MaterialTheme.typography.titleSmall)
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = app.appName,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                         Text(
                                             text = app.packageName,
                                             style = MaterialTheme.typography.labelSmall,
                                             fontFamily = JetBrainsMonoFamily,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
                                 }
                                 Text(
                                     text = formatByteSize(app.apkSizeBytes),
-                                    style = MaterialTheme.typography.labelLarge
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1
                                 )
                             }
 

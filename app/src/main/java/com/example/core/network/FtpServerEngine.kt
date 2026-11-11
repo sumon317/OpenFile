@@ -92,7 +92,7 @@ sealed class ResolvedFtpTarget {
 /**
  * RFC-959 / RFC-2428 (PASV & EPSV) / RFC-3659 (SIZE, MDTM, REST) local LAN FTP server engine.
  * - Binds strictly to the resolved local Wi-Fi / LAN interface IPv4 address.
- * - Allocates passive data sockets inside the configured [passivePortStart..passivePortEnd] range.
+ * - Allocates passive data sockets inside the configured passivePortStart..passivePortEnd range.
  * - Supports File Manager + style multi-storage virtual mounts (`/device` for Internal Storage, `/sdcard` for SD Card)
  *   as well as single-directory root confinement.
  * - Enforces canonical path confinement so clients cannot escape mounted storage roots.
@@ -305,18 +305,25 @@ object FtpServerEngine {
             val offset = (nextPassivePortIndex.getAndIncrement() and Int.MAX_VALUE) % rangeSize
             val candidatePort = config.passivePortStart + offset
             try {
-                return ServerSocket(candidatePort, 5, bindInet)
+                return ServerSocket(candidatePort, 50, bindInet).apply {
+                    receiveBufferSize = 512 * 1024
+                    reuseAddress = true
+                }
             } catch (_: Exception) {
                 // Port in use, try next in passive range
             }
         }
-        return ServerSocket(0, 5, bindInet)
+        return ServerSocket(0, 50, bindInet).apply {
+            receiveBufferSize = 512 * 1024
+            reuseAddress = true
+        }
     }
 
     private fun handleClientSession(controlSocket: Socket, config: FtpServerConfig) {
         val clientAddr = controlSocket.inetAddress?.hostAddress ?: "unknown"
         var passiveServer: ServerSocket? = null
         try {
+            controlSocket.tcpNoDelay = true
             controlSocket.soTimeout = config.idleTimeoutMinutes.coerceAtLeast(1) * 60_000
             val reader = BufferedReader(InputStreamReader(controlSocket.getInputStream(), Charsets.UTF_8))
             val writer = PrintWriter(OutputStreamWriter(controlSocket.getOutputStream(), Charsets.UTF_8), false)
@@ -569,12 +576,16 @@ object FtpServerEngine {
                                 reply(150, "Opening binary mode data connection for ${target.name} (${target.length()} bytes)")
                                 var sentBytes = 0L
                                 pasv.accept().use { dataSocket ->
-                                    BufferedInputStream(FileInputStream(target)).use { fis ->
+                                    dataSocket.tcpNoDelay = true
+                                    dataSocket.sendBufferSize = 512 * 1024
+                                    dataSocket.receiveBufferSize = 512 * 1024
+                                    dataSocket.setPerformancePreferences(0, 1, 2)
+                                    BufferedInputStream(FileInputStream(target), 256 * 1024).use { fis ->
                                         if (restartByteOffset > 0L) {
                                             fis.skip(restartByteOffset)
                                         }
-                                        val out = BufferedOutputStream(dataSocket.getOutputStream())
-                                        val buf = ByteArray(64 * 1024)
+                                        val out = BufferedOutputStream(dataSocket.getOutputStream(), 256 * 1024)
+                                        val buf = ByteArray(256 * 1024)
                                         var r = fis.read(buf)
                                         while (r > 0) {
                                             out.write(buf, 0, r)
@@ -612,10 +623,14 @@ object FtpServerEngine {
                                 reply(150, "Ok to send data")
                                 var receivedBytes = 0L
                                 pasv.accept().use { dataSocket ->
+                                    dataSocket.tcpNoDelay = true
+                                    dataSocket.sendBufferSize = 512 * 1024
+                                    dataSocket.receiveBufferSize = 512 * 1024
+                                    dataSocket.setPerformancePreferences(0, 1, 2)
                                     val append = restartByteOffset > 0L
-                                    BufferedOutputStream(FileOutputStream(target, append)).use { fos ->
-                                        val input = BufferedInputStream(dataSocket.getInputStream())
-                                        val buf = ByteArray(64 * 1024)
+                                    BufferedOutputStream(FileOutputStream(target, append), 256 * 1024).use { fos ->
+                                        val input = BufferedInputStream(dataSocket.getInputStream(), 256 * 1024)
+                                        val buf = ByteArray(256 * 1024)
                                         var r = input.read(buf)
                                         while (r > 0) {
                                             fos.write(buf, 0, r)

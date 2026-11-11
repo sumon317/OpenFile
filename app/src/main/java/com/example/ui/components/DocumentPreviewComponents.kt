@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.util.LruCache
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -90,6 +91,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
@@ -104,6 +106,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.core.document.CellRange
 import com.example.core.document.CbzDocument
 import com.example.core.document.CbzPage
 import com.example.core.document.DocBlock
@@ -114,10 +117,19 @@ import com.example.core.document.MarkdownInline
 import com.example.core.document.MarkdownNode
 import com.example.core.document.PptSlide
 import com.example.core.document.PptxDocument
+import com.example.core.document.SelectionStats
+import com.example.core.document.SpreadsheetCell
 import com.example.core.document.SpreadsheetDocument
+import com.example.core.document.SpreadsheetParser
 import com.example.core.document.SpreadsheetSheet
+import com.example.core.document.SpreadsheetSheetModel
+import com.example.core.document.SpreadsheetWorkbookModel
 import com.example.core.model.FileReference
 import com.example.core.model.ProviderType
+import android.content.Intent
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.Warning
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -160,142 +172,7 @@ fun resolveOrCacheLocalFile(file: FileReference, context: Context): File? {
 
 @Composable
 fun DocxDocumentPreview(file: FileReference) {
-    val context = LocalContext.current
-    val ext = file.extension.lowercase()
-    val docState by produceState<DocxDocument?>(initialValue = null, key1 = file.uriOrPath) {
-        value = withContext(Dispatchers.IO) {
-            val localFile = resolveOrCacheLocalFile(file, context)
-            if (localFile != null) {
-                if (ext in setOf("odt", "odf")) {
-                    DocumentReaderEngine.readOdt(localFile)
-                } else {
-                    DocumentReaderEngine.readDocx(localFile)
-                }
-            } else null
-        }
-    }
-
-    if (docState == null) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(modifier = Modifier.size(36.dp))
-        }
-        return
-    }
-
-    val doc = docState!!
-    SelectionContainer {
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-                .testTag("docx_document_preview"),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            itemsIndexed(
-                items = doc.blocks,
-                key = { index, _ -> index },
-                contentType = { _, block -> if (block is DocBlock.Paragraph) "p" else "t" }
-            ) { _, block ->
-                when (block) {
-                    is DocBlock.Paragraph -> {
-                        val annotated = remember(block) {
-                            buildAnnotatedString {
-                                block.runs.forEach { run ->
-                                    withStyle(
-                                        SpanStyle(
-                                            fontWeight = if (run.isBold || block.isHeading) FontWeight.Bold else FontWeight.Normal,
-                                            fontStyle = if (run.isItalic) FontStyle.Italic else FontStyle.Normal,
-                                            textDecoration = if (run.isUnderline) TextDecoration.Underline else TextDecoration.None
-                                        )
-                                    ) {
-                                        append(run.text)
-                                    }
-                                }
-                            }
-                        }
-
-                        if (block.isHeading) {
-                            val fontSize = when (block.headingLevel) {
-                                1 -> 22.sp
-                                2 -> 19.sp
-                                3 -> 17.sp
-                                else -> 16.sp
-                            }
-                            Text(
-                                text = annotated,
-                                fontSize = fontSize,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(top = 10.dp, bottom = 4.dp)
-                            )
-                        } else if (block.isBullet) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(start = 8.dp),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Text("• ", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                                Text(
-                                    text = annotated,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    lineHeight = 22.sp
-                                )
-                            }
-                        } else {
-                            Text(
-                                text = annotated,
-                                style = MaterialTheme.typography.bodyMedium,
-                                lineHeight = 22.sp
-                            )
-                        }
-                    }
-                    is DocBlock.Table -> {
-                        DocumentTableView(table = block)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DocumentTableView(table: DocBlock.Table) {
-    val scrollState = rememberScrollState()
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .horizontalScroll(scrollState)
-                .padding(8.dp)
-        ) {
-            table.rows.forEachIndexed { rIdx, row ->
-                Row(
-                    modifier = Modifier.background(
-                        if (rIdx == 0) MaterialTheme.colorScheme.surfaceContainerHigh else Color.Transparent
-                    )
-                ) {
-                    row.forEach { cell ->
-                        Box(
-                            modifier = Modifier
-                                .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
-                                .padding(horizontal = 12.dp, vertical = 6.dp)
-                                .widthIn(min = 90.dp, max = 220.dp)
-                        ) {
-                            Text(
-                                text = cell,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = if (rIdx == 0) FontWeight.Bold else FontWeight.Normal
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
+    DocxViewer(file = file)
 }
 
 // =============================================================================================
@@ -304,130 +181,7 @@ private fun DocumentTableView(table: DocBlock.Table) {
 
 @Composable
 fun PptxDocumentPreview(file: FileReference) {
-    val context = LocalContext.current
-    val ext = file.extension.lowercase()
-    val pptState by produceState<PptxDocument?>(initialValue = null, key1 = file.uriOrPath) {
-        value = withContext(Dispatchers.IO) {
-            val localFile = resolveOrCacheLocalFile(file, context)
-            if (localFile != null) {
-                if (ext == "odp") {
-                    DocumentReaderEngine.readOdp(localFile)
-                } else {
-                    DocumentReaderEngine.readPptx(localFile)
-                }
-            } else null
-        }
-    }
-
-    if (pptState == null) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(modifier = Modifier.size(36.dp))
-        }
-        return
-    }
-
-    val doc = pptState!!
-    var currentSlideIndex by remember { mutableIntStateOf(0) }
-    val totalSlides = doc.slides.size
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(12.dp)
-            .testTag("pptx_document_preview")
-    ) {
-        // Navigation bar: Previous / Slide X of Y / Next
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(
-                onClick = { if (currentSlideIndex > 0) currentSlideIndex-- },
-                enabled = currentSlideIndex > 0
-            ) {
-                Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous Slide")
-            }
-
-            Text(
-                text = "Slide ${currentSlideIndex + 1} of $totalSlides",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-
-            IconButton(
-                onClick = { if (currentSlideIndex < totalSlides - 1) currentSlideIndex++ },
-                enabled = currentSlideIndex < totalSlides - 1
-            ) {
-                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next Slide")
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Slide Content Card
-        val slide = doc.slides[currentSlideIndex.coerceIn(0, totalSlides - 1)]
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(20.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                if (!slide.title.isNullOrBlank()) {
-                    Text(
-                        text = slide.title,
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    Spacer(modifier = Modifier.height(14.dp))
-                }
-
-                slide.items.forEach { item ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Text(
-                            text = "• ",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = item,
-                            style = MaterialTheme.typography.bodyLarge,
-                            lineHeight = 24.sp
-                        )
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Slide scrubber slider
-        if (totalSlides > 1) {
-            Slider(
-                value = currentSlideIndex.toFloat(),
-                onValueChange = { currentSlideIndex = it.toInt() },
-                valueRange = 0f..(totalSlides - 1).toFloat(),
-                steps = (totalSlides - 2).coerceAtLeast(0),
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-    }
+    PresentationViewer(file = file)
 }
 
 // =============================================================================================
@@ -437,219 +191,375 @@ fun PptxDocumentPreview(file: FileReference) {
 @Composable
 fun SpreadsheetPreview(file: FileReference) {
     val context = LocalContext.current
-    val docState by produceState<SpreadsheetDocument?>(initialValue = null, key1 = file.uriOrPath) {
+    var reloadTrigger by remember { mutableIntStateOf(0) }
+
+    val docResult by produceState<Result<SpreadsheetWorkbookModel>?>(initialValue = null, key1 = file.uriOrPath, key2 = reloadTrigger) {
         value = withContext(Dispatchers.IO) {
             val localFile = resolveOrCacheLocalFile(file, context)
             if (localFile != null) {
-                DocumentReaderEngine.readSpreadsheet(localFile)
-            } else null
+                try {
+                    Result.success(SpreadsheetParser.parse(localFile))
+                } catch (e: Exception) {
+                    Result.failure(e)
+                }
+            } else {
+                Result.failure(IllegalStateException("File could not be opened."))
+            }
         }
     }
 
-    if (docState == null) {
+    if (docResult == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator(modifier = Modifier.size(36.dp))
         }
         return
     }
 
-    val doc = docState!!
-    var selectedSheetIndex by remember { mutableIntStateOf(0) }
-    var searchQuery by remember { mutableStateOf("") }
-    var selectedCellContent by remember { mutableStateOf<String?>(null) }
+    val result = docResult!!
+    if (result.isFailure) {
+        val error = result.exceptionOrNull()
+        val isLegacy = error is UnsupportedOperationException
+        val isPassword = error is SecurityException
 
-    val currentSheet = doc.sheets.getOrNull(selectedSheetIndex) ?: doc.sheets.first()
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = if (isPassword) Icons.Default.Lock else Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = if (isPassword) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = when {
+                            isPassword -> "Password Protected"
+                            isLegacy -> "Legacy Format (.xls) Not Supported"
+                            else -> "Could Not Preview Spreadsheet"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = when {
+                            isPassword -> "This spreadsheet is encrypted or password-protected and cannot be previewed."
+                            isLegacy -> "Legacy binary Excel (.xls) files are not supported by the built-in desktop renderer. Please convert to .xlsx or .ods, or open in an external office app."
+                            else -> error?.message ?: "An unexpected error occurred while parsing the spreadsheet."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                try {
+                                    val uri = Uri.parse(file.uriOrPath)
+                                    val shareIntent = Intent(Intent.ACTION_VIEW).apply {
+                                        setDataAndType(uri, file.mimeType.ifBlank { "application/vnd.ms-excel" })
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(Intent.createChooser(shareIntent, "Open with"))
+                                } catch (_: Exception) {}
+                            }
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Open in External App")
+                        }
+                        if (!isLegacy && !isPassword) {
+                            OutlinedButton(onClick = { reloadTrigger++ }) {
+                                Text("Retry")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    val workbook = result.getOrThrow()
+    val visibleSheets = remember(workbook) {
+        workbook.sheets.filter { !it.view.isHidden }.ifEmpty { workbook.sheets }
+    }
+    var selectedSheetIndex by remember { mutableIntStateOf(0) }
+    val currentSheet = visibleSheets.getOrNull(selectedSheetIndex) ?: visibleSheets.first()
+
+    var selectedCellCoords by remember { mutableStateOf<Pair<Int, Int>?>(0 to 0) }
+    var selectedRange by remember { mutableStateOf<CellRange?>(null) }
+    var inspectCellDialog by remember { mutableStateOf<SpreadsheetCell?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    val activeCell = remember(currentSheet, selectedCellCoords) {
+        selectedCellCoords?.let { (r, c) -> currentSheet.getCell(r, c) }
+    }
+
+    // Compute live selection statistics asynchronously
+    var stats by remember { mutableStateOf<SelectionStats?>(null) }
+    LaunchedEffect(currentSheet, selectedCellCoords, selectedRange) {
+        withContext(Dispatchers.Default) {
+            val cellsToStat = mutableListOf<SpreadsheetCell>()
+            if (selectedRange != null) {
+                val r = selectedRange!!
+                val rowLimit = (r.lastRow - r.firstRow + 1).coerceAtMost(500)
+                val colLimit = (r.lastCol - r.firstCol + 1).coerceAtMost(50)
+                for (row in r.firstRow until (r.firstRow + rowLimit)) {
+                    for (col in r.firstCol until (r.firstCol + colLimit)) {
+                        currentSheet.getCell(row, col)?.let { cellsToStat.add(it) }
+                    }
+                }
+            } else if (selectedCellCoords != null) {
+                currentSheet.getCell(selectedCellCoords!!.first, selectedCellCoords!!.second)?.let {
+                    cellsToStat.add(it)
+                }
+            }
+
+            if (cellsToStat.isNotEmpty()) {
+                val numbers = cellsToStat.mapNotNull { it.rawValue?.toDoubleOrNull() ?: it.displayValue.toDoubleOrNull() }
+                val count = cellsToStat.size
+                val numCount = numbers.size
+                val sum = if (numCount > 0) numbers.sum() else null
+                val avg = if (numCount > 0) sum!! / numCount else null
+                val min = if (numCount > 0) numbers.minOrNull() else null
+                val max = if (numCount > 0) numbers.maxOrNull() else null
+                stats = SelectionStats(count, numCount, sum, avg, min, max)
+            } else {
+                stats = null
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .testTag("spreadsheet_preview")
     ) {
-        // Multiple Sheets Tab Row
-        if (doc.sheets.size > 1) {
+        // 1. Multiple Sheets Tab Row
+        if (visibleSheets.size > 1) {
             ScrollableTabRow(
-                selectedTabIndex = selectedSheetIndex,
+                selectedTabIndex = selectedSheetIndex.coerceIn(0, visibleSheets.size - 1),
                 edgePadding = 12.dp
             ) {
-                doc.sheets.forEachIndexed { index, sheet ->
+                visibleSheets.forEachIndexed { index, sheet ->
                     Tab(
                         selected = selectedSheetIndex == index,
-                        onClick = { selectedSheetIndex = index },
-                        text = { Text(sheet.name, maxLines = 1) }
+                        onClick = {
+                            selectedSheetIndex = index
+                            selectedCellCoords = 0 to 0
+                            selectedRange = null
+                        },
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (sheet.view.tabColorRgb != null) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .background(Color(sheet.view.tabColorRgb), CircleShape)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                }
+                                Text(sheet.name, maxLines = 1)
+                            }
+                        }
                     )
                 }
             }
         }
 
-        // Search Bar in Spreadsheet
+        // 2. Formula Bar & Search Bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 6.dp),
+                .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Formula / Cell Reference Box
+            val cellCoordText = selectedCellCoords?.let { (r, c) ->
+                "${SpreadsheetParser.indexToColumnLetter(c)}${r + 1}"
+            } ?: "A1"
+
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { inspectCellDialog = activeCell ?: SpreadsheetCell(selectedCellCoords?.first ?: 0, selectedCellCoords?.second ?: 0) }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = cellCoordText,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "fx",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = activeCell?.formula?.let { "=$it" }
+                            ?: activeCell?.displayValue?.ifBlank { activeCell.rawValue }
+                            ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            val screenConfig = LocalConfiguration.current
+            val isSmallScreen = screenConfig.screenWidthDp < 360
+            val searchInputWidth = if (isSmallScreen) 100.dp else 130.dp
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            // Search input
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text("Search spreadsheet...", style = MaterialTheme.typography.bodySmall) },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                placeholder = { Text("Find...", style = MaterialTheme.typography.bodySmall) },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
                 modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = "${currentSheet.rows.size} rows",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                    .width(searchInputWidth)
+                    .height(44.dp)
             )
         }
 
-        val filteredRowsWithIndex = remember(currentSheet, searchQuery) {
-            if (searchQuery.isBlank()) {
-                currentSheet.rows.mapIndexed { index, row -> index to row }
-            } else {
-                currentSheet.rows.mapIndexedNotNull { index, row ->
-                    if (row.any { it.contains(searchQuery, ignoreCase = true) }) index to row else null
+        // 3. High-Performance Virtualized Canvas Grid
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            SpreadsheetCanvasGrid(
+                sheet = currentSheet,
+                selectedCell = selectedCellCoords,
+                selectedRange = selectedRange,
+                searchQuery = searchQuery,
+                onCellClick = { row, col, _ ->
+                    selectedCellCoords = row to col
+                    selectedRange = null
+                },
+                onRangeSelected = { range ->
+                    selectedRange = range
                 }
-            }
+            )
         }
 
-        val horizontalScrollState = rememberScrollState()
-        val numCols = currentSheet.columnCount.coerceIn(1, 100)
-
-        // 2D Spreadsheet Grid
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .horizontalScroll(horizontalScrollState)
-        ) {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize()
+        // 4. Quick Statistics Bar
+        if (stats != null && stats!!.numericCount > 0) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                // Header Row (A, B, C, D...)
-                item(key = "header_row", contentType = "header") {
-                    Row(
-                        modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                    ) {
-                        // Corner cell
-                        Box(
-                            modifier = Modifier
-                                .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
-                                .size(width = 44.dp, height = 30.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("#", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                        }
-                        for (col in 0 until numCols) {
-                            val colLetter = indexToColumnLetter(col)
-                            Box(
-                                modifier = Modifier
-                                    .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
-                                    .size(width = 110.dp, height = 30.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = colLetter,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Data Rows
-                items(
-                    items = filteredRowsWithIndex,
-                    key = { it.first },
-                    contentType = { "sheet_row" }
-                ) { (rIdx, row) ->
-                    Row(
-                        modifier = Modifier.background(
-                            if (rIdx % 2 == 0) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainerLow
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Count: ${stats!!.totalCount}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (stats!!.sum != null) {
+                        Text(
+                            text = "Sum: ${String.format(java.util.Locale.US, "%,.2f", stats!!.sum)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
                         )
-                    ) {
-                        // Row number
-                        Box(
-                            modifier = Modifier
-                                .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
-                                .background(MaterialTheme.colorScheme.surfaceContainer)
-                                .size(width = 44.dp, height = 32.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "${rIdx + 1}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        for (col in 0 until numCols) {
-                            val cellVal = row.getOrNull(col) ?: ""
-                            val isMatch = searchQuery.isNotBlank() && cellVal.contains(searchQuery, ignoreCase = true)
-                            Box(
-                                modifier = Modifier
-                                    .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
-                                    .background(if (isMatch) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
-                                    .size(width = 110.dp, height = 32.dp)
-                                    .clickable { if (cellVal.isNotBlank()) selectedCellContent = cellVal }
-                                    .padding(horizontal = 6.dp),
-                                contentAlignment = Alignment.CenterStart
-                            ) {
-                                Text(
-                                    text = cellVal,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    fontWeight = if (isMatch) FontWeight.Bold else FontWeight.Normal
-                                )
-                            }
-                        }
+                    }
+                    if (stats!!.average != null) {
+                        Text(
+                            text = "Average: ${String.format(java.util.Locale.US, "%,.2f", stats!!.average)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (stats!!.min != null && stats!!.max != null && stats!!.numericCount > 1) {
+                        Text(
+                            text = "Min: ${String.format(java.util.Locale.US, "%,.2f", stats!!.min)} | Max: ${String.format(java.util.Locale.US, "%,.2f", stats!!.max)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
         }
+    }
 
-        // Cell Inspection Dialog
-        if (selectedCellContent != null) {
-            val clipMgr = LocalClipboardManager.current
-            AlertDialog(
-                onDismissRequest = { selectedCellContent = null },
-                title = { Text("Cell Contents") },
-                text = {
+    // Cell Inspection & Copy Dialog
+    if (inspectCellDialog != null) {
+        val cell = inspectCellDialog!!
+        val clipMgr = LocalClipboardManager.current
+        val coordText = "${SpreadsheetParser.indexToColumnLetter(cell.colIndex)}${cell.rowIndex + 1}"
+
+        AlertDialog(
+            onDismissRequest = { inspectCellDialog = null },
+            title = { Text("Cell $coordText") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!cell.formula.isNullOrBlank()) {
+                        Text("Formula:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        SelectionContainer {
+                            Text("=${cell.formula}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                        }
+                        HorizontalDivider()
+                    }
+                    Text("Display Value:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                     SelectionContainer {
-                        Text(selectedCellContent!!, style = MaterialTheme.typography.bodyMedium)
+                        Text(cell.displayValue.ifBlank { "(empty)" }, style = MaterialTheme.typography.bodyMedium)
                     }
-                },
-                confirmButton = {
-                    TextButton(onClick = {
-                        clipMgr.setText(AnnotatedString(selectedCellContent!!))
-                        selectedCellContent = null
-                    }) {
-                        Text("Copy")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { selectedCellContent = null }) {
-                        Text("Close")
+                    if (!cell.rawValue.isNullOrBlank() && cell.rawValue != cell.displayValue) {
+                        HorizontalDivider()
+                        Text("Raw Value:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        SelectionContainer {
+                            Text(cell.rawValue, style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
-            )
-        }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val toCopy = cell.formula?.let { "=$it" } ?: cell.displayValue.ifBlank { cell.rawValue ?: "" }
+                    clipMgr.setText(AnnotatedString(toCopy))
+                    inspectCellDialog = null
+                }) {
+                    Text("Copy")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { inspectCellDialog = null }) {
+                    Text("Close")
+                }
+            }
+        )
     }
-}
-
-private fun indexToColumnLetter(index: Int): String {
-    var num = index
-    val sb = StringBuilder()
-    while (num >= 0) {
-        sb.insert(0, ('A'.code + (num % 26)).toChar())
-        num = (num / 26) - 1
-    }
-    return sb.toString()
 }
 
 // =============================================================================================
@@ -1193,16 +1103,42 @@ private fun MarkdownTableView(table: MarkdownNode.Table) {
 // 6. Enhanced Multi-Page PDF Viewer
 // =============================================================================================
 
+// =============================================================================================
+// 6. Enhanced Multi-Page Horizontal Scroll PDF Viewer
+// =============================================================================================
+
+object PdfPageCache {
+    private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024L).toInt()
+    private val cacheSize = (maxMemory / 8).coerceAtLeast(1024)
+
+    private val lruCache = object : LruCache<String, Bitmap>(cacheSize) {
+        override fun sizeOf(key: String, bitmap: Bitmap): Int {
+            return bitmap.byteCount / 1024
+        }
+    }
+
+    fun get(key: String): Bitmap? = lruCache.get(key)?.takeIf { !it.isRecycled }
+
+    fun put(key: String, bitmap: Bitmap) {
+        lruCache.put(key, bitmap)
+    }
+
+    fun clear() {
+        lruCache.evictAll()
+    }
+}
+
 @Composable
 fun PdfDocumentViewer(file: FileReference) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var pageCount by remember { mutableIntStateOf(0) }
-    var currentPageIndex by remember { mutableIntStateOf(0) }
-    var pageBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
     var errorText by remember { mutableStateOf<String?>(null) }
     var showJumpDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(file, currentPageIndex) {
+    LaunchedEffect(file.uriOrPath) {
+        isLoading = true
         withContext(Dispatchers.IO) {
             runCatching {
                 val localFile = resolveOrCacheLocalFile(file, context)
@@ -1215,24 +1151,12 @@ fun PdfDocumentViewer(file: FileReference) {
                 pfd.use { descriptor ->
                     PdfRenderer(descriptor).use { renderer ->
                         pageCount = renderer.pageCount
-                        if (renderer.pageCount > 0) {
-                            val idx = currentPageIndex.coerceIn(0, renderer.pageCount - 1)
-                            renderer.openPage(idx).use { page ->
-                                val bmp = Bitmap.createBitmap(
-                                    (page.width * 2).coerceAtMost(2048),
-                                    (page.height * 2).coerceAtMost(2048),
-                                    Bitmap.Config.ARGB_8888
-                                )
-                                bmp.eraseColor(android.graphics.Color.WHITE)
-                                page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                                pageBitmap = bmp
-                            }
-                        }
                     }
                 }
             }.onFailure {
-                errorText = it.message ?: "Unable to render PDF"
+                errorText = it.message ?: "Unable to read PDF"
             }
+            isLoading = false
         }
     }
 
@@ -1246,86 +1170,33 @@ fun PdfDocumentViewer(file: FileReference) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(text = errorText!!, color = MaterialTheme.colorScheme.error)
             }
-        } else if (pageBitmap != null) {
-            var pdfScale by remember(currentPageIndex) { mutableFloatStateOf(1f) }
-            var pdfOffsetX by remember(currentPageIndex) { mutableFloatStateOf(0f) }
-            var pdfOffsetY by remember(currentPageIndex) { mutableFloatStateOf(0f) }
+        } else if (pageCount > 0) {
+            val pagerState = rememberPagerState(initialPage = 0, pageCount = { pageCount })
+            var isCurrentPageZoomed by remember { mutableStateOf(false) }
 
-            // Rendered Page Image with Pinch & Double-Tap Zoom
-            Box(
+            LaunchedEffect(pagerState.currentPage) {
+                isCurrentPageZoomed = false
+            }
+
+            // Horizontal Swipeable / Scrollable Page Viewport
+            HorizontalPager(
+                state = pagerState,
+                beyondViewportPageCount = 1,
+                userScrollEnabled = !isCurrentPageZoomed,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(8.dp)
-                    .pointerInput(currentPageIndex) {
-                        detectTapGestures(
-                            onDoubleTap = {
-                                if (pdfScale > 1.05f) {
-                                    pdfScale = 1f
-                                    pdfOffsetX = 0f
-                                    pdfOffsetY = 0f
-                                } else {
-                                    pdfScale = 2.5f
-                                }
-                            }
-                        )
+                    .testTag("pdf_horizontal_pager")
+            ) { pageIndex ->
+                PdfPageItem(
+                    file = file,
+                    pageIndex = pageIndex,
+                    isCurrentPage = pagerState.currentPage == pageIndex,
+                    onZoomChanged = { zoomed ->
+                        if (pagerState.currentPage == pageIndex) {
+                            isCurrentPageZoomed = zoomed
+                        }
                     }
-                    .pointerInput(currentPageIndex) {
-                        awaitEachGesture {
-                            awaitFirstDown(requireUnconsumed = false)
-                            do {
-                                val event = awaitPointerEvent()
-                                val pointerCount = event.changes.count { it.pressed }
-                                if (pdfScale > 1.05f) {
-                                    val zoomChange = event.calculateZoom()
-                                    val panChange = event.calculatePan()
-                                    val newScale = (pdfScale * zoomChange).coerceIn(1f, 5f)
-                                    pdfScale = newScale
-                                    if (newScale > 1.05f) {
-                                        val maxOffsetX = (size.width.toFloat() * (newScale - 1f) / 2f).coerceAtLeast(0f)
-                                        val maxOffsetY = (size.height.toFloat() * (newScale - 1f) / 2f).coerceAtLeast(0f)
-                                        pdfOffsetX = (pdfOffsetX + panChange.x).coerceIn(-maxOffsetX, maxOffsetX)
-                                        pdfOffsetY = (pdfOffsetY + panChange.y).coerceIn(-maxOffsetY, maxOffsetY)
-                                    } else {
-                                        pdfScale = 1f
-                                        pdfOffsetX = 0f
-                                        pdfOffsetY = 0f
-                                    }
-                                    event.changes.forEach { change ->
-                                        if (change.positionChanged()) change.consume()
-                                    }
-                                } else if (pointerCount >= 2) {
-                                    val zoomChange = event.calculateZoom()
-                                    val panChange = event.calculatePan()
-                                    val newScale = (pdfScale * zoomChange).coerceIn(1f, 5f)
-                                    if (newScale > 1.05f) {
-                                        pdfScale = newScale
-                                        val maxOffsetX = (size.width.toFloat() * (newScale - 1f) / 2f).coerceAtLeast(0f)
-                                        val maxOffsetY = (size.height.toFloat() * (newScale - 1f) / 2f).coerceAtLeast(0f)
-                                        pdfOffsetX = (pdfOffsetX + panChange.x).coerceIn(-maxOffsetX, maxOffsetX)
-                                        pdfOffsetY = (pdfOffsetY + panChange.y).coerceIn(-maxOffsetY, maxOffsetY)
-                                        event.changes.forEach { change ->
-                                            if (change.positionChanged()) change.consume()
-                                        }
-                                    }
-                                }
-                            } while (event.changes.any { it.pressed })
-                        }
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Image(
-                    bitmap = pageBitmap!!.asImageBitmap(),
-                    contentDescription = "PDF Page ${currentPageIndex + 1}",
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(8.dp))
-                        .graphicsLayer {
-                            scaleX = pdfScale
-                            scaleY = pdfScale
-                            translationX = pdfOffsetX
-                            translationY = pdfOffsetY
-                        }
                 )
             }
 
@@ -1343,34 +1214,54 @@ fun PdfDocumentViewer(file: FileReference) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
-                            onClick = { if (currentPageIndex > 0) currentPageIndex-- },
-                            enabled = currentPageIndex > 0
+                            onClick = {
+                                if (pagerState.currentPage > 0) {
+                                    coroutineScope.launch {
+                                        pagerState.animateScrollToPage(pagerState.currentPage - 1)
+                                    }
+                                }
+                            },
+                            enabled = pagerState.currentPage > 0
                         ) {
                             Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous Page")
                         }
 
+                        val config = LocalConfiguration.current
+                        val pageTitleStyle = if (config.screenWidthDp < 360) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium
                         TextButton(onClick = { showJumpDialog = true }) {
                             Text(
-                                text = "Page ${currentPageIndex + 1} of $pageCount (Jump)",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold
+                                text = "Page ${pagerState.currentPage + 1} of $pageCount (Jump)",
+                                style = pageTitleStyle,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
 
                         IconButton(
-                            onClick = { if (currentPageIndex < pageCount - 1) currentPageIndex++ },
-                            enabled = currentPageIndex < pageCount - 1
+                            onClick = {
+                                if (pagerState.currentPage < pageCount - 1) {
+                                    coroutineScope.launch {
+                                        pagerState.animateScrollToPage(pagerState.currentPage + 1)
+                                    }
+                                }
+                            },
+                            enabled = pagerState.currentPage < pageCount - 1
                         ) {
                             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next Page")
                         }
                     }
 
                     if (pageCount > 1) {
-                        var sliderPos by remember(currentPageIndex) { mutableFloatStateOf(currentPageIndex.toFloat()) }
+                        var sliderPos by remember(pagerState.currentPage) { mutableFloatStateOf(pagerState.currentPage.toFloat()) }
                         Slider(
                             value = sliderPos,
                             onValueChange = { sliderPos = it },
-                            onValueChangeFinished = { currentPageIndex = sliderPos.toInt() },
+                            onValueChangeFinished = {
+                                coroutineScope.launch {
+                                    pagerState.scrollToPage(sliderPos.toInt().coerceIn(0, pageCount - 1))
+                                }
+                            },
                             valueRange = 0f..(pageCount - 1).toFloat(),
                             steps = (pageCount - 2).coerceAtLeast(0),
                             modifier = Modifier.fillMaxWidth()
@@ -1378,41 +1269,187 @@ fun PdfDocumentViewer(file: FileReference) {
                     }
                 }
             }
-        } else {
+
+            // Jump to Page Dialog
+            if (showJumpDialog) {
+                var jumpInput by remember { mutableStateOf("${pagerState.currentPage + 1}") }
+                AlertDialog(
+                    onDismissRequest = { showJumpDialog = false },
+                    title = { Text("Jump to Page") },
+                    text = {
+                        OutlinedTextField(
+                            value = jumpInput,
+                            onValueChange = { jumpInput = it },
+                            label = { Text("Page number (1 to $pageCount)") },
+                            singleLine = true
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val target = (jumpInput.toIntOrNull() ?: (pagerState.currentPage + 1)) - 1
+                            val safeTarget = target.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+                            coroutineScope.launch {
+                                pagerState.animateScrollToPage(safeTarget)
+                            }
+                            showJumpDialog = false
+                        }) {
+                            Text("Go")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showJumpDialog = false }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
+        } else if (isLoading) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(modifier = Modifier.size(36.dp))
             }
+        } else {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("This PDF document contains no pages.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
+    }
+}
 
-        // Jump to Page Dialog
-        if (showJumpDialog) {
-            var jumpInput by remember { mutableStateOf("${currentPageIndex + 1}") }
-            AlertDialog(
-                onDismissRequest = { showJumpDialog = false },
-                title = { Text("Jump to Page") },
-                text = {
-                    OutlinedTextField(
-                        value = jumpInput,
-                        onValueChange = { jumpInput = it },
-                        label = { Text("Page number (1 to $pageCount)") },
-                        singleLine = true
-                    )
-                },
-                confirmButton = {
-                    TextButton(onClick = {
-                        val target = (jumpInput.toIntOrNull() ?: (currentPageIndex + 1)) - 1
-                        currentPageIndex = target.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-                        showJumpDialog = false
-                    }) {
-                        Text("Go")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showJumpDialog = false }) {
-                        Text("Cancel")
+@Composable
+private fun PdfPageItem(
+    file: FileReference,
+    pageIndex: Int,
+    isCurrentPage: Boolean,
+    onZoomChanged: (Boolean) -> Unit
+) {
+    val context = LocalContext.current
+    val cacheKey = "${file.uriOrPath}::$pageIndex"
+
+    var scale by remember(pageIndex) { mutableFloatStateOf(1f) }
+    var offsetX by remember(pageIndex) { mutableFloatStateOf(0f) }
+    var offsetY by remember(pageIndex) { mutableFloatStateOf(0f) }
+
+    LaunchedEffect(isCurrentPage) {
+        if (!isCurrentPage && scale != 1f) {
+            scale = 1f
+            offsetX = 0f
+            offsetY = 0f
+            onZoomChanged(false)
+        }
+    }
+
+    val pageBitmap by produceState<Bitmap?>(initialValue = PdfPageCache.get(cacheKey), key1 = cacheKey) {
+        if (value != null) return@produceState
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val localFile = resolveOrCacheLocalFile(file, context)
+                val pfd = if (localFile != null) {
+                    ParcelFileDescriptor.open(localFile, ParcelFileDescriptor.MODE_READ_ONLY)
+                } else {
+                    context.contentResolver.openFileDescriptor(Uri.parse(file.uriOrPath), "r")
+                } ?: return@runCatching null
+
+                pfd.use { descriptor ->
+                    PdfRenderer(descriptor).use { renderer ->
+                        if (pageIndex in 0 until renderer.pageCount) {
+                            renderer.openPage(pageIndex).use { page ->
+                                val targetW = (page.width * 2).coerceIn(400, 2048)
+                                val targetH = (page.height * 2).coerceIn(400, 2048)
+                                val bmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+                                bmp.eraseColor(android.graphics.Color.WHITE)
+                                page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                PdfPageCache.put(cacheKey, bmp)
+                                bmp
+                            }
+                        } else null
                     }
                 }
+            }.getOrNull()
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(8.dp)
+            .pointerInput(pageIndex) {
+                detectTapGestures(
+                    onDoubleTap = {
+                        if (scale > 1.05f) {
+                            scale = 1f
+                            offsetX = 0f
+                            offsetY = 0f
+                            onZoomChanged(false)
+                        } else {
+                            scale = 2.5f
+                            onZoomChanged(true)
+                        }
+                    }
+                )
+            }
+            .pointerInput(pageIndex) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event = awaitPointerEvent()
+                        val pointerCount = event.changes.count { it.pressed }
+                        if (scale > 1.05f) {
+                            val zoomChange = event.calculateZoom()
+                            val panChange = event.calculatePan()
+                            val newScale = (scale * zoomChange).coerceIn(1f, 5f)
+                            scale = newScale
+                            if (newScale > 1.05f) {
+                                val maxOffsetX = (size.width.toFloat() * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                                val maxOffsetY = (size.height.toFloat() * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                                offsetX = (offsetX + panChange.x).coerceIn(-maxOffsetX, maxOffsetX)
+                                offsetY = (offsetY + panChange.y).coerceIn(-maxOffsetY, maxOffsetY)
+                                onZoomChanged(true)
+                            } else {
+                                scale = 1f
+                                offsetX = 0f
+                                offsetY = 0f
+                                onZoomChanged(false)
+                            }
+                            event.changes.forEach { change ->
+                                if (change.positionChanged()) change.consume()
+                            }
+                        } else if (pointerCount >= 2) {
+                            val zoomChange = event.calculateZoom()
+                            val panChange = event.calculatePan()
+                            val newScale = (scale * zoomChange).coerceIn(1f, 5f)
+                            if (newScale > 1.05f) {
+                                scale = newScale
+                                val maxOffsetX = (size.width.toFloat() * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                                val maxOffsetY = (size.height.toFloat() * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                                offsetX = (offsetX + panChange.x).coerceIn(-maxOffsetX, maxOffsetX)
+                                offsetY = (offsetY + panChange.y).coerceIn(-maxOffsetY, maxOffsetY)
+                                onZoomChanged(true)
+                                event.changes.forEach { change ->
+                                    if (change.positionChanged()) change.consume()
+                                }
+                            }
+                        }
+                    } while (event.changes.any { it.pressed })
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        if (pageBitmap != null) {
+            Image(
+                bitmap = pageBitmap!!.asImageBitmap(),
+                contentDescription = "PDF Page ${pageIndex + 1}",
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(8.dp))
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = offsetX
+                        translationY = offsetY
+                    }
             )
+        } else {
+            CircularProgressIndicator(modifier = Modifier.size(36.dp))
         }
     }
 }

@@ -185,6 +185,7 @@ class TransferQueueEngine(
         }
         val isMove = clip.mode == ClipboardMode.CUT
         val jobId = UUID.randomUUID().toString()
+        clearClipboard()
 
         val job = appScope.launch(Dispatchers.IO) {
             val (calculatedBytes, calculatedFiles) = calculateTotalBytesAndFiles(clip.items)
@@ -217,7 +218,7 @@ class TransferQueueEngine(
                 val onProgressDelta: suspend (Long) -> Unit = { delta ->
                     transferredBytes += delta
                     val now = System.currentTimeMillis()
-                    if (now - lastDbUpdateMs >= 150L) {
+                    if (now - lastDbUpdateMs >= 350L) {
                         lastDbUpdateMs = now
                         val currentTotal = maxOf(totalBytes, transferredBytes)
                         dao.upsertTransferJob(
@@ -236,7 +237,7 @@ class TransferQueueEngine(
                 val onFileCompleted: suspend () -> Unit = {
                     processedFiles++
                     val now = System.currentTimeMillis()
-                    if (now - lastDbUpdateMs >= 150L) {
+                    if (now - lastDbUpdateMs >= 350L) {
                         lastDbUpdateMs = now
                         val currentTotal = maxOf(totalBytes, transferredBytes)
                         dao.upsertTransferJob(
@@ -352,9 +353,7 @@ class TransferQueueEngine(
                     )
                 }
 
-                if (isMove) {
-                    clearClipboard()
-                } else if (createdDestinations.isNotEmpty()) {
+                if (!isMove && createdDestinations.isNotEmpty()) {
                     _latestUndoAction.value = UndoActionRecord(
                         description = "Copied ${createdDestinations.size} item(s) to ${destinationDir.displayName}",
                         performUndo = {
@@ -529,7 +528,34 @@ class TransferQueueEngine(
             if (srcFile.canonicalPath == dstFile.canonicalPath) {
                 return localProvider.toFileReference(dstFile)
             }
-            if (srcFile.renameTo(dstFile)) {
+            if (dstFile.exists() && dstFile.canonicalPath != srcFile.canonicalPath) {
+                if (dstFile.isDirectory) dstFile.deleteRecursively() else dstFile.delete()
+            }
+            val moved = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                try {
+                    java.nio.file.Files.move(
+                        srcFile.toPath(),
+                        dstFile.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE
+                    )
+                    true
+                } catch (_: Exception) {
+                    try {
+                        java.nio.file.Files.move(
+                            srcFile.toPath(),
+                            dstFile.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                        )
+                        true
+                    } catch (_: Exception) {
+                        srcFile.renameTo(dstFile)
+                    }
+                }
+            } else {
+                srcFile.renameTo(dstFile)
+            }
+            if (moved) {
                 onBytesDelta(source.sizeBytes.coerceAtLeast(1024L))
                 onFileCompleted()
                 return localProvider.toFileReference(dstFile)
@@ -579,21 +605,51 @@ class TransferQueueEngine(
 
             var destRef: FileReference? = null
             var bytesCopiedForFile = 0L
+            val isLocalToLocal = !verifyChecksum &&
+                source.providerType == ProviderType.LOCAL &&
+                destinationParent.providerType == ProviderType.LOCAL
+
             try {
-                srcProvider.openInputStream(source).getOrThrow().use { input ->
-                    val (createdRef, output) = dstProvider.openOutputStream(destinationParent, targetName, append = false).getOrThrow()
-                    destRef = createdRef
-                    output.use { out ->
-                        val buffer = ByteArray(64 * 1024)
-                        var read = input.read(buffer)
-                        while (read > 0) {
-                            coroutineContext.ensureActive()
-                            out.write(buffer, 0, read)
-                            bytesCopiedForFile += read
-                            onBytesDelta(read.toLong())
-                            read = input.read(buffer)
+                if (isLocalToLocal) {
+                    val srcFile = File(source.uriOrPath)
+                    val dstFile = File(destinationParent.uriOrPath, targetName)
+                    dstFile.parentFile?.mkdirs()
+                    destRef = localProvider.toFileReference(dstFile)
+                    java.io.FileInputStream(srcFile).use { fis ->
+                        java.io.FileOutputStream(dstFile, false).use { fos ->
+                            val srcChan = fis.channel
+                            val dstChan = fos.channel
+                            val fileSize = srcChan.size()
+                            var position = 0L
+                            val chunkSize = 1024L * 1024L // 1MB zero-copy kernel chunks
+                            while (position < fileSize) {
+                                coroutineContext.ensureActive()
+                                val toTransfer = minOf(chunkSize, fileSize - position)
+                                val transferred = srcChan.transferTo(position, toTransfer, dstChan)
+                                if (transferred <= 0) break
+                                position += transferred
+                                bytesCopiedForFile += transferred
+                                onBytesDelta(transferred)
+                            }
+                            dstChan.force(false)
                         }
-                        out.flush()
+                    }
+                } else {
+                    srcProvider.openInputStream(source).getOrThrow().buffered(256 * 1024).use { input ->
+                        val (createdRef, output) = dstProvider.openOutputStream(destinationParent, targetName, append = false).getOrThrow()
+                        destRef = createdRef
+                        output.buffered(256 * 1024).use { out ->
+                            val buffer = ByteArray(256 * 1024)
+                            var read = input.read(buffer)
+                            while (read > 0) {
+                                coroutineContext.ensureActive()
+                                out.write(buffer, 0, read)
+                                bytesCopiedForFile += read
+                                onBytesDelta(read.toLong())
+                                read = input.read(buffer)
+                            }
+                            out.flush()
+                        }
                     }
                 }
 
@@ -667,8 +723,8 @@ class TransferQueueEngine(
                         }
                     } else {
                         // SAF: Copy stream to local trash first, verify, then delete SAF document
-                        safProvider.openInputStream(item).getOrThrow().use { input ->
-                            trashFile.outputStream().use { out -> input.copyTo(out) }
+                        safProvider.openInputStream(item).getOrThrow().buffered(256 * 1024).use { input ->
+                            trashFile.outputStream().buffered(256 * 1024).use { out -> input.copyTo(out, bufferSize = 256 * 1024) }
                         }
                         if (trashFile.length() == item.sizeBytes) {
                             safProvider.delete(item).getOrDefault(false)

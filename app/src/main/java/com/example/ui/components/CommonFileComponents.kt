@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.activity.compose.BackHandler
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.media.MediaPlayer
@@ -996,6 +997,11 @@ fun FilePreviewScreen(
                 "${file.providerType.label} • ${file.mimeType} • ${file.formattedSize}"
             }
         )
+    }
+
+    // Intercept back gesture immediately to dismiss the preview
+    BackHandler {
+        onDismiss()
     }
 
     Surface(

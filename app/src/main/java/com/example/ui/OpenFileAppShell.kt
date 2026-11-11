@@ -151,16 +151,18 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
         viewModel.clearStatusMessage()
     }
 
-    // Hardware Back navigation for full-window file preview
+    // Hardware Back navigation for full-window file preview (highest priority)
     BackHandler(enabled = previewState != null) {
         viewModel.closePreviewDialog()
     }
 
-    // Hardware Back navigation handling for browser stack & sub-destinations
+    // Hardware Back navigation handling for browser stack & sub-destinations (only when no preview is open)
     BackHandler(
-        enabled = currentDest != OpenFileDestination.HOME ||
+        enabled = previewState == null && (
+            currentDest != OpenFileDestination.HOME ||
             browserState.isMultiSelectActive ||
             browserState.inspectArchiveFile != null
+        )
     ) {
         val handledInBrowser = if (currentDest in setOf(
                 OpenFileDestination.INTERNAL_STORAGE,
@@ -709,7 +711,7 @@ private fun MainScaffoldContent(
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f).padding(end = 8.dp)
                                 ) {
                                     Icon(
                                         Icons.Filled.SwapVert,
@@ -729,7 +731,8 @@ private fun MainScaffoldContent(
                                 Text(
                                     text = "${com.example.core.model.formatByteSize(activeRunningJob.transferredBytes)} / ${com.example.core.model.formatByteSize(activeRunningJob.totalBytes)}$percentText",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1
                                 )
                             }
                             Spacer(modifier = Modifier.height(4.dp))
@@ -835,7 +838,9 @@ private fun DestinationRouter(
                 appUpdateState = appUpdateState,
                 onOpenUpdateDialog = { viewModel.openAppUpdateDialog() },
                 showHiddenFiles = settings.showHiddenFiles,
-                onClearRecentFiles = { viewModel.clearRecentFiles() }
+                onClearRecentFiles = { viewModel.clearRecentFiles() },
+                onSaveScrollPosition = { key, idx, offset -> viewModel.saveScrollPosition(key, idx, offset) },
+                onGetScrollPosition = { key -> viewModel.getScrollPosition(key) }
             )
         }
 
@@ -892,7 +897,9 @@ private fun DestinationRouter(
                 onPreviewArchiveEntry = { ref, entry -> viewModel.previewArchiveEntry(ref, entry) },
                 onOpenArchiveSubFolder = { viewModel.openArchiveSubFolder(it) },
                 onViewArchive = { viewModel.inspectArchive(it) },
-                onClearRecentFiles = { viewModel.clearRecentFiles() }
+                onClearRecentFiles = { viewModel.clearRecentFiles() },
+                onSaveScrollPosition = { key, idx, offset -> viewModel.saveScrollPosition(key, idx, offset) },
+                onGetScrollPosition = { key -> viewModel.getScrollPosition(key) }
             )
         }
 
