@@ -87,6 +87,8 @@ import androidx.compose.material.icons.filled.RepeatOn
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.automirrored.filled.VolumeMute
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SkipNext
@@ -94,8 +96,6 @@ import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.VideoLibrary
-import androidx.compose.material.icons.filled.VolumeMute
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -106,6 +106,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -161,7 +162,10 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.rememberAsyncImagePainter
@@ -884,6 +888,23 @@ private fun AudioWaveformIndicator(modifier: Modifier = Modifier) {
 enum class GestureHudType { VOLUME, BRIGHTNESS, SEEK }
 enum class DoubleTapFeedbackType { REWIND, FORWARD }
 enum class VideoPlayMode { PLAY_ALL, REPEAT_ONE, REPEAT_OFF }
+enum class DecoderMode(val code: String, val title: String, val description: String) {
+    HW(
+        code = "HW",
+        title = "HW (Hardware)",
+        description = "Hardware acceleration via device GPU / MediaCodec chip. High-performance & power-efficient."
+    ),
+    HW_PLUS(
+        code = "HW+",
+        title = "HW+ (Hardware Plus)",
+        description = "Hardware video decoding with custom software audio pipeline & loudness enhancement (200% volume boost)."
+    ),
+    SW(
+        code = "SW",
+        title = "SW (Software)",
+        description = "Software CPU decoding. Maximum compatibility for rare or complex video codecs."
+    )
+}
 
 data class OnlineSubtitleItem(
     val title: String,
@@ -1137,8 +1158,30 @@ fun VideoPlayerPreview(
     var showAudioTrackDialog by remember { mutableStateOf(false) }
     var showHwInfoDialog by remember { mutableStateOf(false) }
 
-    val exoPlayer = remember(file.uriOrPath) {
-        ExoPlayer.Builder(context).build().apply {
+    // Decoder Mode: HW, HW+, SW
+    var decoderMode by rememberSaveable(file.uriOrPath) { mutableStateOf(DecoderMode.HW) }
+
+    val exoPlayer = remember(file.uriOrPath, decoderMode) {
+        val renderersFactory = DefaultRenderersFactory(context).apply {
+            setEnableDecoderFallback(true)
+            when (decoderMode) {
+                DecoderMode.HW -> {
+                    setMediaCodecSelector(MediaCodecSelector.DEFAULT)
+                }
+                DecoderMode.HW_PLUS -> {
+                    setMediaCodecSelector(MediaCodecSelector.DEFAULT)
+                    setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+                }
+                DecoderMode.SW -> {
+                    setMediaCodecSelector { mimeType, requiresSecure, requiresTunneling ->
+                        val decoders = MediaCodecUtil.getDecoderInfos(mimeType, requiresSecure, requiresTunneling)
+                        decoders.sortedByDescending { it.softwareOnly || it.name.startsWith("c2.android") || it.name.startsWith("OMX.google") }
+                    }
+                }
+            }
+        }
+
+        ExoPlayer.Builder(context, renderersFactory).build().apply {
             val mediaItem = MediaItem.fromUri(resolveMediaUri(file))
             setMediaItem(mediaItem)
             if (currentPositionMs > 0L) {
@@ -1489,11 +1532,22 @@ fun VideoPlayerPreview(
                                         hudValue = newB
                                         activeGestureHud = GestureHudType.BRIGHTNESS
                                     } else {
-                                        // Volume
+                                        // Volume (with HW+ / SW 200% volume boost)
                                         val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                        val newVol = (initialVolume + (deltaFraction * maxVol)).toInt().coerceIn(0, maxVol)
-                                        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVol, 0)
-                                        hudValue = newVol.toFloat() / maxVol.toFloat()
+                                        val isBoostSupported = decoderMode != DecoderMode.HW
+                                        val totalScale = if (isBoostSupported) 2.0f else 1.0f
+                                        val currentFraction = (initialVolume.toFloat() / maxVol.toFloat()) + (deltaFraction * totalScale)
+                                        val clampedFraction = currentFraction.coerceIn(0f, totalScale)
+                                        if (clampedFraction <= 1.0f) {
+                                            val targetSysVol = (clampedFraction * maxVol).toInt().coerceIn(0, maxVol)
+                                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetSysVol, 0)
+                                            exoPlayer.volume = 1.0f
+                                            hudValue = clampedFraction
+                                        } else {
+                                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
+                                            exoPlayer.volume = clampedFraction
+                                            hudValue = clampedFraction
+                                        }
                                         activeGestureHud = GestureHudType.VOLUME
                                     }
                                 }
@@ -1569,14 +1623,27 @@ fun VideoPlayerPreview(
                             )
                         }
                         GestureHudType.VOLUME -> {
-                            Icon(if (hudValue <= 0.02f) Icons.Filled.VolumeMute else Icons.Filled.VolumeUp, contentDescription = null, tint = Color(0xFF4FC3F7), modifier = Modifier.size(36.dp))
+                            val isBoosted = hudValue > 1.0f
+                            val volColor = if (isBoosted) VideoCoral else Color(0xFF4FC3F7)
+                            Icon(
+                                if (hudValue <= 0.02f) Icons.AutoMirrored.Filled.VolumeMute else Icons.AutoMirrored.Filled.VolumeUp,
+                                contentDescription = null,
+                                tint = volColor,
+                                modifier = Modifier.size(36.dp)
+                            )
                             Spacer(modifier = Modifier.height(8.dp))
-                            Text("${(hudValue * 100).toInt()}%", color = Color.White, fontWeight = FontWeight.Bold)
+                            val volPercent = (hudValue * 100).toInt()
+                            Text(
+                                if (isBoosted) "$volPercent% (Boost)" else "$volPercent%",
+                                color = if (isBoosted) VideoCoral else Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
                             Spacer(modifier = Modifier.height(8.dp))
+                            val progressFrac = if (decoderMode != DecoderMode.HW) (hudValue / 2.0f).coerceIn(0f, 1f) else hudValue.coerceIn(0f, 1f)
                             LinearProgressIndicator(
-                                progress = { hudValue },
+                                progress = { progressFrac },
                                 modifier = Modifier.width(100.dp).height(6.dp).clip(RoundedCornerShape(3.dp)),
-                                color = Color(0xFF4FC3F7),
+                                color = volColor,
                                 trackColor = Color.White.copy(alpha = 0.2f)
                             )
                         }
@@ -1719,16 +1786,20 @@ fun VideoPlayerPreview(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        // HW Acceleration Badge
+                        // HW / HW+ / SW Decoder Mode Badge
                         Surface(
                             shape = RoundedCornerShape(4.dp),
-                            color = Color.White.copy(alpha = 0.2f),
+                            color = when (decoderMode) {
+                                DecoderMode.HW -> Color.White.copy(alpha = 0.2f)
+                                DecoderMode.HW_PLUS -> VideoCoral.copy(alpha = 0.85f)
+                                DecoderMode.SW -> Color(0xFF7E57C2)
+                            },
                             modifier = Modifier
                                 .clickable { showHwInfoDialog = true }
                                 .padding(horizontal = 4.dp, vertical = 2.dp)
                         ) {
                             Text(
-                                text = "HW",
+                                text = decoderMode.code,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White,
@@ -2136,9 +2207,18 @@ fun VideoPlayerPreview(
         )
     }
 
-    // --- HW MediaCodec Acceleration Info Dialog ---
+    // --- Decoder Selector Dialog (HW, HW+, SW) ---
     if (showHwInfoDialog) {
-        HwCodecInfoDialog(
+        VideoDecoderSelectorDialog(
+            currentMode = decoderMode,
+            onSelectMode = { newMode ->
+                if (newMode != decoderMode) {
+                    currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+                    wasPlaying = exoPlayer.isPlaying
+                    decoderMode = newMode
+                    aspectToastMessage = "Decoder: ${newMode.code}"
+                }
+            },
             exoPlayer = exoPlayer,
             file = file,
             onDismiss = { showHwInfoDialog = false }
@@ -2649,11 +2729,13 @@ private fun AudioTrackSelectorDialog(
 }
 
 /**
- * HW Decoder / Acceleration Information Dialog.
+ * Decoder Selection & Hardware Acceleration Information Dialog (HW, HW+, SW).
  */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun HwCodecInfoDialog(
+private fun VideoDecoderSelectorDialog(
+    currentMode: DecoderMode,
+    onSelectMode: (DecoderMode) -> Unit,
     exoPlayer: ExoPlayer,
     file: FileReference,
     onDismiss: () -> Unit
@@ -2673,26 +2755,110 @@ private fun HwCodecInfoDialog(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(
                     shape = RoundedCornerShape(4.dp),
-                    color = VideoCoral,
+                    color = when (currentMode) {
+                        DecoderMode.HW -> VideoCoral
+                        DecoderMode.HW_PLUS -> Color(0xFFFFB300)
+                        DecoderMode.SW -> Color(0xFF7E57C2)
+                    },
                     modifier = Modifier.padding(end = 8.dp)
                 ) {
-                    Text("HW", fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
+                    Text(
+                        currentMode.code,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        style = MaterialTheme.typography.labelSmall
+                    )
                 }
-                Text("Hardware Decoder", color = Color.White, fontWeight = FontWeight.Bold)
+                Text("Select Decoder", color = Color.White, fontWeight = FontWeight.Bold)
             }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Decoder: Media3 MediaCodec (Hardware Accelerated)", color = Color.White, style = MaterialTheme.typography.bodyMedium)
-                Text("Video Codec: $codecText", color = Color.LightGray, style = MaterialTheme.typography.bodySmall)
-                Text("Resolution: $resText", color = Color.LightGray, style = MaterialTheme.typography.bodySmall)
-                Text("Frame Rate: $fpsText", color = Color.LightGray, style = MaterialTheme.typography.bodySmall)
-                Text("Container: ${file.extension.uppercase()} (${file.formattedSize})", color = Color.LightGray, style = MaterialTheme.typography.bodySmall)
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                DecoderMode.entries.forEach { mode ->
+                    val isSelected = mode == currentMode
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isSelected) VideoCoral.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.05f),
+                        border = if (isSelected) androidx.compose.foundation.BorderStroke(1.dp, VideoCoral) else null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onSelectMode(mode)
+                                onDismiss()
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = when (mode) {
+                                    DecoderMode.HW -> VideoCoral
+                                    DecoderMode.HW_PLUS -> Color(0xFFFFB300)
+                                    DecoderMode.SW -> Color(0xFF7E57C2)
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(
+                                        mode.code,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    mode.title,
+                                    color = if (isSelected) VideoCoral else Color.White,
+                                    fontWeight = FontWeight.SemiBold,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    mode.description,
+                                    color = Color.LightGray,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = "Selected",
+                                    tint = VideoCoral,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+                HorizontalDivider(color = Color.White.copy(alpha = 0.15f))
+
+                // Technical stream info
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        "Stream Information",
+                        color = VideoCoral,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text("Video Codec: $codecText", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                    Text("Resolution: $resText", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                    Text("Frame Rate: $fpsText", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                    Text("Container: ${file.extension.uppercase()} (${file.formattedSize})", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
+                }
             }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("OK", color = VideoCoral)
+                Text("Close", color = VideoCoral)
             }
         },
         containerColor = Color(0xFF22222A)
