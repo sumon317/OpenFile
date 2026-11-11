@@ -1,4 +1,7 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.media3.common.util.UnstableApi::class
+)
 
 package com.example.ui.components
 
@@ -41,13 +44,16 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -56,6 +62,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -64,6 +72,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.automirrored.filled.VolumeMute
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.BrightnessMedium
@@ -71,12 +82,17 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
@@ -87,15 +103,17 @@ import androidx.compose.material.icons.filled.RepeatOn
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Replay10
-import androidx.compose.material.icons.automirrored.filled.VolumeMute
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.ShuffleOn
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -134,6 +152,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -154,6 +173,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -213,7 +233,18 @@ data class AudioTrackInfo(
     val album: String,
     val durationMs: Long,
     val artwork: ImageBitmap? = null,
+    val mimeType: String = "",
+    val bitrateKbps: Int = 0,
+    val sampleRateHz: Int = 0,
+    val channelCount: Int = 0,
+    val year: String = "",
+    val genre: String = "",
+    val composer: String = ""
 )
+
+enum class AudioRepeatMode {
+    OFF, ALL, ONE
+}
 
 private fun resolveMediaUri(file: FileReference): Uri {
     val localBacking = file.metadata["localBackingPath"]?.let { File(it) }
@@ -232,6 +263,14 @@ private fun extractAudioTrackInfo(context: Context, file: FileReference): AudioT
     var album = ""
     var duration = 0L
     var artwork: ImageBitmap? = null
+    var mimeType = file.mimeType
+    var bitrateKbps = 0
+    var sampleRateHz = 0
+    var channelCount = 0
+    var year = ""
+    var genre = ""
+    var composer = ""
+
     try {
         val retriever = MediaMetadataRetriever()
         val localBacking = file.metadata["localBackingPath"]?.let { File(it) }
@@ -245,6 +284,15 @@ private fun extractAudioTrackInfo(context: Context, file: FileReference): AudioT
         retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)?.let { if (it.isNotBlank()) artist = it }
         retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)?.let { if (it.isNotBlank()) album = it }
         retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?.let { duration = it }
+        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)?.let { if (it.isNotBlank()) mimeType = it }
+        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toIntOrNull()?.let { bitrateKbps = it / 1000 }
+        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR)?.let { if (it.isNotBlank()) year = it }
+        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)?.let { if (it.isNotBlank()) genre = it }
+        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COMPOSER)?.let { if (it.isNotBlank()) composer = it }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.toIntOrNull()?.let { sampleRateHz = it }
+        }
+
         val picture = retriever.embeddedPicture
         if (picture != null) {
             val bmp = BitmapFactory.decodeByteArray(picture, 0, picture.size)
@@ -254,17 +302,97 @@ private fun extractAudioTrackInfo(context: Context, file: FileReference): AudioT
         }
         retriever.release()
     } catch (_: Exception) {}
-    return AudioTrackInfo(title, artist, album, duration, artwork)
+    return AudioTrackInfo(
+        title = title,
+        artist = artist,
+        album = album,
+        durationMs = duration,
+        artwork = artwork,
+        mimeType = mimeType,
+        bitrateKbps = bitrateKbps,
+        sampleRateHz = sampleRateHz,
+        channelCount = channelCount,
+        year = year,
+        genre = genre,
+        composer = composer
+    )
 }
 
 /**
- * Built-in Modern Audio Player powered by Jetpack Media3 ExoPlayer.
- * Features: High-fidelity audio playback, embedded album art, seek scrubber,
- * waveform animation, playback speeds, and repeat loop modes.
+ * Formats audiophile tech specs matching modern music players:
+ * e.g. "MPEG-1 Layer 3 • 271 kbps • 48.0 kHz"
+ */
+private fun formatAudioTechSpecs(
+    mimeType: String?,
+    codec: String?,
+    bitrate: Int,
+    sampleRate: Int,
+    channelCount: Int,
+    fileExt: String
+): String {
+    val parts = mutableListOf<String>()
+
+    val codecName = when {
+        mimeType?.contains("mpeg", ignoreCase = true) == true || fileExt.equals("mp3", ignoreCase = true) -> "MPEG-1 Layer 3"
+        mimeType?.contains("flac", ignoreCase = true) == true || fileExt.equals("flac", ignoreCase = true) -> "FLAC"
+        mimeType?.contains("aac", ignoreCase = true) == true || fileExt.equals("m4a", ignoreCase = true) || fileExt.equals("aac", ignoreCase = true) -> "AAC"
+        mimeType?.contains("ogg", ignoreCase = true) == true || mimeType?.contains("vorbis", ignoreCase = true) == true || fileExt.equals("ogg", ignoreCase = true) -> "Ogg Vorbis"
+        mimeType?.contains("opus", ignoreCase = true) == true || fileExt.equals("opus", ignoreCase = true) -> "Opus"
+        mimeType?.contains("wav", ignoreCase = true) == true || fileExt.equals("wav", ignoreCase = true) -> "PCM WAV"
+        mimeType?.contains("alac", ignoreCase = true) == true -> "ALAC"
+        !codec.isNullOrBlank() -> codec.substringAfterLast('.').uppercase()
+        else -> fileExt.uppercase().ifBlank { "AUDIO" }
+    }
+    parts.add(codecName)
+
+    val kbps = if (bitrate > 1000) bitrate / 1000 else bitrate
+    if (kbps in 16..9999) {
+        parts.add("$kbps kbps")
+    }
+
+    if (sampleRate in 4000..384000) {
+        val kHz = sampleRate / 1000.0
+        val formatted = if (sampleRate % 1000 == 0) "${sampleRate / 1000}.0 kHz" else String.format(Locale.ROOT, "%.1f kHz", kHz)
+        parts.add(formatted)
+    }
+
+    if (channelCount > 0) {
+        val ch = when (channelCount) {
+            1 -> "Mono"
+            2 -> "Stereo"
+            6 -> "5.1"
+            8 -> "7.1"
+            else -> "$channelCount Ch"
+        }
+        if (parts.size <= 3) {
+            parts.add(ch)
+        }
+    }
+
+    return parts.joinToString(" • ")
+}
+
+/**
+ * Built-in Modern, Beautiful & Feature-Rich Audio Player.
+ * Features:
+ * - Fluid Album Art Carousel (HorizontalPager) with adjacent cards peeking
+ * - Precision Scrubber with capsule thumb & elapsed/remaining time
+ * - Rich Audiophile Tech Specs (Codec, Bitrate, Sample Rate, Channels)
+ * - Interactive Playback Controls with high-contrast squircle Play/Pause button
+ * - Repeat (Off / All / One) and Shuffle queue modes
+ * - Interactive Now Playing & Queue ModalBottomSheet
+ * - Sleep Timer with live countdown (15m, 30m, 45m, 60m, End of Song)
+ * - Media Volume Slider Dialog with quick mute
+ * - Playback Speed Selector (0.5x - 2.0x)
+ * - Audio Details & ID3 Tag Inspector
+ * - Favorite heart toggle
+ * - Responsive portrait & landscape layouts
  */
 @Composable
 fun AudioPlayerPreview(
     file: FileReference,
+    playlist: List<FileReference> = emptyList(),
+    onSelectMedia: ((FileReference) -> Unit)? = null,
     onOpenExternal: (() -> Unit)? = null,
     onPrevious: (() -> Unit)? = null,
     onNext: (() -> Unit)? = null,
@@ -275,20 +403,90 @@ fun AudioPlayerPreview(
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+
+    // Filter audio files for playlist queue
+    val effectivePlaylist = remember(playlist, file) {
+        val audioOnly = playlist.filter {
+            it.extension.lowercase() in setOf("mp3", "m4a", "flac", "wav", "ogg", "opus", "aac", "mid", "midi", "wma", "alac") ||
+                it.mimeType.startsWith("audio/")
+        }
+        if (audioOnly.isNotEmpty()) {
+            if (audioOnly.none { it.uriOrPath == file.uriOrPath }) {
+                listOf(file) + audioOnly
+            } else {
+                audioOnly
+            }
+        } else {
+            listOf(file)
+        }
+    }
+    val currentIdx = effectivePlaylist.indexOfFirst { it.uriOrPath == file.uriOrPath }.coerceAtLeast(0)
+    val canGoPrevious = currentIdx > 0 || hasPrevious
+    val canGoNext = currentIdx < effectivePlaylist.size - 1 || hasNext
+
+    // Album Art Carousel HorizontalPager State
+    val pagerState = rememberPagerState(
+        initialPage = currentIdx.coerceIn(0, (effectivePlaylist.size - 1).coerceAtLeast(0)),
+        pageCount = { effectivePlaylist.size.coerceAtLeast(1) }
+    )
+
+    // Sync pager scroll to current track
+    LaunchedEffect(currentIdx) {
+        if (pagerState.currentPage != currentIdx && currentIdx in 0 until pagerState.pageCount) {
+            pagerState.animateScrollToPage(currentIdx)
+        }
+    }
+
+    // Pager swipe to change track
+    LaunchedEffect(pagerState.currentPage) {
+        if (pagerState.currentPage != currentIdx && pagerState.currentPage in effectivePlaylist.indices) {
+            val target = effectivePlaylist[pagerState.currentPage]
+            onSelectMedia?.invoke(target)
+        }
+    }
 
     var trackInfo by remember(file.uriOrPath) { mutableStateOf<AudioTrackInfo?>(null) }
     var currentPositionMs by rememberSaveable(file.uriOrPath) { mutableLongStateOf(0L) }
     var durationMs by rememberSaveable(file.uriOrPath) { mutableLongStateOf(0L) }
     var wasPlaying by rememberSaveable(file.uriOrPath) { mutableStateOf(true) }
     var playbackSpeed by rememberSaveable(file.uriOrPath) { mutableFloatStateOf(1.0f) }
-    var isLooping by rememberSaveable(file.uriOrPath) { mutableStateOf(false) }
+
+    var audioRepeatMode by rememberSaveable(file.uriOrPath) { mutableStateOf(AudioRepeatMode.OFF) }
+    var isShuffleEnabled by rememberSaveable(file.uriOrPath) { mutableStateOf(false) }
+    var isFavorite by rememberSaveable(file.uriOrPath) { mutableStateOf(false) }
 
     var isPrepared by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
-    var showSpeedMenu by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isUserSeeking by remember { mutableStateOf(false) }
     var seekFraction by remember { mutableFloatStateOf(0f) }
+
+    // Live Technical Stream Info
+    var liveSampleRate by remember(file.uriOrPath) { mutableIntStateOf(0) }
+    var liveBitrate by remember(file.uriOrPath) { mutableIntStateOf(0) }
+    var liveChannelCount by remember(file.uriOrPath) { mutableIntStateOf(0) }
+    var liveMimeType by remember(file.uriOrPath) { mutableStateOf("") }
+
+    // Dialogs & Sheets
+    var showQueueSheet by remember { mutableStateOf(false) }
+    var showVolumeDialog by remember { mutableStateOf(false) }
+    var showSpeedDialog by remember { mutableStateOf(false) }
+    var showSleepTimerDialog by remember { mutableStateOf(false) }
+    var showAudioDetailsDialog by remember { mutableStateOf(false) }
+    var showMoreMenu by remember { mutableStateOf(false) }
+
+    // Sleep Timer (0 = off, -1 = end of current track, >0 = minutes)
+    var sleepTimerMinutes by rememberSaveable { mutableIntStateOf(0) }
+    var sleepTimerRemainingSeconds by rememberSaveable { mutableIntStateOf(0) }
+    var toastMessage by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(toastMessage) {
+        if (toastMessage != null) {
+            delay(2400)
+            toastMessage = null
+        }
+    }
 
     val exoPlayer = remember(file.uriOrPath) {
         ExoPlayer.Builder(context).build().apply {
@@ -300,9 +498,64 @@ fun AudioPlayerPreview(
             if (playbackSpeed != 1.0f) {
                 setPlaybackSpeed(playbackSpeed)
             }
-            repeatMode = if (isLooping) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+            repeatMode = when (audioRepeatMode) {
+                AudioRepeatMode.OFF -> Player.REPEAT_MODE_OFF
+                AudioRepeatMode.ALL -> Player.REPEAT_MODE_ALL
+                AudioRepeatMode.ONE -> Player.REPEAT_MODE_ONE
+            }
             prepare()
             playWhenReady = wasPlaying
+        }
+    }
+
+    // Skip Navigation Handlers
+    val handleSkipNext: () -> Unit = {
+        if (isShuffleEnabled && effectivePlaylist.size > 1) {
+            val candidates = effectivePlaylist.filter { it.uriOrPath != file.uriOrPath }
+            val nextRandom = candidates.randomOrNull()
+            if (nextRandom != null) {
+                onSelectMedia?.invoke(nextRandom)
+            }
+        } else if (currentIdx < effectivePlaylist.size - 1) {
+            if (onNext != null) onNext() else onSelectMedia?.invoke(effectivePlaylist[currentIdx + 1])
+        } else if (audioRepeatMode == AudioRepeatMode.ALL && effectivePlaylist.isNotEmpty()) {
+            onSelectMedia?.invoke(effectivePlaylist.first())
+        } else {
+            exoPlayer.seekTo(0L)
+            currentPositionMs = 0L
+            exoPlayer.play()
+        }
+    }
+
+    val handleSkipPrevious: () -> Unit = {
+        if (currentPositionMs > 3000L || (!canGoPrevious && onPrevious == null)) {
+            exoPlayer.seekTo(0L)
+            currentPositionMs = 0L
+            exoPlayer.play()
+        } else if (currentIdx > 0) {
+            if (onPrevious != null) onPrevious() else onSelectMedia?.invoke(effectivePlaylist[currentIdx - 1])
+        } else if (hasPrevious && onPrevious != null) {
+            onPrevious()
+        } else {
+            exoPlayer.seekTo(0L)
+            currentPositionMs = 0L
+            exoPlayer.play()
+        }
+    }
+
+    // Sleep Timer Countdown Loop
+    LaunchedEffect(sleepTimerMinutes, sleepTimerRemainingSeconds, isPlaying) {
+        if (sleepTimerMinutes > 0 && sleepTimerRemainingSeconds > 0 && isPlaying) {
+            while (isActive && sleepTimerRemainingSeconds > 0 && isPlaying) {
+                delay(1000)
+                sleepTimerRemainingSeconds -= 1
+                if (sleepTimerRemainingSeconds <= 0) {
+                    exoPlayer.pause()
+                    sleepTimerMinutes = 0
+                    toastMessage = "Sleep timer paused playback"
+                    break
+                }
+            }
         }
     }
 
@@ -315,24 +568,47 @@ fun AudioPlayerPreview(
                         isPrepared = true
                         val d = exoPlayer.duration
                         if (d > 0L) durationMs = d
-                        if (currentPositionMs > 0L && Math.abs(exoPlayer.currentPosition - currentPositionMs) > 1000L) {
+                        if (currentPositionMs > 0L && abs(exoPlayer.currentPosition - currentPositionMs) > 1000L) {
                             exoPlayer.seekTo(currentPositionMs)
                         }
                     }
                     Player.STATE_ENDED -> {
-                        if (isLooping) {
-                            exoPlayer.seekTo(0L)
-                            exoPlayer.play()
-                        } else if (hasNext && onNext != null) {
-                            onNext()
-                        } else {
+                        if (sleepTimerMinutes == -1) {
                             isPlaying = false
                             wasPlaying = false
-                            currentPositionMs = durationMs
+                            sleepTimerMinutes = 0
+                            toastMessage = "Sleep timer finished track"
+                        } else when (audioRepeatMode) {
+                            AudioRepeatMode.ONE -> {
+                                exoPlayer.seekTo(0L)
+                                exoPlayer.play()
+                            }
+                            AudioRepeatMode.ALL -> {
+                                handleSkipNext()
+                            }
+                            AudioRepeatMode.OFF -> {
+                                if (currentIdx < effectivePlaylist.size - 1 || isShuffleEnabled) {
+                                    handleSkipNext()
+                                } else {
+                                    isPlaying = false
+                                    wasPlaying = false
+                                    currentPositionMs = durationMs
+                                }
+                            }
                         }
                     }
                     Player.STATE_BUFFERING -> {}
                     Player.STATE_IDLE -> {}
+                }
+            }
+
+            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                val format = exoPlayer.audioFormat
+                if (format != null) {
+                    if (format.sampleRate > 0) liveSampleRate = format.sampleRate
+                    if (format.channelCount > 0) liveChannelCount = format.channelCount
+                    if (format.bitrate > 0) liveBitrate = format.bitrate
+                    if (!format.sampleMimeType.isNullOrBlank()) liveMimeType = format.sampleMimeType!!
                 }
             }
 
@@ -342,7 +618,7 @@ fun AudioPlayerPreview(
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                errorMessage = error.localizedMessage ?: "ExoPlayer error (${error.errorCode})"
+                errorMessage = error.localizedMessage ?: "Audio error (${error.errorCode})"
                 isPlaying = false
                 wasPlaying = false
             }
@@ -358,7 +634,7 @@ fun AudioPlayerPreview(
         }
     }
 
-    // Load track metadata off the main thread
+    // Load track metadata off main thread
     LaunchedEffect(file) {
         val info = withContext(Dispatchers.IO) {
             extractAudioTrackInfo(context, file)
@@ -369,7 +645,7 @@ fun AudioPlayerPreview(
         }
     }
 
-    // Polling position updater
+    // Position updater
     LaunchedEffect(isPlaying, isPrepared, isUserSeeking) {
         while (isActive && isPlaying && !isUserSeeking) {
             val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
@@ -380,299 +656,426 @@ fun AudioPlayerPreview(
         }
     }
 
-    // Common Player Controls Composable
-    val playerControls = @Composable {
-        // Seek Bar (Slider)
-        val progress = if (durationMs > 0L) {
-            if (isUserSeeking) seekFraction else (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-        } else 0f
-
-        Slider(
-            value = progress,
-            onValueChange = { frac ->
-                isUserSeeking = true
-                seekFraction = frac
-                currentPositionMs = (frac * durationMs).toLong()
-            },
-            onValueChangeFinished = {
-                val targetMs = (seekFraction * durationMs).toLong()
-                exoPlayer.seekTo(targetMs)
-                currentPositionMs = targetMs
-                isUserSeeking = false
-            },
-            enabled = isPrepared && durationMs > 0L,
-            colors = SliderDefaults.colors(
-                thumbColor = AudioPurple,
-                activeTrackColor = AudioPurple,
-                inactiveTrackColor = AudioPurple.copy(alpha = 0.24f)
-            ),
-            modifier = Modifier.fillMaxWidth().testTag("audio_seek_slider")
+    // Tech specs text
+    val techSpecsText = remember(trackInfo, liveBitrate, liveSampleRate, liveChannelCount, liveMimeType, file) {
+        formatAudioTechSpecs(
+            mimeType = liveMimeType.ifBlank { trackInfo?.mimeType ?: file.mimeType },
+            codec = liveMimeType,
+            bitrate = if (liveBitrate > 0) liveBitrate else (trackInfo?.bitrateKbps ?: 0) * 1000,
+            sampleRate = if (liveSampleRate > 0) liveSampleRate else trackInfo?.sampleRateHz ?: 0,
+            channelCount = if (liveChannelCount > 0) liveChannelCount else trackInfo?.channelCount ?: 0,
+            fileExt = file.extension
         )
+    }
 
-        // Time labels & Speed Selector
+    // Next Track label text
+    val nextTrackTitle = when {
+        isShuffleEnabled && effectivePlaylist.size > 1 -> "Next • Shuffle Queue"
+        currentIdx + 1 in effectivePlaylist.indices -> "Next • " + effectivePlaylist[currentIdx + 1].displayName.substringBeforeLast('.')
+        audioRepeatMode == AudioRepeatMode.ALL && effectivePlaylist.isNotEmpty() -> "Next • " + effectivePlaylist.first().displayName.substringBeforeLast('.')
+        else -> null
+    }
+
+    // Seek Bar Progress
+    val progress = if (durationMs > 0L) {
+        if (isUserSeeking) seekFraction else (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    } else 0f
+
+    // Top Navigation Bar
+    val playerTopBar = @Composable {
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            if (onDismiss != null) {
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Collapse",
+                        tint = Color.White
+                    )
+                }
+            } else {
+                Spacer(modifier = Modifier.width(48.dp))
+            }
+
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = "PLAYING FROM",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF8E8E93),
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 1.2.sp
+                )
+                Text(
+                    text = file.uriOrPath.substringBeforeLast('/').substringAfterLast('/').ifBlank { "Music" },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.LightGray,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (sleepTimerMinutes != 0) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = AudioPurple.copy(alpha = 0.25f),
+                        modifier = Modifier.padding(end = 4.dp)
+                    ) {
+                        Text(
+                            text = if (sleepTimerMinutes == -1) "⏱ Track" else "⏱ ${sleepTimerRemainingSeconds / 60}m",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = AudioPurple,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+                if (onOpenExternal != null) {
+                    IconButton(onClick = onOpenExternal) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                            contentDescription = "Open in External Player",
+                            tint = Color.White
+                        )
+                    }
+                } else {
+                    Spacer(modifier = Modifier.width(48.dp))
+                }
+            }
+        }
+    }
+
+    // Scrubber Row with Times & Capsule Thumb
+    val scrubberRow = @Composable {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = formatMediaDuration(currentPositionMs),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                color = Color(0xFFB0B0B0),
+                modifier = Modifier.width(38.dp)
             )
 
-            // Speed dropdown selector
-            Box {
-                TextButton(
-                    onClick = { showSpeedMenu = true },
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                ) {
-                    Icon(Icons.Filled.Speed, contentDescription = null, modifier = Modifier.size(14.dp), tint = AudioPurple)
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(text = "${playbackSpeed}x", style = MaterialTheme.typography.labelSmall, color = AudioPurple)
-                }
-
-                DropdownMenu(
-                    expanded = showSpeedMenu,
-                    onDismissRequest = { showSpeedMenu = false }
-                ) {
-                    listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { speed ->
-                        DropdownMenuItem(
-                            text = { Text("${speed}x") },
-                            onClick = {
-                                playbackSpeed = speed
-                                exoPlayer.setPlaybackSpeed(speed)
-                                showSpeedMenu = false
-                            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 4.dp)
+                    .testTag("audio_seek_slider")
+            ) {
+                Slider(
+                    value = progress,
+                    onValueChange = { frac ->
+                        isUserSeeking = true
+                        seekFraction = frac
+                        currentPositionMs = (frac * durationMs).toLong()
+                    },
+                    onValueChangeFinished = {
+                        val targetMs = (seekFraction * durationMs).toLong()
+                        exoPlayer.seekTo(targetMs)
+                        currentPositionMs = targetMs
+                        isUserSeeking = false
+                    },
+                    enabled = isPrepared && durationMs > 0L,
+                    thumb = {
+                        Box(
+                            modifier = Modifier
+                                .width(4.dp)
+                                .height(16.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(Color.White)
                         )
-                    }
-                }
+                    },
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color.White,
+                        activeTrackColor = Color.White,
+                        inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
 
             Text(
                 text = formatMediaDuration(durationMs),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                color = Color(0xFFB0B0B0),
+                textAlign = TextAlign.End,
+                modifier = Modifier.width(38.dp)
             )
         }
+    }
 
-        Spacer(modifier = Modifier.height(16.dp))
+    // Metadata (Title, Artist/Album, Tech Specs)
+    val metadataSection = @Composable {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp),
+            horizontalAlignment = Alignment.Start
+        ) {
+            Text(
+                text = trackInfo?.title ?: file.displayName.substringBeforeLast('.'),
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 22.sp
+                ),
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("audio_track_title")
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            val artistAlbum = listOfNotNull(
+                trackInfo?.artist?.takeIf { it.isNotBlank() && it != "Unknown Artist" },
+                trackInfo?.album?.takeIf { it.isNotBlank() }
+            ).joinToString(" • ").ifBlank {
+                trackInfo?.artist?.takeIf { it.isNotBlank() } ?: "Unknown Artist"
+            }
+            Text(
+                text = artistAlbum,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFF9E9E9E),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (techSpecsText.isNotBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = techSpecsText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF757575),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
 
-        // Controls Row
+    // Main Playback Controls Row (Repeat, Previous, Play/Pause squircle, Next, Shuffle)
+    val controlsRow = @Composable {
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Loop toggle
+            // Repeat mode toggle
             IconButton(
                 onClick = {
-                    val newLoop = !isLooping
-                    isLooping = newLoop
-                    exoPlayer.repeatMode = if (newLoop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-                },
-                enabled = isPrepared
+                    audioRepeatMode = when (audioRepeatMode) {
+                        AudioRepeatMode.OFF -> AudioRepeatMode.ALL
+                        AudioRepeatMode.ALL -> AudioRepeatMode.ONE
+                        AudioRepeatMode.ONE -> AudioRepeatMode.OFF
+                    }
+                    exoPlayer.repeatMode = when (audioRepeatMode) {
+                        AudioRepeatMode.OFF -> Player.REPEAT_MODE_OFF
+                        AudioRepeatMode.ALL -> Player.REPEAT_MODE_ALL
+                        AudioRepeatMode.ONE -> Player.REPEAT_MODE_ONE
+                    }
+                    toastMessage = when (audioRepeatMode) {
+                        AudioRepeatMode.ALL -> "Repeat All"
+                        AudioRepeatMode.ONE -> "Repeat Current"
+                        AudioRepeatMode.OFF -> "Repeat Off"
+                    }
+                }
             ) {
                 Icon(
-                    imageVector = if (isLooping) Icons.Filled.RepeatOn else Icons.Filled.Repeat,
-                    contentDescription = "Loop Audio",
-                    tint = if (isLooping) AudioPurple else MaterialTheme.colorScheme.onSurfaceVariant
+                    imageVector = when (audioRepeatMode) {
+                        AudioRepeatMode.ONE -> Icons.Filled.RepeatOne
+                        AudioRepeatMode.ALL -> Icons.Filled.RepeatOn
+                        AudioRepeatMode.OFF -> Icons.Filled.Repeat
+                    },
+                    contentDescription = "Repeat Mode",
+                    tint = if (audioRepeatMode != AudioRepeatMode.OFF) AudioPurple else Color(0xFF8E8E93),
+                    modifier = Modifier.size(26.dp)
                 )
             }
 
-            // Previous Track Button
+            // Previous Button
             IconButton(
-                onClick = {
-                    if (currentPositionMs > 3000L || !hasPrevious || onPrevious == null) {
-                        exoPlayer.seekTo(0L)
-                        currentPositionMs = 0L
-                        exoPlayer.play()
-                    } else {
-                        onPrevious()
-                    }
-                },
+                onClick = handleSkipPrevious,
                 enabled = isPrepared
             ) {
                 Icon(
                     imageVector = Icons.Filled.SkipPrevious,
                     contentDescription = "Previous Track",
-                    modifier = Modifier.size(32.dp),
-                    tint = if (hasPrevious || currentPositionMs > 3000L) AudioPurple else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                    tint = if (canGoPrevious || currentPositionMs > 3000L) Color.White else Color(0xFF4A4A4F),
+                    modifier = Modifier.size(34.dp)
                 )
             }
 
-            // Rewind 10s
-            IconButton(
-                onClick = {
-                    val newPos = (currentPositionMs - 10000L).coerceAtLeast(0L)
-                    exoPlayer.seekTo(newPos)
-                    currentPositionMs = newPos
-                },
-                enabled = isPrepared
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Replay10,
-                    contentDescription = "Rewind 10 seconds",
-                    modifier = Modifier.size(30.dp)
-                )
-            }
-
-            // Play / Pause Circle
-            FilledIconButton(
-                onClick = {
-                    if (isPlaying) {
-                        exoPlayer.pause()
-                    } else {
-                        if (currentPositionMs >= durationMs && durationMs > 0L) {
-                            exoPlayer.seekTo(0L)
-                            currentPositionMs = 0L
-                        }
-                        exoPlayer.play()
-                    }
-                },
+            // Large Squircle Play / Pause Button
+            Surface(
+                shape = RoundedCornerShape(26.dp),
+                color = Color(0xFFE2E8F0),
                 modifier = Modifier
-                    .size(60.dp)
-                    .testTag("audio_play_pause_button"),
-                shape = CircleShape,
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = AudioPurple,
-                    contentColor = Color.White
-                ),
-                enabled = isPrepared
+                    .size(76.dp)
+                    .clickable {
+                        if (isPlaying) {
+                            exoPlayer.pause()
+                        } else {
+                            if (currentPositionMs >= durationMs && durationMs > 0L) {
+                                exoPlayer.seekTo(0L)
+                                currentPositionMs = 0L
+                            }
+                            exoPlayer.play()
+                        }
+                    }
+                    .testTag("audio_play_pause_button")
             ) {
-                if (!isPrepared) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(28.dp),
-                        color = Color.White,
-                        strokeWidth = 3.dp
-                    )
-                } else {
-                    Icon(
-                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                        contentDescription = if (isPlaying) "Pause" else "Play",
-                        modifier = Modifier.size(34.dp)
-                    )
+                Box(contentAlignment = Alignment.Center) {
+                    if (!isPrepared) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(30.dp),
+                            color = Color(0xFF0F172A),
+                            strokeWidth = 3.dp
+                        )
+                    } else {
+                        Icon(
+                            imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                            contentDescription = if (isPlaying) "Pause" else "Play",
+                            tint = Color(0xFF0F172A),
+                            modifier = Modifier.size(38.dp)
+                        )
+                    }
                 }
             }
 
-            // Forward 10s
+            // Next Button
             IconButton(
-                onClick = {
-                    val newPos = (currentPositionMs + 10000L).coerceAtMost(durationMs)
-                    exoPlayer.seekTo(newPos)
-                    currentPositionMs = newPos
-                },
-                enabled = isPrepared
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Forward10,
-                    contentDescription = "Forward 10 seconds",
-                    modifier = Modifier.size(30.dp)
-                )
-            }
-
-            // Next Track Button
-            IconButton(
-                onClick = {
-                    if (hasNext && onNext != null) {
-                        onNext()
-                    } else {
-                        exoPlayer.seekTo(0L)
-                        currentPositionMs = 0L
-                        exoPlayer.play()
-                    }
-                },
+                onClick = handleSkipNext,
                 enabled = isPrepared
             ) {
                 Icon(
                     imageVector = Icons.Filled.SkipNext,
                     contentDescription = "Next Track",
-                    modifier = Modifier.size(32.dp),
-                    tint = if (hasNext) AudioPurple else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                    tint = if (canGoNext) Color.White else Color(0xFF4A4A4F),
+                    modifier = Modifier.size(34.dp)
                 )
             }
 
-            // Replay from start
+            // Shuffle Toggle
             IconButton(
                 onClick = {
-                    exoPlayer.seekTo(0L)
-                    currentPositionMs = 0L
-                    exoPlayer.play()
-                },
-                enabled = isPrepared
+                    isShuffleEnabled = !isShuffleEnabled
+                    toastMessage = if (isShuffleEnabled) "Shuffle On" else "Shuffle Off"
+                }
             ) {
                 Icon(
-                    imageVector = Icons.Filled.Replay,
-                    contentDescription = "Replay from Start"
+                    imageVector = if (isShuffleEnabled) Icons.Filled.ShuffleOn else Icons.Filled.Shuffle,
+                    contentDescription = "Shuffle",
+                    tint = if (isShuffleEnabled) AudioPurple else Color(0xFF8E8E93),
+                    modifier = Modifier.size(26.dp)
                 )
-            }
-        }
-
-        if (onOpenExternal != null) {
-            Spacer(modifier = Modifier.height(16.dp))
-            TextButton(onClick = onOpenExternal) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Open in External Player")
             }
         }
     }
 
-    // Artwork Card Composable
-    val artwork = trackInfo?.artwork
-    val artworkCard = @Composable { sizeDp: Int ->
-        Card(
+    // Bottom Action Bar (Volume, Favorite, Queue, More)
+    val bottomActionBar = @Composable {
+        Row(
             modifier = Modifier
-                .size(sizeDp.dp)
-                .testTag("audio_album_card"),
-            shape = RoundedCornerShape(24.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-            )
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
+            IconButton(onClick = { showVolumeDialog = true }) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                    contentDescription = "Volume",
+                    tint = Color(0xFFB0B0B0),
+                    modifier = Modifier.size(26.dp)
+                )
+            }
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                if (artwork != null) {
-                    Image(
-                        bitmap = artwork,
-                        contentDescription = "Album Art",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
+                IconButton(onClick = { isFavorite = !isFavorite }) {
+                    Icon(
+                        imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                        contentDescription = "Favorite",
+                        tint = if (isFavorite) Color(0xFFFF5252) else Color(0xFFB0B0B0),
+                        modifier = Modifier.size(26.dp)
                     )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    listOf(AudioPurple.copy(alpha = 0.4f), MaterialTheme.colorScheme.surfaceContainerHighest)
-                                )
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Audiotrack,
-                            contentDescription = null,
-                            tint = AudioPurple,
-                            modifier = Modifier.size((sizeDp * 0.4f).dp)
-                        )
-                    }
                 }
 
-                // Waveform bars overlay when playing
-                if (isPlaying) {
-                    AudioWaveformIndicator(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 12.dp)
+                IconButton(onClick = { showQueueSheet = true }) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                        contentDescription = "Queue",
+                        tint = Color(0xFFB0B0B0),
+                        modifier = Modifier.size(26.dp)
                     )
+                }
+
+                Box {
+                    IconButton(onClick = { showMoreMenu = true }) {
+                        Icon(
+                            imageVector = Icons.Filled.MoreVert,
+                            contentDescription = "More Options",
+                            tint = Color(0xFFB0B0B0),
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = showMoreMenu,
+                        onDismissRequest = { showMoreMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Playback Speed (${playbackSpeed}x)") },
+                            leadingIcon = { Icon(Icons.Filled.Speed, contentDescription = null) },
+                            onClick = {
+                                showMoreMenu = false
+                                showSpeedDialog = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (sleepTimerMinutes > 0) "Sleep Timer (${sleepTimerRemainingSeconds / 60}m)"
+                                    else if (sleepTimerMinutes == -1) "Sleep Timer (End of song)"
+                                    else "Sleep Timer"
+                                )
+                            },
+                            leadingIcon = { Icon(Icons.Filled.Timer, contentDescription = null) },
+                            onClick = {
+                                showMoreMenu = false
+                                showSleepTimerDialog = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Audio Details & Tags") },
+                            leadingIcon = { Icon(Icons.Filled.Info, contentDescription = null) },
+                            onClick = {
+                                showMoreMenu = false
+                                showAudioDetailsDialog = true
+                            }
+                        )
+                        if (onOpenExternal != null) {
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("Open in External Player") },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null) },
+                                onClick = {
+                                    showMoreMenu = false
+                                    onOpenExternal()
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -682,6 +1085,7 @@ fun AudioPlayerPreview(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .background(Color(0xFF090A0C))
                 .padding(24.dp)
                 .testTag("audio_player_preview"),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -690,7 +1094,7 @@ fun AudioPlayerPreview(
             if (onDismiss != null) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
                     IconButton(onClick = onDismiss) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                     }
                 }
             }
@@ -726,124 +1130,548 @@ fun AudioPlayerPreview(
         return
     }
 
-    if (isLandscape) {
-        // Landscape Mode: Side-by-side artwork and controls
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 24.dp, vertical = 12.dp)
-                .testTag("audio_player_preview"),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.padding(end = 24.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF090A0C))
+            .testTag("audio_player_preview")
+    ) {
+        if (isLandscape) {
+            // Landscape Mode: Side-by-side
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                if (onDismiss != null) {
-                    IconButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.align(Alignment.Start)
+                // Left: Album Art Card
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .weight(0.45f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Card(
+                        modifier = Modifier
+                            .size(240.dp)
+                            .testTag("audio_album_card"),
+                        shape = RoundedCornerShape(24.dp),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF16171B))
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            val art = trackInfo?.artwork
+                            if (art != null) {
+                                Image(
+                                    bitmap = art,
+                                    contentDescription = "Album Art",
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(
+                                            Brush.verticalGradient(
+                                                listOf(AudioPurple.copy(alpha = 0.5f), Color(0xFF16171B))
+                                            )
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Audiotrack,
+                                        contentDescription = null,
+                                        tint = Color.White.copy(alpha = 0.6f),
+                                        modifier = Modifier.size(72.dp)
+                                    )
+                                }
+                            }
+                            if (isPlaying) {
+                                AudioWaveformIndicator(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .padding(bottom = 12.dp)
+                                )
+                            }
+                        }
                     }
                 }
-                artworkCard(180)
-            }
 
+                // Right: Controls & Details
+                Column(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .weight(0.55f)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    playerTopBar()
+                    metadataSection()
+                    scrubberRow()
+                    controlsRow()
+                    bottomActionBar()
+                }
+            }
+        } else {
+            // Portrait Mode: Exact replica of the screenshot layout
             Column(
                 modifier = Modifier
-                    .weight(1f)
+                    .fillMaxSize()
                     .verticalScroll(rememberScrollState()),
-                horizontalAlignment = Alignment.CenterHorizontally
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    text = trackInfo?.title ?: file.displayName,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().testTag("audio_track_title")
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = listOfNotNull(
-                        trackInfo?.artist.takeIf { !it.isNullOrBlank() && it != "Unknown Artist" },
-                        trackInfo?.album.takeIf { !it.isNullOrBlank() },
-                        "ExoPlayer • ${file.extension.uppercase()} • ${file.formattedSize}"
-                    ).joinToString(" • ").ifBlank { file.formattedSize },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.Center
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    playerTopBar()
 
-                Spacer(modifier = Modifier.height(12.dp))
-                playerControls()
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Album Art Carousel (HorizontalPager with peeking edges)
+                    HorizontalPager(
+                        state = pagerState,
+                        contentPadding = PaddingValues(horizontal = 48.dp),
+                        pageSpacing = 16.dp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(290.dp)
+                    ) { page ->
+                        val pageFile = effectivePlaylist[page]
+                        val isCurrent = page == currentIdx
+                        val pageArtwork by produceState<ImageBitmap?>(
+                            initialValue = if (isCurrent) trackInfo?.artwork else null,
+                            key1 = pageFile.uriOrPath
+                        ) {
+                            value = withContext(Dispatchers.IO) {
+                                extractAudioTrackInfo(context, pageFile).artwork
+                            }
+                        }
+
+                        Card(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .aspectRatio(1f)
+                                .testTag(if (isCurrent) "audio_album_card" else "audio_album_card_$page"),
+                            shape = RoundedCornerShape(24.dp),
+                            elevation = CardDefaults.cardElevation(defaultElevation = if (isCurrent) 12.dp else 4.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF16171B))
+                        ) {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                if (pageArtwork != null) {
+                                    Image(
+                                        bitmap = pageArtwork!!,
+                                        contentDescription = "Album Art",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(
+                                                Brush.verticalGradient(
+                                                    listOf(AudioPurple.copy(alpha = 0.5f), Color(0xFF16171B))
+                                                )
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Audiotrack,
+                                            contentDescription = null,
+                                            tint = Color.White.copy(alpha = 0.6f),
+                                            modifier = Modifier.size(72.dp)
+                                        )
+                                    }
+                                }
+                                if (isCurrent && isPlaying) {
+                                    AudioWaveformIndicator(
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .padding(bottom = 12.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    scrubberRow()
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    metadataSection()
+                }
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    controlsRow()
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Next Song Preview Indicator
+                    if (nextTrackTitle != null) {
+                        Text(
+                            text = nextTrackTitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF8E8E93),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .clickable { handleSkipNext() }
+                                .padding(horizontal = 24.dp, vertical = 4.dp)
+                        )
+                    } else {
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    bottomActionBar()
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
             }
         }
-    } else {
-        // Portrait Mode: Vertical layout
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 24.dp, vertical = 16.dp)
-                .verticalScroll(rememberScrollState())
-                .testTag("audio_player_preview"),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            if (onDismiss != null) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Start
+
+        // Toast HUD Overlay
+        if (toastMessage != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = 90.dp),
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color.Black.copy(alpha = 0.85f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
                 ) {
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = MaterialTheme.colorScheme.onSurface
+                    Text(
+                        text = toastMessage!!,
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                    )
+                }
+            }
+        }
+    }
+
+    // --- ModalBottomSheet: Interactive Queue ---
+    if (showQueueSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showQueueSheet = false },
+            containerColor = Color(0xFF16171B),
+            dragHandle = {
+                Surface(
+                    modifier = Modifier
+                        .padding(vertical = 12.dp)
+                        .width(36.dp)
+                        .height(4.dp),
+                    shape = RoundedCornerShape(2.dp),
+                    color = Color.White.copy(alpha = 0.3f)
+                ) {}
+            }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 32.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "Now Playing & Queue",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
                         )
+                        Text(
+                            text = "${effectivePlaylist.size} tracks",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.Gray
+                        )
+                    }
+                    IconButton(onClick = { showQueueSheet = false }) {
+                        Icon(Icons.Filled.Close, contentDescription = "Close", tint = Color.LightGray)
+                    }
+                }
+
+                HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+
+                LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
+                    itemsIndexed(effectivePlaylist, key = { _, it -> it.uriOrPath }) { index, item ->
+                        val isCurrent = item.uriOrPath == file.uriOrPath
+                        Surface(
+                            color = if (isCurrent) AudioPurple.copy(alpha = 0.2f) else Color.Transparent,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onSelectMedia?.invoke(item)
+                                    showQueueSheet = false
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (isCurrent && isPlaying) {
+                                    AudioWaveformIndicator(modifier = Modifier.padding(end = 12.dp))
+                                } else {
+                                    Text(
+                                        text = "${index + 1}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (isCurrent) AudioPurple else Color.Gray,
+                                        modifier = Modifier.width(28.dp)
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = item.displayName.substringBeforeLast('.'),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isCurrent) AudioPurple else Color.White,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = item.formattedSize,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.Gray
+                                    )
+                                }
+                                if (isCurrent) {
+                                    Icon(
+                                        Icons.Filled.Check,
+                                        contentDescription = null,
+                                        tint = AudioPurple,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
-
-            artworkCard(240)
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Title & Artist
-            Text(
-                text = trackInfo?.title ?: file.displayName,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().testTag("audio_track_title")
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = listOfNotNull(
-                    trackInfo?.artist.takeIf { !it.isNullOrBlank() && it != "Unknown Artist" },
-                    trackInfo?.album.takeIf { !it.isNullOrBlank() },
-                    "ExoPlayer • ${file.extension.uppercase()} • ${file.formattedSize}"
-                ).joinToString(" • ").ifBlank { file.formattedSize },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(20.dp))
-            playerControls()
         }
+    }
+
+    // --- Volume Control Dialog ---
+    if (showVolumeDialog) {
+        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        var currentVol by remember { mutableIntStateOf(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)) }
+
+        AlertDialog(
+            onDismissRequest = { showVolumeDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = if (currentVol == 0) Icons.AutoMirrored.Filled.VolumeMute else Icons.AutoMirrored.Filled.VolumeUp,
+                        contentDescription = null,
+                        tint = AudioPurple,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                    Text("Media Volume", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    val volPercent = if (maxVol > 0) ((currentVol.toFloat() / maxVol) * 100).toInt() else 0
+                    Text(
+                        text = "$volPercent%",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Slider(
+                        value = currentVol.toFloat(),
+                        onValueChange = {
+                            val v = it.toInt()
+                            currentVol = v
+                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0)
+                        },
+                        valueRange = 0f..maxVol.toFloat(),
+                        colors = SliderDefaults.colors(
+                            thumbColor = AudioPurple,
+                            activeTrackColor = AudioPurple,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showVolumeDialog = false }) {
+                    Text("Done", color = AudioPurple)
+                }
+            },
+            containerColor = Color(0xFF222228)
+        )
+    }
+
+    // --- Sleep Timer Dialog ---
+    if (showSleepTimerDialog) {
+        AlertDialog(
+            onDismissRequest = { showSleepTimerDialog = false },
+            title = { Text("Sleep Timer", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        0 to "Turn Off",
+                        15 to "15 minutes",
+                        30 to "30 minutes",
+                        45 to "45 minutes",
+                        60 to "60 minutes",
+                        -1 to "End of current track"
+                    ).forEach { (minutes, label) ->
+                        val isSelected = sleepTimerMinutes == minutes
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isSelected) AudioPurple.copy(alpha = 0.2f) else Color.Transparent,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    sleepTimerMinutes = minutes
+                                    if (minutes > 0) {
+                                        sleepTimerRemainingSeconds = minutes * 60
+                                        toastMessage = "Sleep timer set for $minutes min"
+                                    } else if (minutes == -1) {
+                                        toastMessage = "Sleep timer set for end of song"
+                                    } else {
+                                        sleepTimerRemainingSeconds = 0
+                                        toastMessage = "Sleep timer turned off"
+                                    }
+                                    showSleepTimerDialog = false
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(label, color = if (isSelected) AudioPurple else Color.White)
+                                if (isSelected) {
+                                    Icon(Icons.Filled.Check, contentDescription = null, tint = AudioPurple, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSleepTimerDialog = false }) {
+                    Text("Cancel", color = AudioPurple)
+                }
+            },
+            containerColor = Color(0xFF222228)
+        )
+    }
+
+    // --- Playback Speed Dialog ---
+    if (showSpeedDialog) {
+        AlertDialog(
+            onDismissRequest = { showSpeedDialog = false },
+            title = { Text("Playback Speed", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f).forEach { speed ->
+                        val isSelected = playbackSpeed == speed
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isSelected) AudioPurple.copy(alpha = 0.2f) else Color.Transparent,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    playbackSpeed = speed
+                                    exoPlayer.setPlaybackSpeed(speed)
+                                    showSpeedDialog = false
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("${speed}x", color = if (isSelected) AudioPurple else Color.White)
+                                if (isSelected) {
+                                    Icon(Icons.Filled.Check, contentDescription = null, tint = AudioPurple, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSpeedDialog = false }) {
+                    Text("Cancel", color = AudioPurple)
+                }
+            },
+            containerColor = Color(0xFF222228)
+        )
+    }
+
+    // --- Audio Details & ID3 Tag Inspector Dialog ---
+    if (showAudioDetailsDialog) {
+        AlertDialog(
+            onDismissRequest = { showAudioDetailsDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Info, contentDescription = null, tint = AudioPurple, modifier = Modifier.padding(end = 8.dp))
+                    Text("Track Information", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val details = listOfNotNull(
+                        "Title" to (trackInfo?.title ?: file.displayName),
+                        "Artist" to (trackInfo?.artist ?: "Unknown"),
+                        trackInfo?.album?.takeIf { it.isNotBlank() }?.let { "Album" to it },
+                        trackInfo?.genre?.takeIf { it.isNotBlank() }?.let { "Genre" to it },
+                        trackInfo?.year?.takeIf { it.isNotBlank() }?.let { "Year" to it },
+                        trackInfo?.composer?.takeIf { it.isNotBlank() }?.let { "Composer" to it },
+                        "Technical Specs" to (techSpecsText.ifBlank { file.extension.uppercase() }),
+                        "Duration" to formatMediaDuration(durationMs),
+                        "File Size" to file.formattedSize,
+                        "File Path" to file.uriOrPath
+                    )
+                    details.forEach { (label, value) ->
+                        Column {
+                            Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                            Text(value, style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAudioDetailsDialog = false }) {
+                    Text("Close", color = AudioPurple)
+                }
+            },
+            containerColor = Color(0xFF222228)
+        )
     }
 }
 

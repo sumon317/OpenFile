@@ -1117,6 +1117,8 @@ fun FilePreviewScreen(
                     isAudio -> {
                         AudioPlayerPreview(
                             file = file,
+                            playlist = state.siblingMedia,
+                            onSelectMedia = onSelectMedia,
                             onOpenExternal = { onOpenExternal(file) },
                             onPrevious = onPreviousMedia,
                             onNext = onNextMedia,

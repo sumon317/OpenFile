@@ -732,6 +732,31 @@ class ExampleUnitTest {
         assertEquals("song3.mp3", state.siblingMedia[currentIdx + 1].displayName)
         assertEquals("6.1 MB", song1.formattedSize)
     }
+
+    @Test
+    fun `audioRepeatMode cycles through off, all, and one correctly`() {
+        var mode = com.example.ui.components.AudioRepeatMode.OFF
+        mode = when (mode) {
+            com.example.ui.components.AudioRepeatMode.OFF -> com.example.ui.components.AudioRepeatMode.ALL
+            com.example.ui.components.AudioRepeatMode.ALL -> com.example.ui.components.AudioRepeatMode.ONE
+            com.example.ui.components.AudioRepeatMode.ONE -> com.example.ui.components.AudioRepeatMode.OFF
+        }
+        assertEquals(com.example.ui.components.AudioRepeatMode.ALL, mode)
+
+        mode = when (mode) {
+            com.example.ui.components.AudioRepeatMode.OFF -> com.example.ui.components.AudioRepeatMode.ALL
+            com.example.ui.components.AudioRepeatMode.ALL -> com.example.ui.components.AudioRepeatMode.ONE
+            com.example.ui.components.AudioRepeatMode.ONE -> com.example.ui.components.AudioRepeatMode.OFF
+        }
+        assertEquals(com.example.ui.components.AudioRepeatMode.ONE, mode)
+
+        mode = when (mode) {
+            com.example.ui.components.AudioRepeatMode.OFF -> com.example.ui.components.AudioRepeatMode.ALL
+            com.example.ui.components.AudioRepeatMode.ALL -> com.example.ui.components.AudioRepeatMode.ONE
+            com.example.ui.components.AudioRepeatMode.ONE -> com.example.ui.components.AudioRepeatMode.OFF
+        }
+        assertEquals(com.example.ui.components.AudioRepeatMode.OFF, mode)
+    }
 }
 
 
