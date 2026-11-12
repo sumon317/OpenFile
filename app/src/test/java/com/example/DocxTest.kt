@@ -253,6 +253,36 @@ class DocxTest {
     }
 
     // ---------------------------------------------------------------------------------------------
+    // Horizontal Pagination Tests
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    fun testPaginateDocxBlocksWithPageBreaks() {
+        val blocks = listOf(
+            DocxBlock.Paragraph(listOf(DocxRun("Title")), headingLevel = 1),
+            DocxBlock.Paragraph(listOf(DocxRun("Introduction text."))),
+            DocxBlock.PageBreak,
+            DocxBlock.Paragraph(listOf(DocxRun("Page 2 Content")))
+        )
+
+        val pages = com.example.ui.components.paginateDocxBlocks(blocks)
+        assertEquals(2, pages.size)
+        assertEquals(0, pages[0].pageIndex)
+        assertEquals(2, pages[0].blocks.size)
+        assertEquals(1, pages[1].pageIndex)
+        assertEquals(1, pages[1].blocks.size)
+        assertEquals("Page 2 Content", (pages[1].blocks[0].second as DocxBlock.Paragraph).fullText)
+    }
+
+    @Test
+    fun testPaginateDocxBlocksEmptyFallback() {
+        val pages = com.example.ui.components.paginateDocxBlocks(emptyList())
+        assertEquals(1, pages.size)
+        assertEquals(0, pages[0].pageIndex)
+        assertTrue(pages[0].blocks.isEmpty())
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Helper: ZIP Writer
     // ---------------------------------------------------------------------------------------------
 

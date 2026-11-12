@@ -1161,7 +1161,7 @@ fun FilePreviewScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(if (isImage || isVideo || isAudio || ext in setOf("cbz", "cbr", "pdf")) 0.dp else 12.dp)
+                    .padding(if (isImage || isVideo || isAudio || ext in setOf("cbz", "cbr", "pdf", "docx", "doc", "odt", "odf")) 0.dp else 12.dp)
             ) {
                 when {
                     isImage -> {
