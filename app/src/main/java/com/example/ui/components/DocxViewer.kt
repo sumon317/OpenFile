@@ -208,7 +208,8 @@ fun DocxViewer(
     var searchQuery by remember { mutableStateOf("") }
     var searchMatches by remember { mutableStateOf<List<Int>>(emptyList()) } // Block indices
     var currentMatchIndex by remember { mutableIntStateOf(0) }
-    var showJumpDialog by remember { mutableStateOf(false) }
+
+    val listState = rememberLazyListState()
 
     // Load Document
     val docResult by produceState<Result<DocxDocumentModel>?>(initialValue = null, key1 = file.uriOrPath) {
@@ -313,11 +314,6 @@ fun DocxViewer(
 
     val doc = result.getOrThrow()
 
-    val pages = remember(doc) {
-        paginateDocxBlocks(doc.blocks)
-    }
-    val pagerState = rememberPagerState(initialPage = 0, pageCount = { pages.size })
-
     // Update search matches when query or document changes
     LaunchedEffect(searchQuery, doc) {
         if (searchQuery.isBlank()) {
@@ -339,11 +335,7 @@ fun DocxViewer(
             searchMatches = matches
             currentMatchIndex = 0
             if (matches.isNotEmpty()) {
-                val matchBlockIdx = matches[0]
-                val pageIdx = pages.indexOfFirst { p -> p.blocks.any { it.first == matchBlockIdx } }
-                if (pageIdx != -1) {
-                    pagerState.animateScrollToPage(pageIdx)
-                }
+                listState.animateScrollToItem(matches[0])
             }
         }
     }
@@ -380,7 +372,7 @@ fun DocxViewer(
                             doc.plainTextSummary.split(Regex("\\s+")).count { it.isNotBlank() }
                         }
                         Text(
-                            text = "$wordCount words • Page ${pagerState.currentPage + 1} of ${pages.size} • ${(zoomScale * 100).toInt()}% scale",
+                            text = "$wordCount words • ${(zoomScale * 100).toInt()}% scale",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -496,12 +488,8 @@ fun DocxViewer(
                             onClick = {
                                 if (searchMatches.isNotEmpty()) {
                                     currentMatchIndex = if (currentMatchIndex > 0) currentMatchIndex - 1 else searchMatches.size - 1
-                                    val matchBlockIdx = searchMatches[currentMatchIndex]
-                                    val pageIdx = pages.indexOfFirst { p -> p.blocks.any { it.first == matchBlockIdx } }
-                                    if (pageIdx != -1) {
-                                        coroutineScope.launch {
-                                            pagerState.animateScrollToPage(pageIdx)
-                                        }
+                                    coroutineScope.launch {
+                                        listState.animateScrollToItem(searchMatches[currentMatchIndex])
                                     }
                                 }
                             },
@@ -515,12 +503,8 @@ fun DocxViewer(
                             onClick = {
                                 if (searchMatches.isNotEmpty()) {
                                     currentMatchIndex = if (currentMatchIndex < searchMatches.size - 1) currentMatchIndex + 1 else 0
-                                    val matchBlockIdx = searchMatches[currentMatchIndex]
-                                    val pageIdx = pages.indexOfFirst { p -> p.blocks.any { it.first == matchBlockIdx } }
-                                    if (pageIdx != -1) {
-                                        coroutineScope.launch {
-                                            pagerState.animateScrollToPage(pageIdx)
-                                        }
+                                    coroutineScope.launch {
+                                        listState.animateScrollToItem(searchMatches[currentMatchIndex])
                                     }
                                 }
                             },
@@ -537,228 +521,104 @@ fun DocxViewer(
         HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
 
         // -----------------------------------------------------------------------------------------
-        // 2. Horizontal Swipeable Document Page Viewport
+        // 2. Document Paper Viewport (Vertical Scroll)
         // -----------------------------------------------------------------------------------------
-        HorizontalPager(
-            state = pagerState,
-            beyondViewportPageCount = 1,
+        Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .testTag("docx_horizontal_pager")
-        ) { pageIndex ->
-            val page = pages.getOrNull(pageIndex) ?: return@HorizontalPager
-            val pageScrollState = rememberScrollState()
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                contentAlignment = Alignment.TopCenter
-            ) {
-                Surface(
+                .background(MaterialTheme.colorScheme.surfaceContainerLowest),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            SelectionContainer {
+                LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .fillMaxSize()
-                        .widthIn(max = 840.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    tonalElevation = 2.dp,
-                    shadowElevation = 2.dp,
-                    color = MaterialTheme.colorScheme.surface
+                        .widthIn(max = 840.dp) // Professional desktop reading margin
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    SelectionContainer {
-                        Column(
+                    itemsIndexed(
+                        items = doc.blocks,
+                        key = { index, _ -> index }
+                    ) { index, block ->
+                        val isHighlighted = isSearchActive && searchMatches.getOrNull(currentMatchIndex) == index
+
+                        Box(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(pageScrollState)
-                                .padding(horizontal = 20.dp, vertical = 16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            page.blocks.forEach { (origIndex, block) ->
-                                val isHighlighted = isSearchActive && searchMatches.getOrNull(currentMatchIndex) == origIndex
-
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .then(
-                                            if (isHighlighted) {
-                                                Modifier
-                                                    .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp))
-                                                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f), RoundedCornerShape(4.dp))
-                                                    .padding(4.dp)
-                                            } else Modifier
-                                        )
-                                ) {
-                                    when (block) {
-                                        is DocxBlock.Paragraph -> {
-                                            DocxParagraphView(
-                                                paragraph = block,
-                                                zoomScale = zoomScale,
-                                                searchHighlight = if (isSearchActive) searchQuery else null,
-                                                context = context
-                                            )
-                                        }
-                                        is DocxBlock.Table -> {
-                                            DocxTableView(
-                                                table = block,
-                                                zoomScale = zoomScale,
-                                                searchHighlight = if (isSearchActive) searchQuery else null
-                                            )
-                                        }
-                                        is DocxBlock.Image -> {
-                                            DocxImageView(
-                                                image = block,
-                                                localFile = localFileRef,
-                                                onImageClick = { bmp -> fullImagePreview = bmp }
-                                            )
-                                        }
-                                        is DocxBlock.PageBreak -> {
-                                            DocxPageBreakView()
-                                        }
-                                        is DocxBlock.Placeholder -> {
-                                            Text(
-                                                text = block.label,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.outline
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Footnotes on the last page
-                            if (pageIndex == pages.size - 1 && doc.footnotes.isNotEmpty()) {
-                                Spacer(modifier = Modifier.height(24.dp))
-                                HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = "Footnotes",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
+                                .fillMaxWidth()
+                                .then(
+                                    if (isHighlighted) {
+                                        Modifier
+                                            .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp))
+                                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f), RoundedCornerShape(4.dp))
+                                            .padding(4.dp)
+                                    } else Modifier
                                 )
-                                doc.footnotes.forEachIndexed { fIdx, note ->
-                                    Text(
-                                        text = "[${fIdx + 1}] $note",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(vertical = 2.dp)
+                        ) {
+                            when (block) {
+                                is DocxBlock.Paragraph -> {
+                                    DocxParagraphView(
+                                        paragraph = block,
+                                        zoomScale = zoomScale,
+                                        searchHighlight = if (isSearchActive) searchQuery else null,
+                                        context = context
                                     )
                                 }
+                                is DocxBlock.Table -> {
+                                    DocxTableView(
+                                        table = block,
+                                        zoomScale = zoomScale,
+                                        searchHighlight = if (isSearchActive) searchQuery else null
+                                    )
+                                }
+                                is DocxBlock.Image -> {
+                                    DocxImageView(
+                                        image = block,
+                                        localFile = localFileRef,
+                                        onImageClick = { bmp -> fullImagePreview = bmp }
+                                    )
+                                }
+                                is DocxBlock.PageBreak -> {
+                                    DocxPageBreakView()
+                                }
+                                is DocxBlock.Placeholder -> {
+                                    Text(
+                                        text = block.label,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Footnotes
+                    if (doc.footnotes.isNotEmpty()) {
+                        item {
+                            Spacer(modifier = Modifier.height(24.dp))
+                            HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Footnotes",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            doc.footnotes.forEachIndexed { fIdx, note ->
+                                Text(
+                                    text = "[${fIdx + 1}] $note",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(vertical = 2.dp)
+                                )
                             }
                         }
                     }
                 }
             }
         }
-
-        // -----------------------------------------------------------------------------------------
-        // 3. Bottom Navigation & Page Scrubber Bar
-        // -----------------------------------------------------------------------------------------
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceContainer,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = {
-                            if (pagerState.currentPage > 0) {
-                                coroutineScope.launch {
-                                    pagerState.animateScrollToPage(pagerState.currentPage - 1)
-                                }
-                            }
-                        },
-                        enabled = pagerState.currentPage > 0
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous Page")
-                    }
-
-                    val config = LocalConfiguration.current
-                    val pageTitleStyle = if (config.screenWidthDp < 360) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium
-                    TextButton(onClick = { showJumpDialog = true }) {
-                        Text(
-                            text = "Page ${pagerState.currentPage + 1} of ${pages.size} (Jump)",
-                            style = pageTitleStyle,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    IconButton(
-                        onClick = {
-                            if (pagerState.currentPage < pages.size - 1) {
-                                coroutineScope.launch {
-                                    pagerState.animateScrollToPage(pagerState.currentPage + 1)
-                                }
-                            }
-                        },
-                        enabled = pagerState.currentPage < pages.size - 1
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next Page")
-                    }
-                }
-
-                if (pages.size > 1) {
-                    var sliderPos by remember(pagerState.currentPage) { mutableFloatStateOf(pagerState.currentPage.toFloat()) }
-                    Slider(
-                        value = sliderPos,
-                        onValueChange = { sliderPos = it },
-                        onValueChangeFinished = {
-                            coroutineScope.launch {
-                                pagerState.scrollToPage(sliderPos.toInt().coerceIn(0, pages.size - 1))
-                            }
-                        },
-                        valueRange = 0f..(pages.size - 1).toFloat(),
-                        steps = (pages.size - 2).coerceAtLeast(0),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Jump to Page Dialog
-    // ---------------------------------------------------------------------------------------------
-    if (showJumpDialog) {
-        var jumpInput by remember { mutableStateOf("${pagerState.currentPage + 1}") }
-        AlertDialog(
-            onDismissRequest = { showJumpDialog = false },
-            title = { Text("Jump to Page") },
-            text = {
-                OutlinedTextField(
-                    value = jumpInput,
-                    onValueChange = { jumpInput = it },
-                    label = { Text("Page number (1 to ${pages.size})") },
-                    singleLine = true
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val target = (jumpInput.toIntOrNull() ?: (pagerState.currentPage + 1)) - 1
-                    val safeTarget = target.coerceIn(0, (pages.size - 1).coerceAtLeast(0))
-                    coroutineScope.launch {
-                        pagerState.animateScrollToPage(safeTarget)
-                    }
-                    showJumpDialog = false
-                }) {
-                    Text("Go")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showJumpDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -799,11 +659,8 @@ fun DocxViewer(
                                     .clip(RoundedCornerShape(8.dp))
                                     .clickable {
                                         showOutlineDialog = false
-                                        val pageIdx = pages.indexOfFirst { p -> p.blocks.any { it.first == blockIndex } }
-                                        if (pageIdx != -1) {
-                                            coroutineScope.launch {
-                                                pagerState.animateScrollToPage(pageIdx)
-                                            }
+                                        coroutineScope.launch {
+                                            listState.animateScrollToItem(blockIndex)
                                         }
                                     }
                                     .padding(start = indent, top = 8.dp, bottom = 8.dp, end = 8.dp),

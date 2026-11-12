@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -75,6 +77,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -1271,108 +1274,91 @@ fun PdfDocumentViewer(file: FileReference) {
                 Text(text = errorText!!, color = MaterialTheme.colorScheme.error)
             }
         } else if (pageCount > 0) {
-            val pagerState = rememberPagerState(initialPage = 0, pageCount = { pageCount })
-            var isCurrentPageZoomed by remember { mutableStateOf(false) }
+            val listState = rememberLazyListState()
+            val firstVisibleItem by remember { derivedStateOf { listState.firstVisibleItemIndex } }
+            val currentPage = (firstVisibleItem + 1).coerceIn(1, pageCount)
+            var zoomedPageIndex by remember { mutableStateOf<Int?>(null) }
 
-            LaunchedEffect(pagerState.currentPage) {
-                isCurrentPageZoomed = false
-            }
-
-            // Horizontal Swipeable / Scrollable Page Viewport
-            HorizontalPager(
-                state = pagerState,
-                beyondViewportPageCount = 1,
-                userScrollEnabled = !isCurrentPageZoomed,
+            // Vertical Scrollable Page Viewport
+            LazyColumn(
+                state = listState,
+                userScrollEnabled = zoomedPageIndex == null,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .testTag("pdf_horizontal_pager")
-            ) { pageIndex ->
-                PdfPageItem(
-                    file = file,
-                    pageIndex = pageIndex,
-                    isCurrentPage = pagerState.currentPage == pageIndex,
-                    onZoomChanged = { zoomed ->
-                        if (pagerState.currentPage == pageIndex) {
-                            isCurrentPageZoomed = zoomed
+                    .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                    .testTag("pdf_vertical_scroll"),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(pageCount, key = { it }) { pageIndex ->
+                    PdfPageItem(
+                        file = file,
+                        pageIndex = pageIndex,
+                        isCurrentPage = firstVisibleItem == pageIndex,
+                        onZoomChanged = { zoomed ->
+                            zoomedPageIndex = if (zoomed) pageIndex else null
                         }
-                    }
-                )
+                    )
+                }
             }
 
-            // Bottom Navigation & Page Scrubber Bar
+            // Bottom Navigation Bar (No Slider)
             Surface(
                 color = MaterialTheme.colorScheme.surfaceContainer,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    IconButton(
+                        onClick = {
+                            if (firstVisibleItem > 0) {
+                                coroutineScope.launch {
+                                    listState.animateScrollToItem(firstVisibleItem - 1)
+                                }
+                            }
+                        },
+                        enabled = firstVisibleItem > 0
                     ) {
-                        IconButton(
-                            onClick = {
-                                if (pagerState.currentPage > 0) {
-                                    coroutineScope.launch {
-                                        pagerState.animateScrollToPage(pagerState.currentPage - 1)
-                                    }
-                                }
-                            },
-                            enabled = pagerState.currentPage > 0
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous Page")
-                        }
-
-                        val config = LocalConfiguration.current
-                        val pageTitleStyle = if (config.screenWidthDp < 360) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium
-                        TextButton(onClick = { showJumpDialog = true }) {
-                            Text(
-                                text = "Page ${pagerState.currentPage + 1} of $pageCount (Jump)",
-                                style = pageTitleStyle,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-
-                        IconButton(
-                            onClick = {
-                                if (pagerState.currentPage < pageCount - 1) {
-                                    coroutineScope.launch {
-                                        pagerState.animateScrollToPage(pagerState.currentPage + 1)
-                                    }
-                                }
-                            },
-                            enabled = pagerState.currentPage < pageCount - 1
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next Page")
-                        }
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous Page")
                     }
 
-                    if (pageCount > 1) {
-                        var sliderPos by remember(pagerState.currentPage) { mutableFloatStateOf(pagerState.currentPage.toFloat()) }
-                        Slider(
-                            value = sliderPos,
-                            onValueChange = { sliderPos = it },
-                            onValueChangeFinished = {
-                                coroutineScope.launch {
-                                    pagerState.scrollToPage(sliderPos.toInt().coerceIn(0, pageCount - 1))
-                                }
-                            },
-                            valueRange = 0f..(pageCount - 1).toFloat(),
-                            steps = (pageCount - 2).coerceAtLeast(0),
-                            modifier = Modifier.fillMaxWidth()
+                    val config = LocalConfiguration.current
+                    val pageTitleStyle = if (config.screenWidthDp < 360) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium
+                    TextButton(onClick = { showJumpDialog = true }) {
+                        Text(
+                            text = "Page $currentPage of $pageCount (Jump)",
+                            style = pageTitleStyle,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
+                    }
+
+                    IconButton(
+                        onClick = {
+                            if (firstVisibleItem < pageCount - 1) {
+                                coroutineScope.launch {
+                                    listState.animateScrollToItem(firstVisibleItem + 1)
+                                }
+                            }
+                        },
+                        enabled = firstVisibleItem < pageCount - 1
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next Page")
                     }
                 }
             }
 
             // Jump to Page Dialog
             if (showJumpDialog) {
-                var jumpInput by remember { mutableStateOf("${pagerState.currentPage + 1}") }
+                var jumpInput by remember { mutableStateOf("$currentPage") }
                 AlertDialog(
                     onDismissRequest = { showJumpDialog = false },
                     title = { Text("Jump to Page") },
@@ -1386,10 +1372,10 @@ fun PdfDocumentViewer(file: FileReference) {
                     },
                     confirmButton = {
                         TextButton(onClick = {
-                            val target = (jumpInput.toIntOrNull() ?: (pagerState.currentPage + 1)) - 1
+                            val target = (jumpInput.toIntOrNull() ?: currentPage) - 1
                             val safeTarget = target.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
                             coroutineScope.launch {
-                                pagerState.animateScrollToPage(safeTarget)
+                                listState.animateScrollToItem(safeTarget)
                             }
                             showJumpDialog = false
                         }) {
@@ -1468,10 +1454,15 @@ private fun PdfPageItem(
         }
     }
 
-    Box(
+    val aspectRatio = pageBitmap?.let {
+        if (it.height > 0) it.width.toFloat() / it.height.toFloat() else (1f / 1.414f)
+    } ?: (1f / 1.414f)
+
+    Card(
         modifier = Modifier
-            .fillMaxSize()
-            .padding(8.dp)
+            .fillMaxWidth()
+            .widthIn(max = 840.dp)
+            .aspectRatio(aspectRatio)
             .pointerInput(pageIndex) {
                 detectTapGestures(
                     onDoubleTap = {
@@ -1532,7 +1523,9 @@ private fun PdfPageItem(
                     } while (event.changes.any { it.pressed })
                 }
             },
-        contentAlignment = Alignment.Center
+        shape = RoundedCornerShape(4.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White)
     ) {
         if (pageBitmap != null) {
             Image(
@@ -1540,16 +1533,18 @@ private fun PdfPageItem(
                 contentDescription = "PDF Page ${pageIndex + 1}",
                 modifier = Modifier
                     .fillMaxSize()
-                    .clip(RoundedCornerShape(8.dp))
                     .graphicsLayer {
                         scaleX = scale
                         scaleY = scale
                         translationX = offsetX
                         translationY = offsetY
-                    }
+                    },
+                contentScale = ContentScale.Fit
             )
         } else {
-            CircularProgressIndicator(modifier = Modifier.size(36.dp))
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(modifier = Modifier.size(32.dp))
+            }
         }
     }
 }
