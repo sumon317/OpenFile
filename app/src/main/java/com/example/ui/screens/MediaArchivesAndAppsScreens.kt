@@ -106,6 +106,7 @@ import com.example.core.model.SortOrder
 import com.example.core.model.StorageAnalysisReport
 import com.example.core.model.StorageVolumeInfo
 import com.example.core.model.formatByteSize
+import com.example.ui.components.AppIcon
 import com.example.ui.components.FileItemRow
 import com.example.ui.theme.ApkGreen
 import com.example.ui.theme.FolderAmber
@@ -1623,13 +1624,12 @@ fun ApplicationsScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.weight(1f).padding(end = 8.dp)
                                 ) {
-                                    Icon(
-                                        Icons.Filled.Android,
-                                        contentDescription = null,
-                                        tint = ApkGreen,
-                                        modifier = Modifier.size(32.dp)
+                                    AppIcon(
+                                        packageName = app.packageName,
+                                        apkPath = app.apkPath.takeIf { it.isNotBlank() },
+                                        size = 40.dp
                                     )
-                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Spacer(modifier = Modifier.width(12.dp))
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             text = app.appName,

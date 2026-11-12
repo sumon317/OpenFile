@@ -252,6 +252,19 @@ fun FileIconBadge(
         return
     }
 
+    // Display actual application icon for APK files when thumbnails are enabled
+    if (showThumbnails && !file.isDirectory && ext.equals("apk", ignoreCase = true)) {
+        val apkPath = resolveFastThumbnailPath(file)
+        if (apkPath != null && File(apkPath).exists()) {
+            AppIcon(
+                apkPath = apkPath,
+                size = 42.dp,
+                modifier = modifier
+            )
+            return
+        }
+    }
+
     val defaultSecondaryColor = MaterialTheme.colorScheme.secondary
     val (icon, tintColor) = remember(file.isDirectory, ext, defaultSecondaryColor) {
         when {
@@ -864,11 +877,31 @@ fun FilePropertiesModalSheet(
 
             if (apkInfo != null) {
                 HorizontalDivider()
-                Text(
-                    text = "Android Package (APK) Metadata",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    val localApk = resolveLocalBackingFile(file)?.absolutePath ?: file.uriOrPath
+                    AppIcon(
+                        packageName = apkInfo.packageName,
+                        apkPath = localApk,
+                        size = 48.dp
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = apkInfo.appName,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = apkInfo.packageName,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
                 PropertyKeyValueRow("App Label", apkInfo.appName)
                 PropertyKeyValueRow("Package Name", apkInfo.packageName)
                 PropertyKeyValueRow("Version", "${apkInfo.versionName} (${apkInfo.versionCode})")

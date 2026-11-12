@@ -1882,6 +1882,24 @@ class ExampleRobolectricTest {
         }
         composeTestRule.waitForIdle()
     }
+
+    @Test
+    fun `AppIconCache loads and caches installed application icons and handles non-existent packages gracefully`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        
+        // 1. Loading app icon for installed package (own package in Robolectric)
+        val icon = com.example.ui.components.AppIconCache.loadInstalledAppIcon(context, context.packageName)
+        assertNotNull("Own application package icon should load successfully", icon)
+        
+        // 2. Memory cache hit verification
+        val cached = com.example.ui.components.AppIconCache.get(context.packageName)
+        assertNotNull("App icon should be cached in AppIconCache memory cache", cached)
+        assertEquals(icon, cached)
+        
+        // 3. Non-existent package should return null safely without throwing exceptions
+        val nonExistentIcon = com.example.ui.components.AppIconCache.loadInstalledAppIcon(context, "com.nonexistent.fake.app.package")
+        assertNull("Non-existent package should return null icon safely", nonExistentIcon)
+    }
 }
 
 
