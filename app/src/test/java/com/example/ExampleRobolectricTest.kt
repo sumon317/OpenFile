@@ -1954,7 +1954,114 @@ class ExampleRobolectricTest {
         com.example.ui.components.MediaThumbnailCache.put("manual_key", imageBmp)
         assertEquals(imageBmp, com.example.ui.components.MediaThumbnailCache.get("manual_key"))
     }
+
+    @Test
+    fun testMediaPlaybackControllerAndStateHolder() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
+        val controller = com.example.core.media.MediaPlaybackController(app, scope)
+
+        controller.connect()
+
+        val sampleAudio = FileReference(
+            providerType = ProviderType.LOCAL,
+            uriOrPath = "/sdcard/Music/sample.mp3",
+            displayName = "sample.mp3",
+            parentUriOrPath = "/sdcard/Music",
+            isDirectory = false,
+            sizeBytes = 3_000_000L,
+            lastModifiedEpochMs = 1700000000000L,
+            mimeType = "audio/mpeg",
+            extension = "mp3"
+        )
+
+        // 1. Initial State
+        assertFalse(controller.isPlaying.value)
+        assertEquals(0L, controller.currentPosition.value)
+        assertEquals(0L, controller.duration.value)
+        assertNull(controller.currentFile.value)
+
+        // 2. State Holder updates reflect in controller reactively
+        com.example.core.media.MediaPlaybackStateHolder.updateCurrentFile(sampleAudio)
+        com.example.core.media.MediaPlaybackStateHolder.updateIsPlaying(true)
+        com.example.core.media.MediaPlaybackStateHolder.updateCurrentPosition(15000L)
+        com.example.core.media.MediaPlaybackStateHolder.updateDuration(180000L)
+
+        assertEquals(sampleAudio, controller.currentFile.value)
+        assertTrue(controller.isPlaying.value)
+        assertEquals(15000L, controller.currentPosition.value)
+        assertEquals(180000L, controller.duration.value)
+
+        // 3. Controller methods update state appropriately
+        controller.seekTo(30000L)
+        assertEquals(30000L, controller.currentPosition.value)
+
+        controller.setRepeatMode(androidx.media3.common.Player.REPEAT_MODE_ONE)
+        assertEquals(androidx.media3.common.Player.REPEAT_MODE_ONE, controller.repeatMode.value)
+
+        controller.setShuffleMode(true)
+        assertEquals(1, controller.shuffleMode.value)
+
+        controller.setPlaybackSpeed(1.5f)
+        assertEquals(1.5f, controller.playbackSpeed.value, 0.01f)
+
+        controller.stop()
+        assertFalse(controller.isPlaying.value)
+        assertEquals(0L, controller.currentPosition.value)
+        assertNull(controller.currentFile.value)
+
+        controller.disconnect()
+    }
+
+    @Test
+    fun testViewModelMediaPlaybackCoordination() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = com.example.ui.OpenFileViewModel(app)
+
+        val audioFile = FileReference(
+            providerType = ProviderType.LOCAL,
+            uriOrPath = "/sdcard/Music/track.mp3",
+            displayName = "track.mp3",
+            parentUriOrPath = "/sdcard/Music",
+            isDirectory = false,
+            sizeBytes = 4_000_000L,
+            lastModifiedEpochMs = 1700000000000L,
+            mimeType = "audio/mpeg",
+            extension = "mp3"
+        )
+        val videoFile = FileReference(
+            providerType = ProviderType.LOCAL,
+            uriOrPath = "/sdcard/Movies/clip.mp4",
+            displayName = "clip.mp4",
+            parentUriOrPath = "/sdcard/Movies",
+            isDirectory = false,
+            sizeBytes = 20_000_000L,
+            lastModifiedEpochMs = 1700000000000L,
+            mimeType = "video/mp4",
+            extension = "mp4"
+        )
+
+        // 1. Audio clicked -> plays in controller and opens preview
+        vm.onFileItemClicked(audioFile)
+        assertEquals(audioFile, vm.previewState.value?.currentFile)
+        assertEquals(audioFile, vm.mediaCurrentFile.value)
+        assertTrue(vm.mediaIsPlaying.value)
+
+        // 2. Video clicked -> pauses background audio, opens video preview
+        vm.onFileItemClicked(videoFile)
+        assertEquals(videoFile, vm.previewState.value?.currentFile)
+        assertFalse(vm.mediaIsPlaying.value)
+
+        // 3. Mini-Player expand -> reopens audio preview
+        vm.closePreviewDialog()
+        assertNull(vm.previewState.value)
+        vm.openMediaPreview(audioFile)
+        assertEquals(audioFile, vm.previewState.value?.currentFile)
+
+        vm.mediaPlaybackController.stop()
+    }
 }
+
 
 
 

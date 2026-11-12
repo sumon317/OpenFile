@@ -166,16 +166,19 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
 
     // Hardware Back navigation for full-window file preview (highest priority)
     BackHandler(enabled = previewState != null) {
-        val preview = previewState!!
-        val isMedia = preview.currentFile.extension.lowercase() in com.example.core.model.FileCategory.AUDIO.extensions ||
-            preview.currentFile.extension.lowercase() in com.example.core.model.FileCategory.VIDEOS.extensions ||
-            preview.currentFile.mimeType.startsWith("audio/") ||
-            preview.currentFile.mimeType.startsWith("video/")
-        if (isMedia && mediaIsPlaying) {
-            // For media, just close the preview but keep playback running in background
-            viewModel.closePreviewDialog()
-        } else {
-            viewModel.closePreviewDialog()
+        viewModel.closePreviewDialog()
+    }
+
+    // Sync preview dialog if background service changes track while preview is open
+    LaunchedEffect(mediaCurrentFile) {
+        val currentMedia = mediaCurrentFile
+        val preview = previewState
+        if (currentMedia != null && preview != null && preview.siblingMedia.isNotEmpty()) {
+            val isAudio = preview.currentFile.extension.lowercase() in com.example.core.model.FileCategory.AUDIO.extensions ||
+                preview.currentFile.mimeType.startsWith("audio/")
+            if (isAudio && preview.currentFile.uriOrPath != currentMedia.uriOrPath) {
+                viewModel.previewMediaAt(currentMedia)
+            }
         }
     }
 
@@ -293,7 +296,13 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                         onRefresh = { viewModel.refreshCurrentDirectory() },
                         onTriggerUndo = { undoAction?.let { viewModel.performUndo(it) } },
                         onDismissUndo = { viewModel.transferEngine.dismissUndoBanner() },
-                        mediaPlaybackController = viewModel.mediaPlaybackController
+                        mediaPlaybackController = viewModel.mediaPlaybackController,
+                        onExpandMedia = {
+                            val cur = viewModel.mediaCurrentFile.value
+                            if (cur != null) {
+                                viewModel.openMediaPreview(cur)
+                            }
+                        }
                     ) {
                         DestinationRouter(
                             currentDest = currentDest,
@@ -425,7 +434,13 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                     onRefresh = { viewModel.refreshCurrentDirectory() },
                     onTriggerUndo = { undoAction?.let { viewModel.performUndo(it) } },
                     onDismissUndo = { viewModel.transferEngine.dismissUndoBanner() },
-                    mediaPlaybackController = viewModel.mediaPlaybackController
+                    mediaPlaybackController = viewModel.mediaPlaybackController,
+                    onExpandMedia = {
+                        val cur = viewModel.mediaCurrentFile.value
+                        if (cur != null) {
+                            viewModel.openMediaPreview(cur)
+                        }
+                    }
                 ) {
                     DestinationRouter(
                         currentDest = currentDest,
@@ -639,6 +654,7 @@ private fun MainScaffoldContent(
     onTriggerUndo: () -> Unit,
     onDismissUndo: () -> Unit,
     mediaPlaybackController: com.example.core.media.MediaPlaybackController,
+    onExpandMedia: () -> Unit,
     content: @Composable () -> Unit
 ) {
     // Media Playback State - collect inside MainScaffoldContent for bottomBar access
@@ -842,12 +858,9 @@ private fun MainScaffoldContent(
                 if (mediaIsPlaying || mediaCurrentFile != null) {
                     MiniPlayer(
                         controller = mediaPlaybackController,
-                        onExpand = {
-                            // Open the full media player preview
-                            // This would need access to viewModel, but we can use the controller to navigate
-                        },
+                        onExpand = onExpandMedia,
                         onDismiss = {
-                            mediaPlaybackController.pause()
+                            mediaPlaybackController.stop()
                         }
                     )
                 }

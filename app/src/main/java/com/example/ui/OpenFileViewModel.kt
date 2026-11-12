@@ -973,8 +973,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 siblingImages = if (images.isNotEmpty()) images else listOf(item),
                 initialImageIndex = idx
             )
-        } else if (isAudio || isVideo) {
-            val targetCategory = if (isAudio) FileCategory.AUDIO else FileCategory.VIDEOS
+        } else if (isVideo) {
+            mediaPlaybackController.pause()
+            val targetCategory = FileCategory.VIDEOS
             val currentItems = _browserState.value.items
             var mediaList = currentItems.filter { it.extension.lowercase() in targetCategory.extensions }
             if (mediaList.isEmpty() || mediaList.none { it.uriOrPath == item.uriOrPath }) {
@@ -994,7 +995,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                                 isDirectory = false,
                                 sizeBytes = f.length(),
                                 lastModifiedEpochMs = f.lastModified(),
-                                mimeType = if (isAudio) "audio/*" else "video/*"
+                                mimeType = "video/*"
                             )
                         }
                     }
@@ -1009,12 +1010,65 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 siblingMedia = mediaList,
                 initialMediaIndex = idx
             )
-            // Start media playback service
+        } else if (isAudio) {
+            val targetCategory = FileCategory.AUDIO
+            val currentItems = _browserState.value.items
+            var mediaList = currentItems.filter { it.extension.lowercase() in targetCategory.extensions }
+            if (mediaList.isEmpty() || mediaList.none { it.uriOrPath == item.uriOrPath }) {
+                val localBacking = item.metadata["localBackingPath"] ?: if (item.providerType == ProviderType.LOCAL) item.uriOrPath else null
+                if (localBacking != null) {
+                    val parent = File(localBacking).parentFile
+                    val siblingFiles = parent?.listFiles()?.filter {
+                        !it.isDirectory && it.extension.lowercase() in targetCategory.extensions
+                    }?.sortedWith { a, b -> NaturalOrderComparator.compare(a.name, b.name) }
+                    if (!siblingFiles.isNullOrEmpty()) {
+                        mediaList = siblingFiles.map { f ->
+                            FileReference(
+                                providerType = ProviderType.LOCAL,
+                                uriOrPath = f.absolutePath,
+                                displayName = f.name,
+                                parentUriOrPath = parent.absolutePath,
+                                isDirectory = false,
+                                sizeBytes = f.length(),
+                                lastModifiedEpochMs = f.lastModified(),
+                                mimeType = "audio/*"
+                            )
+                        }
+                    }
+                }
+            }
+            if (mediaList.isEmpty()) {
+                mediaList = listOf(item)
+            }
+            val idx = mediaList.indexOfFirst { it.uriOrPath == item.uriOrPath }.coerceAtLeast(0)
+            _previewState.value = FilePreviewState(
+                currentFile = item,
+                siblingMedia = mediaList,
+                initialMediaIndex = idx
+            )
+            // Start media playback service for background audio
             mediaPlaybackController.play(item, mediaList, idx)
         } else {
             _previewState.value = FilePreviewState(currentFile = item)
         }
         _previewFile.value = item
+    }
+
+    fun openMediaPreview(file: FileReference) {
+        val isAudio = file.extension.lowercase() in FileCategory.AUDIO.extensions || file.mimeType.startsWith("audio/")
+        val targetCategory = if (isAudio) FileCategory.AUDIO else FileCategory.VIDEOS
+        val currentItems = _browserState.value.items
+        var mediaList = currentItems.filter { it.extension.lowercase() in targetCategory.extensions }
+        if (mediaList.isEmpty() || mediaList.none { it.uriOrPath == file.uriOrPath }) {
+            mediaList = listOf(file)
+        }
+        val idx = mediaList.indexOfFirst { it.uriOrPath == file.uriOrPath }.coerceAtLeast(0)
+        _previewState.value = FilePreviewState(
+            currentFile = file,
+            siblingMedia = mediaList,
+            initialMediaIndex = idx
+        )
+        _previewFile.value = file
     }
 
     fun previewNextMedia() {
@@ -1029,6 +1083,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 initialMediaIndex = currentIdx + 1
             )
             _previewFile.value = nextFile
+            if (nextFile.extension.lowercase() in FileCategory.AUDIO.extensions || nextFile.mimeType.startsWith("audio/")) {
+                mediaPlaybackController.play(nextFile, list, currentIdx + 1)
+            }
         }
     }
 
@@ -1044,6 +1101,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 initialMediaIndex = currentIdx - 1
             )
             _previewFile.value = prevFile
+            if (prevFile.extension.lowercase() in FileCategory.AUDIO.extensions || prevFile.mimeType.startsWith("audio/")) {
+                mediaPlaybackController.play(prevFile, list, currentIdx - 1)
+            }
         }
     }
 
@@ -1056,6 +1116,9 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             initialMediaIndex = if (idx >= 0) idx else 0
         )
         _previewFile.value = targetFile
+        if (targetFile.extension.lowercase() in FileCategory.AUDIO.extensions || targetFile.mimeType.startsWith("audio/")) {
+            mediaPlaybackController.play(targetFile, list, if (idx >= 0) idx else 0)
+        }
     }
 
     fun closePreviewDialog() {

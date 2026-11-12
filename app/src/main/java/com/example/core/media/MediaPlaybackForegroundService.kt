@@ -7,33 +7,34 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.media.AudioAttributes
+import android.graphics.Canvas
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
-import android.os.PowerManager
 import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.media.app.NotificationCompat.MediaStyle
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
-import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import com.example.MainActivity
 import com.example.R
 import com.example.core.model.FileReference
 import com.example.core.model.ProviderType
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 @OptIn(UnstableApi::class)
@@ -44,8 +45,13 @@ class MediaPlaybackForegroundService : Service() {
     private var playlist: List<FileReference> = emptyList()
     private var currentIndex = 0
     private var wasPlaying = true
-    private var notificationJob: Job? = null
+    private var progressJob: Job? = null
+    private var isForegroundServiceStarted = false
     private val mainScope = MainScope()
+
+    private var cachedTitle: String = ""
+    private var cachedArtist: String = ""
+    private var cachedArtwork: Bitmap? = null
 
     companion object {
         const val ACTION_PLAY = "com.openfile.manager.media.ACTION_PLAY"
@@ -69,7 +75,7 @@ class MediaPlaybackForegroundService : Service() {
         const val EXTRA_FILE_PARENT = "extra_file_parent"
         const val EXTRA_FILE_EXTENSION = "extra_file_extension"
         const val EXTRA_FILE_IS_DIR = "extra_file_is_dir"
-        
+
         const val EXTRA_PLAYLIST_PATHS = "extra_playlist_paths"
         const val EXTRA_PLAYLIST_NAMES = "extra_playlist_names"
         const val EXTRA_PLAYLIST_MIMES = "extra_playlist_mimes"
@@ -80,7 +86,7 @@ class MediaPlaybackForegroundService : Service() {
         const val EXTRA_PLAYLIST_PARENTS = "extra_playlist_parents"
         const val EXTRA_PLAYLIST_EXTENSIONS = "extra_playlist_extensions"
         const val EXTRA_PLAYLIST_IS_DIRS = "extra_playlist_is_dirs"
-        
+
         const val EXTRA_INDEX = "extra_index"
         const val EXTRA_POSITION = "extra_position"
         const val EXTRA_REPEAT_MODE = "extra_repeat_mode"
@@ -91,51 +97,50 @@ class MediaPlaybackForegroundService : Service() {
         private const val NOTIFICATION_ID = 4202
     }
 
+    private val playerListener = object : Player.Listener {
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            when (playbackState) {
+                Player.STATE_READY -> {
+                    val d = exoPlayer?.duration?.takeIf { it > 0 } ?: 0L
+                    MediaPlaybackStateHolder.updateDuration(d)
+                    updateNotification()
+                }
+                Player.STATE_ENDED -> handlePlaybackEnded()
+                else -> {}
+            }
+        }
+
+        override fun onIsPlayingChanged(playing: Boolean) {
+            wasPlaying = playing
+            MediaPlaybackStateHolder.updateIsPlaying(playing)
+            if (playing) {
+                startPositionTracker()
+            } else {
+                stopPositionTracker()
+            }
+            updateNotification()
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            MediaPlaybackStateHolder.updatePlaybackError(error.localizedMessage ?: "Playback error")
+            updateNotification()
+        }
+
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int
+        ) {
+            MediaPlaybackStateHolder.updateCurrentPosition(newPosition.positionMs.coerceAtLeast(0L))
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        
-        val renderersFactory = DefaultRenderersFactory(this).apply {
-            setEnableDecoderFallback(true)
-        }
-        exoPlayer = ExoPlayer.Builder(this, renderersFactory).build().apply {
-            setHandleAudioBecomingNoisy(true)
-        }
 
-        exoPlayer?.addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                when (playbackState) {
-                    Player.STATE_ENDED -> handlePlaybackEnded()
-                    Player.STATE_READY -> updateNotification()
-                }
-            }
-
-            override fun onIsPlayingChanged(playing: Boolean) {
-                wasPlaying = playing
-                MediaPlaybackStateHolder.updateIsPlaying(playing)
-                updateNotification()
-            }
-
-            override fun onPlayerError(error: PlaybackException) {
-                MediaPlaybackStateHolder.updatePlaybackError(error.localizedMessage ?: "Playback error")
-                updateNotification()
-            }
-
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                updateNotification()
-            }
-
-            override fun onPositionDiscontinuity(reason: Int) {
-                // Position changed
-            }
-        })
-
-        // Start notification update job
-        notificationJob = mainScope.launch {
-            while (true) {
-                updateNotification()
-                delay(1000)
-            }
+        exoPlayer = MediaPlaybackStateHolder.getOrCreatePlayer(this).apply {
+            addListener(playerListener)
         }
     }
 
@@ -147,29 +152,36 @@ class MediaPlaybackForegroundService : Service() {
                     val playlistExtra = buildPlaylistFromIntent(intent)
                     val index = intent.getIntExtra(EXTRA_INDEX, 0)
                     if (fileRef != null) {
-                        val pl = playlistExtra?.toList() ?: listOf(fileRef)
+                        val pl = playlistExtra ?: listOf(fileRef)
                         setPlaylist(pl, index)
                     }
                 }
-                ACTION_PLAY -> exoPlayer?.playWhenReady = true
-                ACTION_PAUSE -> exoPlayer?.playWhenReady = false
+                ACTION_PLAY -> {
+                    exoPlayer?.playWhenReady = true
+                    exoPlayer?.play()
+                }
+                ACTION_PAUSE -> {
+                    exoPlayer?.pause()
+                }
                 ACTION_NEXT -> playNext()
                 ACTION_PREVIOUS -> playPrevious()
                 ACTION_SEEK -> {
                     val position = intent.getLongExtra(EXTRA_POSITION, 0L)
                     exoPlayer?.seekTo(position)
+                    MediaPlaybackStateHolder.updateCurrentPosition(position)
                 }
                 ACTION_SET_REPEAT_MODE -> {
                     val mode = intent.getIntExtra(EXTRA_REPEAT_MODE, Player.REPEAT_MODE_OFF)
                     exoPlayer?.repeatMode = mode
+                    MediaPlaybackStateHolder.updateRepeatMode(mode)
                 }
                 ACTION_SET_SHUFFLE -> {
                     val shuffle = intent.getBooleanExtra(EXTRA_SHUFFLE, false)
-                    // shuffleMode and playbackSpeed are not available in this Media3 version
                     MediaPlaybackStateHolder.updateShuffleMode(if (shuffle) 1 else 0)
                 }
                 ACTION_SET_SPEED -> {
                     val speed = intent.getFloatExtra(EXTRA_SPEED, 1.0f)
+                    exoPlayer?.setPlaybackSpeed(speed)
                     MediaPlaybackStateHolder.updatePlaybackSpeed(speed)
                 }
                 ACTION_STOP -> {
@@ -177,7 +189,31 @@ class MediaPlaybackForegroundService : Service() {
                 }
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
+    }
+
+    private fun startPositionTracker() {
+        progressJob?.cancel()
+        progressJob = mainScope.launch {
+            while (isActive) {
+                exoPlayer?.let { player ->
+                    MediaPlaybackStateHolder.updateCurrentPosition(player.currentPosition.coerceAtLeast(0L))
+                    val d = player.duration
+                    if (d > 0L) {
+                        MediaPlaybackStateHolder.updateDuration(d)
+                    }
+                }
+                delay(500)
+            }
+        }
+    }
+
+    private fun stopPositionTracker() {
+        progressJob?.cancel()
+        progressJob = null
+        exoPlayer?.let { player ->
+            MediaPlaybackStateHolder.updateCurrentPosition(player.currentPosition.coerceAtLeast(0L))
+        }
     }
 
     private fun buildFileReferenceFromIntent(intent: Intent): FileReference? {
@@ -191,11 +227,15 @@ class MediaPlaybackForegroundService : Service() {
         val parent = intent.getStringExtra(EXTRA_FILE_PARENT) ?: ""
         val extension = intent.getStringExtra(EXTRA_FILE_EXTENSION) ?: ""
         val isDir = intent.getBooleanExtra(EXTRA_FILE_IS_DIR, false)
-        
-        val provider = ProviderType.valueOf(providerStr)
+
+        val provider = try {
+            ProviderType.valueOf(providerStr)
+        } catch (_: Exception) {
+            ProviderType.LOCAL
+        }
         val metadata = mutableMapOf<String, String>()
         if (localBacking.isNotBlank()) metadata["localBackingPath"] = localBacking
-        
+
         return FileReference(
             providerType = provider,
             uriOrPath = path,
@@ -220,23 +260,27 @@ class MediaPlaybackForegroundService : Service() {
         val parents = intent.getStringArrayExtra(EXTRA_PLAYLIST_PARENTS) ?: return null
         val extensions = intent.getStringArrayExtra(EXTRA_PLAYLIST_EXTENSIONS) ?: return null
         val isDirs = intent.getBooleanArrayExtra(EXTRA_PLAYLIST_IS_DIRS) ?: return null
-        
+
         if (paths.size != names.size) return null
-        
+
         return paths.indices.map { i ->
-            val provider = ProviderType.valueOf(providers[i])
+            val provider = try {
+                ProviderType.valueOf(providers[i])
+            } catch (_: Exception) {
+                ProviderType.LOCAL
+            }
             val metadata = mutableMapOf<String, String>()
-            if (localBackings[i].isNotBlank()) metadata["localBackingPath"] = localBackings[i]
-            
+            if (localBackings.getOrNull(i)?.isNotBlank() == true) metadata["localBackingPath"] = localBackings[i]
+
             FileReference(
                 providerType = provider,
                 uriOrPath = paths[i],
                 displayName = names[i],
-                parentUriOrPath = parents[i],
-                isDirectory = isDirs[i],
-                sizeBytes = sizes[i],
-                lastModifiedEpochMs = modified[i],
-                mimeType = mimes[i],
+                parentUriOrPath = parents.getOrNull(i) ?: "",
+                isDirectory = isDirs.getOrNull(i) ?: false,
+                sizeBytes = sizes.getOrNull(i) ?: 0L,
+                lastModifiedEpochMs = modified.getOrNull(i) ?: 0L,
+                mimeType = mimes.getOrNull(i) ?: "",
                 metadata = metadata
             )
         }
@@ -244,14 +288,15 @@ class MediaPlaybackForegroundService : Service() {
 
     private fun setPlaylist(newPlaylist: List<FileReference>, index: Int) {
         playlist = newPlaylist
-        currentIndex = index.coerceIn(0, playlist.size - 1)
-        currentFile = playlist[currentIndex]
+        currentIndex = index.coerceIn(0, (playlist.size - 1).coerceAtLeast(0))
+        currentFile = playlist.getOrNull(currentIndex)
         MediaPlaybackStateHolder.updateCurrentFile(currentFile)
-        val mediaItem = createMediaItem(currentFile!!)
+        val file = currentFile ?: return
+        val mediaItem = createMediaItem(file)
         exoPlayer?.setMediaItem(mediaItem)
         exoPlayer?.prepare()
         exoPlayer?.playWhenReady = wasPlaying
-        updateNotification()
+        loadMetadataAndNotify(file)
     }
 
     private fun createMediaItem(file: FileReference): MediaItem {
@@ -294,17 +339,18 @@ class MediaPlaybackForegroundService : Service() {
             currentIndex = nextIndex
             currentFile = playlist[currentIndex]
             MediaPlaybackStateHolder.updateCurrentFile(currentFile)
-            val mediaItem = createMediaItem(currentFile!!)
+            val file = currentFile ?: return
+            val mediaItem = createMediaItem(file)
             exoPlayer?.setMediaItem(mediaItem)
             exoPlayer?.prepare()
             exoPlayer?.playWhenReady = true
-            updateNotification()
+            loadMetadataAndNotify(file)
         }
     }
 
     private fun playPrevious() {
         if (playlist.isEmpty()) return
-        if ((exoPlayer?.currentPosition ?: 0L) > 3000) {
+        if ((exoPlayer?.currentPosition ?: 0L) > 3000L) {
             exoPlayer?.seekTo(0L)
             return
         }
@@ -321,11 +367,12 @@ class MediaPlaybackForegroundService : Service() {
             currentIndex = prevIndex
             currentFile = playlist[currentIndex]
             MediaPlaybackStateHolder.updateCurrentFile(currentFile)
-            val mediaItem = createMediaItem(currentFile!!)
+            val file = currentFile ?: return
+            val mediaItem = createMediaItem(file)
             exoPlayer?.setMediaItem(mediaItem)
             exoPlayer?.prepare()
             exoPlayer?.playWhenReady = true
-            updateNotification()
+            loadMetadataAndNotify(file)
         }
     }
 
@@ -349,16 +396,60 @@ class MediaPlaybackForegroundService : Service() {
         }
     }
 
+    private fun loadMetadataAndNotify(file: FileReference) {
+        cachedTitle = file.displayName.substringBeforeLast('.')
+        cachedArtist = "Loading..."
+        cachedArtwork = null
+        updateNotification()
+
+        mainScope.launch {
+            val (artist, artwork) = withContext(Dispatchers.IO) {
+                extractMetadata(file)
+            }
+            if (currentFile?.uriOrPath == file.uriOrPath) {
+                cachedArtist = artist
+                cachedArtwork = artwork
+                updateNotification()
+            }
+        }
+    }
+
+    private fun extractMetadata(file: FileReference): Pair<String, Bitmap?> {
+        var retriever: MediaMetadataRetriever? = null
+        return try {
+            retriever = MediaMetadataRetriever()
+            val localBacking = file.metadata["localBackingPath"]?.let { File(it) }
+                ?: if (file.providerType == ProviderType.LOCAL) File(file.uriOrPath) else null
+            if (localBacking != null && localBacking.exists()) {
+                retriever.setDataSource(localBacking.absolutePath)
+            } else {
+                retriever.setDataSource(this, Uri.parse(file.uriOrPath))
+            }
+            val artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)?.takeIf { it.isNotBlank() } ?: "Unknown Artist"
+            val pic = retriever.embeddedPicture
+            val artwork = if (pic != null) BitmapFactory.decodeByteArray(pic, 0, pic.size) else null
+            Pair(artist, artwork)
+        } catch (_: Exception) {
+            Pair("Unknown Artist", null)
+        } finally {
+            try {
+                retriever?.release()
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun updateNotification() {
         val notification = buildNotification()
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(NOTIFICATION_ID, notification)
-        
-// Update foreground service notification
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            startForeground(NOTIFICATION_ID, notification, 2) // FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK = 2
+        if (!isForegroundServiceStarted) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            isForegroundServiceStarted = true
         } else {
-            startForeground(NOTIFICATION_ID, notification)
+            notificationManager.notify(NOTIFICATION_ID, notification)
         }
     }
 
@@ -369,7 +460,7 @@ class MediaPlaybackForegroundService : Service() {
                 "Media Playback",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Controls for audio and video playback"
+                description = "Controls for audio playback"
                 setShowBadge(false)
             }
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -380,11 +471,11 @@ class MediaPlaybackForegroundService : Service() {
     private fun buildNotification(): Notification {
         val file = currentFile ?: return buildEmptyNotification()
 
-        val title = file.displayName.substringBeforeLast('.')
-        val artist = extractArtist(file)
-        val artwork = extractArtwork(file)
+        val title = cachedTitle.ifBlank { file.displayName.substringBeforeLast('.') }
+        val artist = cachedArtist.ifBlank { "Unknown Artist" }
+        val isCurrentlyPlaying = exoPlayer?.isPlaying == true
 
-        val playPauseAction = if (exoPlayer?.isPlaying == true) {
+        val playPauseAction = if (isCurrentlyPlaying) {
             NotificationCompat.Action(
                 R.drawable.ic_pause,
                 "Pause",
@@ -402,8 +493,7 @@ class MediaPlaybackForegroundService : Service() {
             .setSmallIcon(R.drawable.ic_media_notification)
             .setContentTitle(title)
             .setContentText(artist)
-            .setLargeIcon(artwork ?: getDefaultArtwork())
-            .setOngoing(exoPlayer?.isPlaying == true)
+            .setOngoing(isCurrentlyPlaying)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setStyle(
@@ -427,6 +517,11 @@ class MediaPlaybackForegroundService : Service() {
             )
             .setContentIntent(createContentIntent())
 
+        val art = cachedArtwork ?: getDefaultArtwork()
+        if (art != null) {
+            builder.setLargeIcon(art)
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             builder.setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
         }
@@ -443,56 +538,38 @@ class MediaPlaybackForegroundService : Service() {
             .build()
     }
 
-    private fun extractArtist(file: FileReference): String {
+    private fun getDefaultArtwork(): Bitmap? {
         return try {
-            val retriever = android.media.MediaMetadataRetriever()
-            val localBacking = file.metadata["localBackingPath"]?.let { File(it) }
-                ?: if (file.providerType == ProviderType.LOCAL) File(file.uriOrPath) else null
-            if (localBacking != null && localBacking.exists()) {
-                retriever.setDataSource(localBacking.absolutePath)
-            } else {
-                retriever.setDataSource(this, Uri.parse(file.uriOrPath))
-            }
-            retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_ARTIST)
-                ?.takeIf { it.isNotBlank() } ?: "Unknown Artist"
-        } catch (_: Exception) {
-            "Unknown Artist"
-        }
-    }
-
-    private fun extractArtwork(file: FileReference): Bitmap? {
-        return try {
-            val retriever = android.media.MediaMetadataRetriever()
-            val localBacking = file.metadata["localBackingPath"]?.let { File(it) }
-                ?: if (file.providerType == ProviderType.LOCAL) File(file.uriOrPath) else null
-            if (localBacking != null && localBacking.exists()) {
-                retriever.setDataSource(localBacking.absolutePath)
-            } else {
-                retriever.setDataSource(this, Uri.parse(file.uriOrPath))
-            }
-            val picture = retriever.embeddedPicture
-            if (picture != null) {
-                BitmapFactory.decodeByteArray(picture, 0, picture.size)
-            } else null
+            val drawable = ContextCompat.getDrawable(this, R.drawable.ic_audio_placeholder) ?: return null
+            val bitmap = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            drawable.setBounds(0, 0, canvas.width, canvas.height)
+            drawable.draw(canvas)
+            bitmap
         } catch (_: Exception) {
             null
         }
-    }
-
-    private fun getDefaultArtwork(): Bitmap? {
-        return BitmapFactory.decodeResource(resources, R.drawable.ic_audio_placeholder)
     }
 
     private fun createPendingIntent(action: String): PendingIntent {
         val intent = Intent(this, MediaPlaybackForegroundService::class.java).apply {
             this.action = action
         }
-        return PendingIntent.getService(
-            this,
-            action.hashCode(),
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PendingIntent.getForegroundService(
+                this,
+                action.hashCode(),
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        } else {
+            PendingIntent.getService(
+                this,
+                action.hashCode(),
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
     }
 
     private fun createContentIntent(): PendingIntent {
@@ -508,12 +585,17 @@ class MediaPlaybackForegroundService : Service() {
     }
 
     override fun onDestroy() {
-        notificationJob?.cancel()
-        exoPlayer?.run {
-            removeListener(object : Player.Listener {})
-            stop()
-            release()
+        stopPositionTracker()
+        exoPlayer?.removeListener(playerListener)
+        MediaPlaybackStateHolder.releasePlayer()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
         }
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(NOTIFICATION_ID)
         super.onDestroy()
     }
 

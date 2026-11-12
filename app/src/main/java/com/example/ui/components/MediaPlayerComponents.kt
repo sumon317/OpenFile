@@ -488,23 +488,35 @@ fun AudioPlayerPreview(
         }
     }
 
-    val exoPlayer = remember(file.uriOrPath) {
-        ExoPlayer.Builder(context).build().apply {
-            val mediaItem = MediaItem.fromUri(resolveMediaUri(file))
-            setMediaItem(mediaItem)
+    val exoPlayer = remember {
+        com.example.core.media.MediaPlaybackStateHolder.getOrCreatePlayer(context)
+    }
+
+    LaunchedEffect(file.uriOrPath) {
+        val targetUri = resolveMediaUri(file)
+        val currentUri = exoPlayer.currentMediaItem?.localConfiguration?.uri
+        if (currentUri != targetUri) {
+            val mediaItem = MediaItem.fromUri(targetUri)
+            exoPlayer.setMediaItem(mediaItem)
             if (currentPositionMs > 0L) {
-                seekTo(currentPositionMs)
+                exoPlayer.seekTo(currentPositionMs)
             }
             if (playbackSpeed != 1.0f) {
-                setPlaybackSpeed(playbackSpeed)
+                exoPlayer.setPlaybackSpeed(playbackSpeed)
             }
-            repeatMode = when (audioRepeatMode) {
+            exoPlayer.repeatMode = when (audioRepeatMode) {
                 AudioRepeatMode.OFF -> Player.REPEAT_MODE_OFF
                 AudioRepeatMode.ALL -> Player.REPEAT_MODE_ALL
                 AudioRepeatMode.ONE -> Player.REPEAT_MODE_ONE
             }
-            prepare()
-            playWhenReady = wasPlaying
+            exoPlayer.prepare()
+            exoPlayer.playWhenReady = wasPlaying
+        } else {
+            isPrepared = true
+            isPlaying = exoPlayer.isPlaying
+            currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+            val d = exoPlayer.duration
+            if (d > 0L) durationMs = d
         }
     }
 
@@ -629,8 +641,6 @@ fun AudioPlayerPreview(
             currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
             wasPlaying = exoPlayer.isPlaying
             exoPlayer.removeListener(listener)
-            exoPlayer.stop()
-            exoPlayer.release()
         }
     }
 
@@ -2115,7 +2125,7 @@ fun VideoPlayerPreview(
             }
         }
         // Enable sensor-based auto-rotation for video playback
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
         onDispose {
             val window = activity?.window
             if (window != null) {
@@ -2810,6 +2820,25 @@ fun VideoPlayerPreview(
                                         )
                                     }
                                 }
+                            }
+
+                            // Rotate Screen Button (Portrait <-> Sensor Landscape)
+                            IconButton(
+                                onClick = {
+                                    val isLand = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+                                    activity?.requestedOrientation = if (isLand) {
+                                        ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                    } else {
+                                        ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.ScreenRotation,
+                                    contentDescription = "Rotate Screen",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(22.dp)
+                                )
                             }
                         }
                     }
