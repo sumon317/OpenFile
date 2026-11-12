@@ -2073,6 +2073,7 @@ fun VideoPlayerPreview(
     var showSubtitleSheet by remember { mutableStateOf(false) }
     var showAudioTrackDialog by remember { mutableStateOf(false) }
     var showHwInfoDialog by remember { mutableStateOf(false) }
+    val playerViewRef = remember { mutableStateOf<PlayerView?>(null) }
 
     // Decoder Mode: HW, HW+, SW
     var decoderMode by rememberSaveable(file.uriOrPath) { mutableStateOf(DecoderMode.HW) }
@@ -2090,26 +2091,33 @@ fun VideoPlayerPreview(
                 }
                 DecoderMode.SW -> {
                     setMediaCodecSelector { mimeType, requiresSecure, requiresTunneling ->
-                        val decoders = MediaCodecUtil.getDecoderInfos(mimeType, requiresSecure, requiresTunneling)
-                        decoders.sortedByDescending { it.softwareOnly || it.name.startsWith("c2.android") || it.name.startsWith("OMX.google") }
+                        try {
+                            val decoders = MediaCodecUtil.getDecoderInfos(mimeType, requiresSecure, requiresTunneling)
+                            decoders.sortedByDescending { it.softwareOnly || it.name.startsWith("c2.android") || it.name.startsWith("OMX.google") }
+                        } catch (_: Exception) {
+                            MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, requiresSecure, requiresTunneling)
+                        }
                     }
                 }
             }
         }
 
         ExoPlayer.Builder(context, renderersFactory).build().apply {
-            val mediaItem = MediaItem.fromUri(resolveMediaUri(file))
-            setMediaItem(mediaItem)
-            if (currentPositionMs > 0L) {
-                seekTo(currentPositionMs)
+            try {
+                val mediaItem = MediaItem.fromUri(resolveMediaUri(file))
+                setMediaItem(mediaItem)
+                if (currentPositionMs > 0L) {
+                    seekTo(currentPositionMs)
+                }
+                if (playbackSpeed != 1.0f) {
+                    setPlaybackSpeed(playbackSpeed)
+                }
+                repeatMode = if (playMode == VideoPlayMode.REPEAT_ONE) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+                prepare()
+                playWhenReady = true
+            } catch (e: Exception) {
+                errorMessage = e.localizedMessage ?: "Failed to open video"
             }
-            if (playbackSpeed != 1.0f) {
-                setPlaybackSpeed(playbackSpeed)
-            }
-            repeatMode = if (playMode == VideoPlayMode.REPEAT_ONE) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-            prepare()
-            playWhenReady = true
-            play()
         }
     }
 
@@ -2136,7 +2144,9 @@ fun VideoPlayerPreview(
                         if (d > 0L) durationMs = d
                         bufferedPositionMs = exoPlayer.bufferedPosition.coerceAtLeast(0L)
                         if (currentPositionMs > 0L && Math.abs(exoPlayer.currentPosition - currentPositionMs) > 1000L) {
-                            exoPlayer.seekTo(currentPositionMs)
+                            if (currentPositionMs <= d || d <= 0L) {
+                                exoPlayer.seekTo(currentPositionMs)
+                            }
                         }
                     }
                     Player.STATE_ENDED -> {
@@ -2192,43 +2202,55 @@ fun VideoPlayerPreview(
         exoPlayer.addListener(listener)
 
         onDispose {
-            if (exoPlayer.playbackState != Player.STATE_ENDED) {
-                currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
-                wasPlaying = exoPlayer.isPlaying
-            } else {
-                currentPositionMs = 0L
-                wasPlaying = true
+            runCatching {
+                playerViewRef.value?.player = null
+                if (exoPlayer.playbackState != Player.STATE_ENDED) {
+                    currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+                    wasPlaying = exoPlayer.isPlaying
+                } else {
+                    currentPositionMs = 0L
+                    wasPlaying = true
+                }
+                exoPlayer.removeListener(listener)
+                exoPlayer.stop()
+                exoPlayer.release()
             }
-            exoPlayer.removeListener(listener)
-            exoPlayer.stop()
-            exoPlayer.release()
         }
     }
 
     // Enable sensor-based auto-rotation for video player lifecycle ONLY
     DisposableEffect(activity) {
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
-        onDispose {
-            val window = activity?.window
-            if (window != null) {
-                val controller = WindowCompat.getInsetsController(window, window.decorView)
-                controller.show(WindowInsetsCompat.Type.systemBars())
+        if (activity != null && !activity.isInMultiWindowMode) {
+            runCatching {
+                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
             }
-            // Restore orientation when video player is dismissed
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+        onDispose {
+            runCatching {
+                val window = activity?.window
+                if (window != null) {
+                    val controller = WindowCompat.getInsetsController(window, window.decorView)
+                    controller.show(WindowInsetsCompat.Type.systemBars())
+                }
+                if (activity != null && !activity.isInMultiWindowMode) {
+                    activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                }
+            }
         }
     }
 
     // Completely Fullscreen Immersive Mode (No status bar)
     DisposableEffect(activity, showControls) {
-        val window = activity?.window
-        if (window != null) {
-            val controller = WindowCompat.getInsetsController(window, window.decorView)
-            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            if (!showControls) {
-                controller.hide(WindowInsetsCompat.Type.systemBars())
-            } else {
-                controller.hide(WindowInsetsCompat.Type.statusBars())
+        runCatching {
+            val window = activity?.window
+            if (window != null) {
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                if (!showControls) {
+                    controller.hide(WindowInsetsCompat.Type.systemBars())
+                } else {
+                    controller.hide(WindowInsetsCompat.Type.statusBars())
+                }
             }
         }
         onDispose {
@@ -2247,11 +2269,15 @@ fun VideoPlayerPreview(
     // Polling progress updater (every 250ms)
     LaunchedEffect(isPlaying, isPrepared, isUserSeeking) {
         while (isActive && isPlaying && !isUserSeeking) {
-            val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
-            currentPositionMs = pos
-            bufferedPositionMs = exoPlayer.bufferedPosition.coerceAtLeast(0L)
-            val dur = exoPlayer.duration
-            if (dur > 0L) durationMs = dur
+            runCatching {
+                if (exoPlayer.playbackState != Player.STATE_IDLE) {
+                    val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
+                    currentPositionMs = pos
+                    bufferedPositionMs = exoPlayer.bufferedPosition.coerceAtLeast(0L)
+                    val dur = exoPlayer.duration
+                    if (dur > 0L) durationMs = dur
+                }
+            }
             delay(250)
         }
     }
@@ -2334,13 +2360,19 @@ fun VideoPlayerPreview(
                         useController = false
                         resizeMode = resizeModes[currentResizeModeIndex].first
                         player = exoPlayer
+                        playerViewRef.value = this
                     }
                 },
                 update = { view ->
+                    playerViewRef.value = view
                     if (view.player != exoPlayer) {
                         view.player = exoPlayer
                     }
                     view.resizeMode = resizeModes[currentResizeModeIndex].first
+                },
+                onRelease = { view ->
+                    view.player = null
+                    playerViewRef.value = null
                 }
             )
         } else {
@@ -2435,10 +2467,12 @@ fun VideoPlayerPreview(
                                 dragDirection = 0
                                 touchStartX = offset.x
                                 touchStartY = offset.y
-                                val winAttrs = activity?.window?.attributes
-                                initialBrightness = winAttrs?.screenBrightness?.takeIf { it in 0.01f..1.0f } ?: 0.5f
-                                initialVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                                initialPosition = exoPlayer.currentPosition
+                                runCatching {
+                                    val winAttrs = activity?.window?.attributes
+                                    initialBrightness = winAttrs?.screenBrightness?.takeIf { it in 0.01f..1.0f } ?: 0.5f
+                                    initialVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                                    initialPosition = exoPlayer.currentPosition
+                                }
                             },
                             onDrag = { change, _ ->
                                 change.consume()
@@ -2467,36 +2501,42 @@ fun VideoPlayerPreview(
                                     if (touchStartX < size.width / 2) {
                                         // Brightness
                                         val newB = (initialBrightness + deltaFraction).coerceIn(0.01f, 1f)
-                                        activity?.window?.attributes = activity?.window?.attributes?.apply {
-                                            screenBrightness = newB
+                                        runCatching {
+                                            activity?.window?.attributes = activity?.window?.attributes?.apply {
+                                                screenBrightness = newB
+                                            }
                                         }
                                         hudValue = newB
                                         activeGestureHud = GestureHudType.BRIGHTNESS
                                     } else {
                                         // Volume (with HW+ / SW 200% volume boost)
-                                        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                        val isBoostSupported = decoderMode != DecoderMode.HW
-                                        val totalScale = if (isBoostSupported) 2.0f else 1.0f
-                                        val currentFraction = (initialVolume.toFloat() / maxVol.toFloat()) + (deltaFraction * totalScale)
-                                        val clampedFraction = currentFraction.coerceIn(0f, totalScale)
-                                        if (clampedFraction <= 1.0f) {
-                                            val targetSysVol = (clampedFraction * maxVol).toInt().coerceIn(0, maxVol)
-                                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetSysVol, 0)
-                                            exoPlayer.volume = 1.0f
-                                            hudValue = clampedFraction
-                                        } else {
-                                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
-                                            exoPlayer.volume = clampedFraction
-                                            hudValue = clampedFraction
+                                        runCatching {
+                                            val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                            val isBoostSupported = decoderMode != DecoderMode.HW
+                                            val totalScale = if (isBoostSupported) 2.0f else 1.0f
+                                            val currentFraction = (initialVolume.toFloat() / maxVol.toFloat()) + (deltaFraction * totalScale)
+                                            val clampedFraction = if (currentFraction.isFinite()) currentFraction.coerceIn(0f, totalScale) else 1.0f
+                                            if (clampedFraction <= 1.0f) {
+                                                val targetSysVol = (clampedFraction * maxVol).toInt().coerceIn(0, maxVol)
+                                                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetSysVol, 0)
+                                                exoPlayer.volume = 1.0f
+                                                hudValue = clampedFraction
+                                            } else {
+                                                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
+                                                exoPlayer.volume = clampedFraction
+                                                hudValue = clampedFraction
+                                            }
+                                            activeGestureHud = GestureHudType.VOLUME
                                         }
-                                        activeGestureHud = GestureHudType.VOLUME
                                     }
                                 }
                             },
                             onDragEnd = {
                                 if (dragDirection == 1 && activeGestureHud == GestureHudType.SEEK) {
-                                    exoPlayer.seekTo(seekTargetMs)
-                                    currentPositionMs = seekTargetMs
+                                    runCatching {
+                                        exoPlayer.seekTo(seekTargetMs)
+                                        currentPositionMs = seekTargetMs
+                                    }
                                 }
                                 activeGestureHud = null
                             },
@@ -2513,16 +2553,18 @@ fun VideoPlayerPreview(
                                 showControls = !showControls
                             },
                             onDoubleTap = { offset ->
-                                if (offset.x < size.width / 2) {
-                                    val target = (exoPlayer.currentPosition - 10000L).coerceAtLeast(0L)
-                                    exoPlayer.seekTo(target)
-                                    currentPositionMs = target
-                                    doubleTapFeedback = DoubleTapFeedbackType.REWIND
-                                } else {
-                                    val target = (exoPlayer.currentPosition + 10000L).coerceAtMost(durationMs)
-                                    exoPlayer.seekTo(target)
-                                    currentPositionMs = target
-                                    doubleTapFeedback = DoubleTapFeedbackType.FORWARD
+                                runCatching {
+                                    if (offset.x < size.width / 2) {
+                                        val target = (exoPlayer.currentPosition - 10000L).coerceAtLeast(0L)
+                                        exoPlayer.seekTo(target)
+                                        currentPositionMs = target
+                                        doubleTapFeedback = DoubleTapFeedbackType.REWIND
+                                    } else {
+                                        val target = (exoPlayer.currentPosition + 10000L).coerceAtMost(durationMs)
+                                        exoPlayer.seekTo(target)
+                                        currentPositionMs = target
+                                        doubleTapFeedback = DoubleTapFeedbackType.FORWARD
+                                    }
                                 }
                             }
                         )
