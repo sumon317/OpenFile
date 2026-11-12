@@ -47,6 +47,7 @@ import com.example.core.model.StorageAnalysisReport
 import com.example.core.model.StorageVolumeInfo
 import com.example.core.model.ViewMode
 import com.example.core.network.DiscoveredLanHost
+import com.example.core.media.MediaPlaybackController
 import com.example.core.network.FtpServerEngine
 import com.example.core.network.FtpServerForegroundService
 import com.example.core.network.FtpServerRuntimeState
@@ -128,6 +129,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     val storageAnalyzer = StorageAnalyzerEngine(localProvider)
     val appManager = AppManagerEngine(context, localProvider)
     val appUpdateEngine = AppUpdateEngine(context)
+    val mediaPlaybackController = MediaPlaybackController(context, viewModelScope)
 
     // In-App GitHub Releases Auto-Update State
     private val _appUpdateState = MutableStateFlow(
@@ -311,6 +313,16 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     // Open With Sheet State
     private val _openWithFile = MutableStateFlow<FileReference?>(null)
     val openWithFile: StateFlow<FileReference?> = _openWithFile.asStateFlow()
+
+    // Media Playback Controller State
+    val mediaIsPlaying = mediaPlaybackController.isPlayingState
+    val mediaCurrentPosition = mediaPlaybackController.currentPositionState
+    val mediaDuration = mediaPlaybackController.durationState
+    val mediaCurrentFile = mediaPlaybackController.currentFileState
+    val mediaRepeatMode = mediaPlaybackController.repeatModeState
+    val mediaShuffleMode = mediaPlaybackController.shuffleModeState
+    val mediaPlaybackSpeed = mediaPlaybackController.playbackSpeedState
+    val mediaPlaybackError = mediaPlaybackController.playbackErrorState
 
     fun requestOpenWith(item: FileReference) {
         _openWithFile.value = item
@@ -997,6 +1009,8 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 siblingMedia = mediaList,
                 initialMediaIndex = idx
             )
+            // Start media playback service
+            mediaPlaybackController.play(item, mediaList, idx)
         } else {
             _previewState.value = FilePreviewState(currentFile = item)
         }

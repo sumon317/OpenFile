@@ -16,8 +16,8 @@ android {
     applicationId = "com.openfile.manager"
     minSdk = 24
     targetSdk = 36
-    versionCode = 17
-    versionName = "2.2.2"
+    versionCode = 18
+    versionName = "2.2.3"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -145,6 +145,8 @@ dependencies {
   implementation(libs.androidx.media3.exoplayer)
   implementation(libs.androidx.media3.ui)
   implementation(libs.androidx.media3.common)
+  implementation(libs.androidx.media3.session)
+  implementation(libs.androidx.media)
 
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)

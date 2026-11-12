@@ -81,6 +81,7 @@ import com.example.ui.components.ConflictResolutionDialog
 import com.example.ui.components.FilePreviewDialog
 import com.example.ui.components.FilePreviewScreen
 import com.example.ui.components.FilePropertiesModalSheet
+import com.example.ui.components.MiniPlayer
 import com.example.ui.components.OpenWithBottomSheet
 import com.example.ui.components.TransferQueueBottomSheet
 import com.example.ui.screens.ApplicationsScreen
@@ -154,9 +155,28 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
         viewModel.clearStatusMessage()
     }
 
+    // Media Playback State - use ViewModel's exposed state flows (must be before BackHandler)
+    val mediaIsPlaying by viewModel.mediaIsPlaying.collectAsStateWithLifecycle()
+    val mediaCurrentFile by viewModel.mediaCurrentFile.collectAsStateWithLifecycle()
+    
+    // Connect the media playback controller to start observing service state
+    LaunchedEffect(viewModel.mediaPlaybackController) {
+        viewModel.mediaPlaybackController.connect()
+    }
+
     // Hardware Back navigation for full-window file preview (highest priority)
     BackHandler(enabled = previewState != null) {
-        viewModel.closePreviewDialog()
+        val preview = previewState!!
+        val isMedia = preview.currentFile.extension.lowercase() in com.example.core.model.FileCategory.AUDIO.extensions ||
+            preview.currentFile.extension.lowercase() in com.example.core.model.FileCategory.VIDEOS.extensions ||
+            preview.currentFile.mimeType.startsWith("audio/") ||
+            preview.currentFile.mimeType.startsWith("video/")
+        if (isMedia && mediaIsPlaying) {
+            // For media, just close the preview but keep playback running in background
+            viewModel.closePreviewDialog()
+        } else {
+            viewModel.closePreviewDialog()
+        }
     }
 
     // Hardware Back navigation handling for browser stack & sub-destinations (only when no preview is open)
@@ -272,7 +292,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                         onOpenTransferQueue = { showTransferQueueSheet = true },
                         onRefresh = { viewModel.refreshCurrentDirectory() },
                         onTriggerUndo = { undoAction?.let { viewModel.performUndo(it) } },
-                        onDismissUndo = { viewModel.transferEngine.dismissUndoBanner() }
+                        onDismissUndo = { viewModel.transferEngine.dismissUndoBanner() },
+                        mediaPlaybackController = viewModel.mediaPlaybackController
                     ) {
                         DestinationRouter(
                             currentDest = currentDest,
@@ -403,7 +424,8 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                     onOpenTransferQueue = { showTransferQueueSheet = true },
                     onRefresh = { viewModel.refreshCurrentDirectory() },
                     onTriggerUndo = { undoAction?.let { viewModel.performUndo(it) } },
-                    onDismissUndo = { viewModel.transferEngine.dismissUndoBanner() }
+                    onDismissUndo = { viewModel.transferEngine.dismissUndoBanner() },
+                    mediaPlaybackController = viewModel.mediaPlaybackController
                 ) {
                     DestinationRouter(
                         currentDest = currentDest,
@@ -616,8 +638,13 @@ private fun MainScaffoldContent(
     onRefresh: () -> Unit,
     onTriggerUndo: () -> Unit,
     onDismissUndo: () -> Unit,
+    mediaPlaybackController: com.example.core.media.MediaPlaybackController,
     content: @Composable () -> Unit
 ) {
+    // Media Playback State - collect inside MainScaffoldContent for bottomBar access
+    val mediaIsPlaying by mediaPlaybackController.isPlayingState.collectAsStateWithLifecycle()
+    val mediaCurrentFile by mediaPlaybackController.currentFileState.collectAsStateWithLifecycle()
+    
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
         containerColor = MaterialTheme.colorScheme.background,
@@ -810,6 +837,19 @@ private fun MainScaffoldContent(
                             }
                         }
                     }
+                }
+                // Mini Player for media playback
+                if (mediaIsPlaying || mediaCurrentFile != null) {
+                    MiniPlayer(
+                        controller = mediaPlaybackController,
+                        onExpand = {
+                            // Open the full media player preview
+                            // This would need access to viewModel, but we can use the controller to navigate
+                        },
+                        onDismiss = {
+                            mediaPlaybackController.pause()
+                        }
+                    )
                 }
             }
         }

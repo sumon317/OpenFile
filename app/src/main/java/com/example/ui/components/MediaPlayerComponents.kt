@@ -2102,7 +2102,7 @@ fun VideoPlayerPreview(
         }
     }
 
-    // Completely Fullscreen Immersive Mode (No status bar)
+    // Completely Fullscreen Immersive Mode (No status bar) + Auto-rotate for video
     DisposableEffect(activity, showControls) {
         val window = activity?.window
         if (window != null) {
@@ -2114,12 +2114,16 @@ fun VideoPlayerPreview(
                 controller.hide(WindowInsetsCompat.Type.statusBars())
             }
         }
+        // Enable sensor-based auto-rotation for video playback
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         onDispose {
             val window = activity?.window
             if (window != null) {
                 val controller = WindowCompat.getInsetsController(window, window.decorView)
                 controller.show(WindowInsetsCompat.Type.systemBars())
             }
+            // Restore orientation when video player is dismissed
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
@@ -2806,25 +2810,6 @@ fun VideoPlayerPreview(
                                         )
                                     }
                                 }
-                            }
-
-                            // Rotate Screen Button (Portrait <-> Sensor Landscape)
-                            IconButton(
-                                onClick = {
-                                    val isLand = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-                                    activity?.requestedOrientation = if (isLand) {
-                                        ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                                    } else {
-                                        ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                                    }
-                                }
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.ScreenRotation,
-                                    contentDescription = "Rotate Screen",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(22.dp)
-                                )
                             }
                         }
                     }
