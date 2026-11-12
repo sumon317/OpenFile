@@ -174,6 +174,7 @@ private fun resolveFastThumbnailPath(file: FileReference): String? {
     val localBackingPath = file.metadata["localBackingPath"]
     if (!localBackingPath.isNullOrBlank()) return localBackingPath
     if (file.providerType == ProviderType.LOCAL) return file.uriOrPath
+    if (file.uriOrPath.startsWith("content://")) return file.uriOrPath
     return null
 }
 
@@ -226,14 +227,17 @@ fun FileIconBadge(
     }
 
     val ext = file.extension
+
+    // 1. Image Thumbnail (Local path or Content URI)
     val thumbPath = if (showThumbnails && !file.isDirectory && ext in FileCategory.IMAGES.extensions) {
         resolveFastThumbnailPath(file)
     } else null
 
     if (thumbPath != null) {
+        val model: Any = if (thumbPath.startsWith("content://")) Uri.parse(thumbPath) else File(thumbPath)
         val imageRequest = remember(thumbPath, context) {
             ImageRequest.Builder(context)
-                .data(File(thumbPath))
+                .data(model)
                 .size(120, 120)
                 .bitmapConfig(Bitmap.Config.RGB_565)
                 .memoryCacheKey(thumbPath)
@@ -252,10 +256,30 @@ fun FileIconBadge(
         return
     }
 
-    // Display actual application icon for APK files when thumbnails are enabled
+    // 2. Video Thumbnail (Decoded video frame with subtle play overlay)
+    if (showThumbnails && !file.isDirectory && ext in FileCategory.VIDEOS.extensions) {
+        VideoThumbnailBadge(
+            file = file,
+            size = 42.dp,
+            modifier = modifier
+        )
+        return
+    }
+
+    // 3. Audio Thumbnail (Embedded album cover art with corner music indicator)
+    if (showThumbnails && !file.isDirectory && ext in FileCategory.AUDIO.extensions) {
+        AudioThumbnailBadge(
+            file = file,
+            size = 42.dp,
+            modifier = modifier
+        )
+        return
+    }
+
+    // 4. Display actual application icon for APK files when thumbnails are enabled
     if (showThumbnails && !file.isDirectory && ext.equals("apk", ignoreCase = true)) {
         val apkPath = resolveFastThumbnailPath(file)
-        if (apkPath != null && File(apkPath).exists()) {
+        if (apkPath != null && (apkPath.startsWith("content://") || File(apkPath).exists())) {
             AppIcon(
                 apkPath = apkPath,
                 size = 42.dp,
@@ -858,15 +882,34 @@ fun FilePropertiesModalSheet(
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text(
-                text = file.displayName,
-                style = MaterialTheme.typography.titleLarge
-            )
-            Text(
-                text = file.uriOrPath,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                FileIconBadge(
+                    file = file,
+                    showThumbnails = true,
+                    isSelected = false,
+                    modifier = Modifier.size(48.dp)
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = file.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = file.uriOrPath,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
             HorizontalDivider()
 
             PropertyKeyValueRow("Provider", file.providerType.label)

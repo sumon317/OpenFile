@@ -1425,7 +1425,7 @@ fun SettingsScreen(
                         onCheckedChange = { onViewModeChange(if (it) ViewMode.GRID else ViewMode.LIST) }
                     )
                     SettingsToggleRow(
-                        title = "Show Image Thumbnails",
+                        title = "Show Media Thumbnails",
                         checked = settings.showThumbnails,
                         onCheckedChange = onShowThumbnailsChange
                     )

@@ -15,6 +15,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.test.core.app.ApplicationProvider
 import com.example.core.archive.ArchiveEngine
 import com.example.core.database.NetworkProfileEntity
@@ -1899,6 +1900,59 @@ class ExampleRobolectricTest {
         // 3. Non-existent package should return null safely without throwing exceptions
         val nonExistentIcon = com.example.ui.components.AppIconCache.loadInstalledAppIcon(context, "com.nonexistent.fake.app.package")
         assertNull("Non-existent package should return null icon safely", nonExistentIcon)
+    }
+
+    @Test
+    fun `MediaThumbnailCache calculates keys, caches thumbnails and tracks missing artwork gracefully`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val videoRef = FileReference(
+            providerType = ProviderType.LOCAL,
+            uriOrPath = "/sdcard/Movies/clip.mp4",
+            displayName = "clip.mp4",
+            parentUriOrPath = "/sdcard/Movies",
+            isDirectory = false,
+            sizeBytes = 10_000_000L,
+            lastModifiedEpochMs = 1700000000000L,
+            mimeType = "video/mp4",
+            extension = "mp4"
+        )
+        val audioRef = FileReference(
+            providerType = ProviderType.LOCAL,
+            uriOrPath = "/sdcard/Music/song.mp3",
+            displayName = "song.mp3",
+            parentUriOrPath = "/sdcard/Music",
+            isDirectory = false,
+            sizeBytes = 5_000_000L,
+            lastModifiedEpochMs = 1700000000000L,
+            mimeType = "audio/mpeg",
+            extension = "mp3"
+        )
+
+        // 1. Key calculation check
+        val videoKey = com.example.ui.components.MediaThumbnailCache.getCacheKey(videoRef)
+        assertEquals("media_thumb:/sdcard/Movies/clip.mp4:1700000000000:10000000", videoKey)
+
+        // 2. Non-existent or dummy file decoding should safely return null and record no-thumbnail mark
+        assertFalse(com.example.ui.components.MediaThumbnailCache.hasNoThumbnail(videoKey))
+        val videoThumb = com.example.ui.components.MediaThumbnailCache.loadVideoThumbnail(context, videoRef)
+        assertNull("Non-existent video file should return null thumbnail safely", videoThumb)
+        assertTrue("Cache should mark non-existent video in noThumbnailSet to prevent re-decoding", com.example.ui.components.MediaThumbnailCache.hasNoThumbnail(videoKey))
+
+        val audioKey = com.example.ui.components.MediaThumbnailCache.getCacheKey(audioRef)
+        assertFalse(com.example.ui.components.MediaThumbnailCache.hasNoThumbnail(audioKey))
+        val audioThumb = com.example.ui.components.MediaThumbnailCache.loadAudioThumbnail(context, audioRef)
+        assertNull("Non-existent audio file should return null artwork safely", audioThumb)
+        assertTrue("Cache should mark audio with no album artwork in noThumbnailSet", com.example.ui.components.MediaThumbnailCache.hasNoThumbnail(audioKey))
+
+        // 3. Manual caching verification
+        val sampleBmp = android.graphics.Bitmap.createBitmap(100, 100, android.graphics.Bitmap.Config.ARGB_8888)
+        val squareBmp = com.example.ui.components.MediaThumbnailCache.centerCropToSquare(sampleBmp, 64)
+        assertEquals(64, squareBmp.width)
+        assertEquals(64, squareBmp.height)
+
+        val imageBmp = squareBmp.asImageBitmap()
+        com.example.ui.components.MediaThumbnailCache.put("manual_key", imageBmp)
+        assertEquals(imageBmp, com.example.ui.components.MediaThumbnailCache.get("manual_key"))
     }
 }
 
