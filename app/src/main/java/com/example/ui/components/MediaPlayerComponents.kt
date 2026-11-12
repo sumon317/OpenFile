@@ -55,11 +55,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -415,7 +419,7 @@ fun AudioPlayerPreview(
                 it.mimeType.startsWith("audio/")
         }
         if (audioOnly.isNotEmpty()) {
-            if (audioOnly.none { it.uriOrPath == file.uriOrPath }) {
+            if (audioOnly.none { it.matchesMedia(file) }) {
                 listOf(file) + audioOnly
             } else {
                 audioOnly
@@ -424,7 +428,7 @@ fun AudioPlayerPreview(
             listOf(file)
         }
     }
-    val currentIdx = effectivePlaylist.indexOfFirst { it.uriOrPath == file.uriOrPath }.coerceAtLeast(0)
+    val currentIdx = effectivePlaylist.indexOfFirst { it.matchesMedia(file) }.coerceAtLeast(0)
     val canGoPrevious = currentIdx > 0 || hasPrevious
     val canGoNext = currentIdx < effectivePlaylist.size - 1 || hasNext
 
@@ -529,7 +533,7 @@ fun AudioPlayerPreview(
     val handleSkipNext: () -> Unit = {
         currentPositionMs = 0L
         if (isShuffleEnabled && effectivePlaylist.size > 1) {
-            val candidates = effectivePlaylist.filter { it.uriOrPath != file.uriOrPath }
+            val candidates = effectivePlaylist.filter { !it.matchesMedia(file) }
             val nextRandom = candidates.randomOrNull()
             if (nextRandom != null) {
                 onSelectMedia?.invoke(nextRandom)
@@ -2104,7 +2108,8 @@ fun VideoPlayerPreview(
             }
             repeatMode = if (playMode == VideoPlayMode.REPEAT_ONE) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             prepare()
-            playWhenReady = wasPlaying
+            playWhenReady = true
+            play()
         }
     }
 
@@ -2143,6 +2148,16 @@ fun VideoPlayerPreview(
                             VideoPlayMode.PLAY_ALL -> {
                                 if (hasNext && onNext != null) {
                                     onNext()
+                                } else if (playlist.size > 1 && onSelectMedia != null) {
+                                    val currentIdx = playlist.indexOfFirst { it.matchesMedia(file) }
+                                    if (currentIdx in 0 until playlist.size - 1) {
+                                        onSelectMedia(playlist[currentIdx + 1])
+                                    } else {
+                                        isPlaying = false
+                                        wasPlaying = false
+                                        currentPositionMs = durationMs
+                                        showControls = true
+                                    }
                                 } else {
                                     isPlaying = false
                                     wasPlaying = false
@@ -2177,16 +2192,34 @@ fun VideoPlayerPreview(
         exoPlayer.addListener(listener)
 
         onDispose {
-            currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
-            wasPlaying = exoPlayer.isPlaying
+            if (exoPlayer.playbackState != Player.STATE_ENDED) {
+                currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+                wasPlaying = exoPlayer.isPlaying
+            } else {
+                currentPositionMs = 0L
+                wasPlaying = true
+            }
             exoPlayer.removeListener(listener)
             exoPlayer.stop()
             exoPlayer.release()
+        }
+    }
+
+    // Enable sensor-based auto-rotation for video player lifecycle ONLY
+    DisposableEffect(activity) {
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
+        onDispose {
+            val window = activity?.window
+            if (window != null) {
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                controller.show(WindowInsetsCompat.Type.systemBars())
+            }
+            // Restore orientation when video player is dismissed
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
-    // Completely Fullscreen Immersive Mode (No status bar) + Auto-rotate for video
+    // Completely Fullscreen Immersive Mode (No status bar)
     DisposableEffect(activity, showControls) {
         val window = activity?.window
         if (window != null) {
@@ -2198,16 +2231,8 @@ fun VideoPlayerPreview(
                 controller.hide(WindowInsetsCompat.Type.statusBars())
             }
         }
-        // Enable sensor-based auto-rotation for video playback
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
         onDispose {
-            val window = activity?.window
-            if (window != null) {
-                val controller = WindowCompat.getInsetsController(window, window.decorView)
-                controller.show(WindowInsetsCompat.Type.systemBars())
-            }
-            // Restore orientation when video player is dismissed
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            // Orientation and system bars are managed by DisposableEffect(activity)
         }
     }
 
@@ -3203,6 +3228,8 @@ private fun VideoSubtitleSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .imePadding()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
             Row(
@@ -3242,60 +3269,56 @@ private fun VideoSubtitleSheet(
 
             if (selectedTab == 0) {
                 // Embedded & Local Subtitles
-                LazyColumn(modifier = Modifier.fillMaxWidth().height(280.dp)) {
-                    item {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "Actions",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = VideoCoral,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                                    .buildUpon()
+                                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                                    .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                                    .build()
+                                onDismiss()
+                            }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Filled.Close, contentDescription = null, tint = Color.LightGray, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text("Disable Subtitles (Off)", color = Color.White, style = MaterialTheme.typography.bodyMedium)
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onDismiss()
+                                onPickSubtitleFile()
+                            }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = VideoCoral, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text("Pick Subtitle from Storage (.srt, .vtt, .ass)", color = Color.White, style = MaterialTheme.typography.bodyMedium)
+                    }
+
+                    if (embeddedTracks.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Actions",
+                            text = "Embedded Subtitle Tracks (${embeddedTracks.size})",
                             style = MaterialTheme.typography.labelMedium,
                             color = VideoCoral,
                             modifier = Modifier.padding(vertical = 4.dp)
                         )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-                                        .buildUpon()
-                                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                                        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-                                        .build()
-                                    onDismiss()
-                                }
-                                .padding(vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Filled.Close, contentDescription = null, tint = Color.LightGray, modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text("Disable Subtitles (Off)", color = Color.White, style = MaterialTheme.typography.bodyMedium)
-                        }
-
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    onDismiss()
-                                    onPickSubtitleFile()
-                                }
-                                .padding(vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = VideoCoral, modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text("Pick Subtitle from Storage (.srt, .vtt, .ass)", color = Color.White, style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-
-                    if (embeddedTracks.isNotEmpty()) {
-                        item {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "Embedded Subtitle Tracks (${embeddedTracks.size})",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = VideoCoral,
-                                modifier = Modifier.padding(vertical = 4.dp)
-                            )
-                        }
-                        items(embeddedTracks) { (label, onSelect) ->
+                        embeddedTracks.forEach { (label, onSelect) ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -3314,16 +3337,14 @@ private fun VideoSubtitleSheet(
                     }
 
                     if (localSubtitles.isNotEmpty()) {
-                        item {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "Auto-Detected in Folder (${localSubtitles.size})",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = VideoCoral,
-                                modifier = Modifier.padding(vertical = 4.dp)
-                            )
-                        }
-                        items(localSubtitles) { subFile ->
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Auto-Detected in Folder (${localSubtitles.size})",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = VideoCoral,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                        localSubtitles.forEach { subFile ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -3347,6 +3368,21 @@ private fun VideoSubtitleSheet(
                 }
             } else {
                 // Online Subtitle Search Tab
+                val performSearch: () -> Unit = {
+                    if (searchQuery.isNotBlank()) {
+                        isSearching = true
+                        searchMessage = null
+                        coroutineScope.launch {
+                            val results = SubtitleManager.searchOnlineSubtitles(searchQuery)
+                            searchResults = results
+                            isSearching = false
+                            if (results.isEmpty()) {
+                                searchMessage = "No subtitles found. Try a different title."
+                            }
+                        }
+                    }
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -3361,25 +3397,14 @@ private fun VideoSubtitleSheet(
                             focusedBorderColor = VideoCoral,
                             unfocusedBorderColor = Color.Gray
                         ),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { performSearch() }),
                         modifier = Modifier.weight(1f),
                         singleLine = true
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     IconButton(
-                        onClick = {
-                            if (searchQuery.isNotBlank()) {
-                                isSearching = true
-                                searchMessage = null
-                                coroutineScope.launch {
-                                    val results = SubtitleManager.searchOnlineSubtitles(searchQuery)
-                                    searchResults = results
-                                    isSearching = false
-                                    if (results.isEmpty()) {
-                                        searchMessage = "No subtitles found. Try a different title."
-                                    }
-                                }
-                            }
-                        }
+                        onClick = { performSearch() }
                     ) {
                         Icon(Icons.Filled.Search, contentDescription = "Search", tint = VideoCoral)
                     }
@@ -3396,8 +3421,8 @@ private fun VideoSubtitleSheet(
                         Text(searchMessage!!, color = Color.LightGray, textAlign = TextAlign.Center)
                     }
                 } else {
-                    LazyColumn(modifier = Modifier.fillMaxWidth().height(260.dp)) {
-                        items(searchResults) { sub ->
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        searchResults.forEach { sub ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -3444,6 +3469,7 @@ private fun VideoSubtitleSheet(
                     }
                 }
             }
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }

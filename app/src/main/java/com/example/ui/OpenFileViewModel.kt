@@ -443,6 +443,25 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 }
             }
         }
+        // Observe media playback controller to keep preview dialog in sync on autoplay or background track advances
+        viewModelScope.launch {
+            mediaPlaybackController.currentFileState.collect { playingFile ->
+                if (playingFile != null) {
+                    val currentPreview = _previewState.value
+                    if (currentPreview != null && (currentPreview.currentFile.extension.lowercase() in FileCategory.AUDIO.extensions || currentPreview.currentFile.mimeType.startsWith("audio/"))) {
+                        if (!currentPreview.currentFile.matchesMedia(playingFile)) {
+                            val list = currentPreview.siblingMedia
+                            val idx = list.indexOfFirst { it.matchesMedia(playingFile) }
+                            _previewState.value = currentPreview.copy(
+                                currentFile = playingFile,
+                                initialMediaIndex = if (idx >= 0) idx else currentPreview.initialMediaIndex
+                            )
+                            _previewFile.value = playingFile
+                        }
+                    }
+                }
+            }
+        }
     }
 
     @Volatile
@@ -1075,7 +1094,10 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         val state = _previewState.value ?: return
         val list = state.siblingMedia
         if (list.size <= 1) return
-        val currentIdx = list.indexOfFirst { it.uriOrPath == state.currentFile.uriOrPath }
+        var currentIdx = list.indexOfFirst { it.matchesMedia(state.currentFile) }
+        if (currentIdx < 0) {
+            currentIdx = state.initialMediaIndex.coerceIn(0, list.size - 1)
+        }
         if (currentIdx in 0 until list.size - 1) {
             val nextFile = list[currentIdx + 1]
             _previewState.value = state.copy(
@@ -1093,7 +1115,10 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         val state = _previewState.value ?: return
         val list = state.siblingMedia
         if (list.size <= 1) return
-        val currentIdx = list.indexOfFirst { it.uriOrPath == state.currentFile.uriOrPath }
+        var currentIdx = list.indexOfFirst { it.matchesMedia(state.currentFile) }
+        if (currentIdx < 0) {
+            currentIdx = state.initialMediaIndex.coerceIn(0, list.size - 1)
+        }
         if (currentIdx > 0) {
             val prevFile = list[currentIdx - 1]
             _previewState.value = state.copy(
@@ -1110,7 +1135,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     fun previewMediaAt(targetFile: FileReference) {
         val state = _previewState.value ?: return
         val list = state.siblingMedia
-        val idx = list.indexOfFirst { it.uriOrPath == targetFile.uriOrPath }
+        val idx = list.indexOfFirst { it.matchesMedia(targetFile) }
         _previewState.value = state.copy(
             currentFile = targetFile,
             initialMediaIndex = if (idx >= 0) idx else 0

@@ -71,6 +71,15 @@ data class FileReference(
         metadata["permissions"] ?: if (isDirectory) "drwxr-xr-x" else "-rw-r--r--"
     }
 
+    fun matchesMedia(other: FileReference?): Boolean {
+        if (other == null) return false
+        if (this.uriOrPath == other.uriOrPath) return true
+        val thisLocal = this.metadata["localBackingPath"] ?: if (this.providerType == ProviderType.LOCAL) this.uriOrPath else null
+        val otherLocal = other.metadata["localBackingPath"] ?: if (other.providerType == ProviderType.LOCAL) other.uriOrPath else null
+        if (thisLocal != null && otherLocal != null && thisLocal == otherLocal) return true
+        return this.displayName.equals(other.displayName, ignoreCase = true) && this.sizeBytes == other.sizeBytes
+    }
+
     companion object {
         private val LOCAL_FILE_CAPS: Set<ProviderCapability> = setOf(
             ProviderCapability.STREAM_READ,

@@ -1070,7 +1070,9 @@ fun FilePreviewScreen(
     val isMedia = isAudio || isVideo
     val isImageOrDarkMedia = isImage || isVideo || isAudio || ext in setOf("cbz", "cbr")
 
-    val currentMediaIndex = state.siblingMedia.indexOfFirst { it.uriOrPath == file.uriOrPath }
+    val currentMediaIndex = state.siblingMedia.indexOfFirst { it.matchesMedia(file) }.let {
+        if (it >= 0) it else state.initialMediaIndex.coerceIn(0, (state.siblingMedia.size - 1).coerceAtLeast(0))
+    }
     val hasPreviousMedia = currentMediaIndex > 0
     val hasNextMedia = currentMediaIndex >= 0 && currentMediaIndex < state.siblingMedia.size - 1
 

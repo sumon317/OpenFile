@@ -377,6 +377,10 @@ class MediaPlaybackForegroundService : Service() {
                 if (repeatModeVal == Player.REPEAT_MODE_ALL) {
                     nextIndex = 0
                 } else {
+                    wasPlaying = false
+                    MediaPlaybackStateHolder.updateIsPlaying(false)
+                    updateMediaSessionState()
+                    updateNotification()
                     return
                 }
             }
@@ -447,7 +451,7 @@ class MediaPlaybackForegroundService : Service() {
                 MediaPlaybackStateHolder.updateIsPlaying(true)
                 updateMediaSessionState()
             }
-            repeatModeVal == Player.REPEAT_MODE_ALL || shuffleModeVal == 1 -> {
+            repeatModeVal == Player.REPEAT_MODE_ALL || shuffleModeVal == 1 || currentIndex < playlist.size - 1 -> {
                 playNext()
             }
             else -> {

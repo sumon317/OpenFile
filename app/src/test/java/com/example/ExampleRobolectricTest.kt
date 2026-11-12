@@ -2068,6 +2068,93 @@ class ExampleRobolectricTest {
 
         vm.mediaPlaybackController.stop()
     }
+
+    @Test
+    fun testFileReferenceMatchesMedia() {
+        val file1 = FileReference(
+            providerType = ProviderType.MEDIA_STORE,
+            uriOrPath = "content://media/external/video/media/100",
+            displayName = "movie.mp4",
+            parentUriOrPath = null,
+            isDirectory = false,
+            sizeBytes = 50_000_000L,
+            lastModifiedEpochMs = 1700000000000L,
+            mimeType = "video/mp4",
+            extension = "mp4",
+            metadata = mapOf("localBackingPath" to "/storage/emulated/0/Movies/movie.mp4")
+        )
+
+        val file1LocalEquivalent = FileReference(
+            providerType = ProviderType.LOCAL,
+            uriOrPath = "/storage/emulated/0/Movies/movie.mp4",
+            displayName = "movie.mp4",
+            parentUriOrPath = "/storage/emulated/0/Movies",
+            isDirectory = false,
+            sizeBytes = 50_000_000L,
+            lastModifiedEpochMs = 1700000000000L,
+            mimeType = "video/mp4",
+            extension = "mp4"
+        )
+
+        val file2Different = FileReference(
+            providerType = ProviderType.LOCAL,
+            uriOrPath = "/storage/emulated/0/Movies/other.mp4",
+            displayName = "other.mp4",
+            parentUriOrPath = "/storage/emulated/0/Movies",
+            isDirectory = false,
+            sizeBytes = 12_000_000L,
+            lastModifiedEpochMs = 1700000000000L,
+            mimeType = "video/mp4",
+            extension = "mp4"
+        )
+
+        assertTrue(file1.matchesMedia(file1LocalEquivalent))
+        assertTrue(file1LocalEquivalent.matchesMedia(file1))
+        assertTrue(file1.matchesMedia(file1))
+        assertFalse(file1.matchesMedia(file2Different))
+        assertFalse(file1.matchesMedia(null))
+    }
+
+    @Test
+    fun testViewModelMediaAutoplayAndQueueAdvance() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = com.example.ui.OpenFileViewModel(app)
+
+        val song1 = FileReference(
+            providerType = ProviderType.MEDIA_STORE,
+            uriOrPath = "content://media/external/audio/media/1",
+            displayName = "song1.mp3",
+            parentUriOrPath = null,
+            isDirectory = false,
+            sizeBytes = 3_000_000L,
+            lastModifiedEpochMs = 1700000000000L,
+            mimeType = "audio/mpeg",
+            extension = "mp3",
+            metadata = mapOf("localBackingPath" to "/sdcard/Music/song1.mp3")
+        )
+        val song2 = FileReference(
+            providerType = ProviderType.LOCAL,
+            uriOrPath = "/sdcard/Music/song2.mp3",
+            displayName = "song2.mp3",
+            parentUriOrPath = "/sdcard/Music",
+            isDirectory = false,
+            sizeBytes = 4_000_000L,
+            lastModifiedEpochMs = 1700000000000L,
+            mimeType = "audio/mpeg",
+            extension = "mp3"
+        )
+
+        vm.openBuiltInPreview(song1)
+        val currentPreview = vm.previewState.value
+        assertNotNull(currentPreview)
+
+        // Advance to next media
+        vm.previewMediaAt(song2)
+        assertEquals(song2, vm.previewState.value?.currentFile)
+        assertEquals(song2, vm.mediaCurrentFile.value)
+
+        vm.mediaPlaybackController.stop()
+    }
 }
 
 
