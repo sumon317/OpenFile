@@ -2041,11 +2041,12 @@ class ExampleRobolectricTest {
             extension = "mp4"
         )
 
-        // 1. Audio clicked -> plays in controller and opens preview
+        // 1. Audio clicked -> plays in controller and opens preview at 0L
         vm.onFileItemClicked(audioFile)
         assertEquals(audioFile, vm.previewState.value?.currentFile)
         assertEquals(audioFile, vm.mediaCurrentFile.value)
         assertTrue(vm.mediaIsPlaying.value)
+        assertEquals(0L, vm.mediaCurrentPosition.value)
 
         // 2. Video clicked -> pauses background audio, opens video preview
         vm.onFileItemClicked(videoFile)
@@ -2057,6 +2058,13 @@ class ExampleRobolectricTest {
         assertNull(vm.previewState.value)
         vm.openMediaPreview(audioFile)
         assertEquals(audioFile, vm.previewState.value?.currentFile)
+
+        // 4. Starting new track resets position to 0L and starts playing
+        val nextAudio = audioFile.copy(uriOrPath = "/sdcard/Music/track2.mp3", displayName = "track2.mp3")
+        vm.previewMediaAt(nextAudio)
+        assertEquals(nextAudio, vm.mediaCurrentFile.value)
+        assertTrue(vm.mediaIsPlaying.value)
+        assertEquals(0L, vm.mediaCurrentPosition.value)
 
         vm.mediaPlaybackController.stop()
     }

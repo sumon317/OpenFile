@@ -15,6 +15,9 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
+import android.support.v4.media.MediaMetadataCompat
+import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.PlaybackStateCompat
 import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -41,6 +44,7 @@ import java.io.File
 class MediaPlaybackForegroundService : Service() {
 
     private var exoPlayer: ExoPlayer? = null
+    private var mediaSession: MediaSessionCompat? = null
     private var currentFile: FileReference? = null
     private var playlist: List<FileReference> = emptyList()
     private var currentIndex = 0
@@ -103,6 +107,7 @@ class MediaPlaybackForegroundService : Service() {
                 Player.STATE_READY -> {
                     val d = exoPlayer?.duration?.takeIf { it > 0 } ?: 0L
                     MediaPlaybackStateHolder.updateDuration(d)
+                    updateMediaSessionState()
                     updateNotification()
                 }
                 Player.STATE_ENDED -> handlePlaybackEnded()
@@ -113,6 +118,7 @@ class MediaPlaybackForegroundService : Service() {
         override fun onIsPlayingChanged(playing: Boolean) {
             wasPlaying = playing
             MediaPlaybackStateHolder.updateIsPlaying(playing)
+            updateMediaSessionState()
             if (playing) {
                 startPositionTracker()
             } else {
@@ -123,6 +129,7 @@ class MediaPlaybackForegroundService : Service() {
 
         override fun onPlayerError(error: PlaybackException) {
             MediaPlaybackStateHolder.updatePlaybackError(error.localizedMessage ?: "Playback error")
+            updateMediaSessionState()
             updateNotification()
         }
 
@@ -132,12 +139,44 @@ class MediaPlaybackForegroundService : Service() {
             reason: Int
         ) {
             MediaPlaybackStateHolder.updateCurrentPosition(newPosition.positionMs.coerceAtLeast(0L))
+            updateMediaSessionState()
         }
     }
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+
+        mediaSession = MediaSessionCompat(this, "OpenFileMediaPlayback").apply {
+            setCallback(object : MediaSessionCompat.Callback() {
+                override fun onPlay() {
+                    exoPlayer?.play()
+                }
+
+                override fun onPause() {
+                    exoPlayer?.pause()
+                }
+
+                override fun onSkipToNext() {
+                    playNext()
+                }
+
+                override fun onSkipToPrevious() {
+                    playPrevious()
+                }
+
+                override fun onSeekTo(pos: Long) {
+                    exoPlayer?.seekTo(pos)
+                    MediaPlaybackStateHolder.updateCurrentPosition(pos)
+                    updateMediaSessionState()
+                }
+
+                override fun onStop() {
+                    stopSelf()
+                }
+            })
+            isActive = true
+        }
 
         exoPlayer = MediaPlaybackStateHolder.getOrCreatePlayer(this).apply {
             addListener(playerListener)
@@ -169,6 +208,7 @@ class MediaPlaybackForegroundService : Service() {
                     val position = intent.getLongExtra(EXTRA_POSITION, 0L)
                     exoPlayer?.seekTo(position)
                     MediaPlaybackStateHolder.updateCurrentPosition(position)
+                    updateMediaSessionState()
                 }
                 ACTION_SET_REPEAT_MODE -> {
                     val mode = intent.getIntExtra(EXTRA_REPEAT_MODE, Player.REPEAT_MODE_OFF)
@@ -183,6 +223,7 @@ class MediaPlaybackForegroundService : Service() {
                     val speed = intent.getFloatExtra(EXTRA_SPEED, 1.0f)
                     exoPlayer?.setPlaybackSpeed(speed)
                     MediaPlaybackStateHolder.updatePlaybackSpeed(speed)
+                    updateMediaSessionState()
                 }
                 ACTION_STOP -> {
                     stopSelf()
@@ -197,7 +238,8 @@ class MediaPlaybackForegroundService : Service() {
         progressJob = mainScope.launch {
             while (isActive) {
                 exoPlayer?.let { player ->
-                    MediaPlaybackStateHolder.updateCurrentPosition(player.currentPosition.coerceAtLeast(0L))
+                    val pos = player.currentPosition.coerceAtLeast(0L)
+                    MediaPlaybackStateHolder.updateCurrentPosition(pos)
                     val d = player.duration
                     if (d > 0L) {
                         MediaPlaybackStateHolder.updateDuration(d)
@@ -291,11 +333,15 @@ class MediaPlaybackForegroundService : Service() {
         currentIndex = index.coerceIn(0, (playlist.size - 1).coerceAtLeast(0))
         currentFile = playlist.getOrNull(currentIndex)
         MediaPlaybackStateHolder.updateCurrentFile(currentFile)
+        MediaPlaybackStateHolder.updateCurrentPosition(0L)
         val file = currentFile ?: return
         val mediaItem = createMediaItem(file)
-        exoPlayer?.setMediaItem(mediaItem)
+        exoPlayer?.setMediaItem(mediaItem, /* resetPosition = */ true)
+        exoPlayer?.seekTo(0L)
         exoPlayer?.prepare()
-        exoPlayer?.playWhenReady = wasPlaying
+        exoPlayer?.play()
+        wasPlaying = true
+        MediaPlaybackStateHolder.updateIsPlaying(true)
         loadMetadataAndNotify(file)
     }
 
@@ -339,11 +385,15 @@ class MediaPlaybackForegroundService : Service() {
             currentIndex = nextIndex
             currentFile = playlist[currentIndex]
             MediaPlaybackStateHolder.updateCurrentFile(currentFile)
+            MediaPlaybackStateHolder.updateCurrentPosition(0L)
             val file = currentFile ?: return
             val mediaItem = createMediaItem(file)
-            exoPlayer?.setMediaItem(mediaItem)
+            exoPlayer?.setMediaItem(mediaItem, /* resetPosition = */ true)
+            exoPlayer?.seekTo(0L)
             exoPlayer?.prepare()
-            exoPlayer?.playWhenReady = true
+            exoPlayer?.play()
+            wasPlaying = true
+            MediaPlaybackStateHolder.updateIsPlaying(true)
             loadMetadataAndNotify(file)
         }
     }
@@ -352,6 +402,11 @@ class MediaPlaybackForegroundService : Service() {
         if (playlist.isEmpty()) return
         if ((exoPlayer?.currentPosition ?: 0L) > 3000L) {
             exoPlayer?.seekTo(0L)
+            MediaPlaybackStateHolder.updateCurrentPosition(0L)
+            exoPlayer?.play()
+            wasPlaying = true
+            MediaPlaybackStateHolder.updateIsPlaying(true)
+            updateMediaSessionState()
             return
         }
         var prevIndex = currentIndex - 1
@@ -367,11 +422,15 @@ class MediaPlaybackForegroundService : Service() {
             currentIndex = prevIndex
             currentFile = playlist[currentIndex]
             MediaPlaybackStateHolder.updateCurrentFile(currentFile)
+            MediaPlaybackStateHolder.updateCurrentPosition(0L)
             val file = currentFile ?: return
             val mediaItem = createMediaItem(file)
-            exoPlayer?.setMediaItem(mediaItem)
+            exoPlayer?.setMediaItem(mediaItem, /* resetPosition = */ true)
+            exoPlayer?.seekTo(0L)
             exoPlayer?.prepare()
-            exoPlayer?.playWhenReady = true
+            exoPlayer?.play()
+            wasPlaying = true
+            MediaPlaybackStateHolder.updateIsPlaying(true)
             loadMetadataAndNotify(file)
         }
     }
@@ -383,7 +442,10 @@ class MediaPlaybackForegroundService : Service() {
         when {
             repeatModeVal == Player.REPEAT_MODE_ONE -> {
                 exoPlayer?.seekTo(0L)
-                exoPlayer?.playWhenReady = true
+                exoPlayer?.play()
+                wasPlaying = true
+                MediaPlaybackStateHolder.updateIsPlaying(true)
+                updateMediaSessionState()
             }
             repeatModeVal == Player.REPEAT_MODE_ALL || shuffleModeVal == 1 -> {
                 playNext()
@@ -391,6 +453,7 @@ class MediaPlaybackForegroundService : Service() {
             else -> {
                 wasPlaying = false
                 MediaPlaybackStateHolder.updateIsPlaying(false)
+                updateMediaSessionState()
                 updateNotification()
             }
         }
@@ -400,6 +463,8 @@ class MediaPlaybackForegroundService : Service() {
         cachedTitle = file.displayName.substringBeforeLast('.')
         cachedArtist = "Loading..."
         cachedArtwork = null
+        updateMediaSessionMetadata(file, cachedArtist, null)
+        updateMediaSessionState()
         updateNotification()
 
         mainScope.launch {
@@ -409,9 +474,47 @@ class MediaPlaybackForegroundService : Service() {
             if (currentFile?.uriOrPath == file.uriOrPath) {
                 cachedArtist = artist
                 cachedArtwork = artwork
+                updateMediaSessionMetadata(file, artist, artwork)
+                updateMediaSessionState()
                 updateNotification()
             }
         }
+    }
+
+    private fun updateMediaSessionState() {
+        val player = exoPlayer ?: return
+        val isPlaying = player.isPlaying
+        val state = if (isPlaying) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
+        val playbackSpeed = player.playbackParameters.speed
+        val position = player.currentPosition.coerceAtLeast(0L)
+
+        val playbackState = PlaybackStateCompat.Builder()
+            .setActions(
+                PlaybackStateCompat.ACTION_PLAY or
+                PlaybackStateCompat.ACTION_PAUSE or
+                PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+                PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
+                PlaybackStateCompat.ACTION_SEEK_TO or
+                PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                PlaybackStateCompat.ACTION_STOP
+            )
+            .setState(state, position, playbackSpeed)
+            .build()
+        mediaSession?.setPlaybackState(playbackState)
+    }
+
+    private fun updateMediaSessionMetadata(file: FileReference, artist: String, artwork: Bitmap?) {
+        val dur = exoPlayer?.duration?.takeIf { it > 0 } ?: 0L
+        val meta = MediaMetadataCompat.Builder()
+            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, file.displayName.substringBeforeLast('.'))
+            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artist)
+            .putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ARTIST, artist)
+            .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, dur)
+        if (artwork != null) {
+            meta.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, artwork)
+            meta.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, artwork)
+        }
+        mediaSession?.setMetadata(meta.build())
     }
 
     private fun extractMetadata(file: FileReference): Pair<String, Bitmap?> {
@@ -474,6 +577,8 @@ class MediaPlaybackForegroundService : Service() {
         val title = cachedTitle.ifBlank { file.displayName.substringBeforeLast('.') }
         val artist = cachedArtist.ifBlank { "Unknown Artist" }
         val isCurrentlyPlaying = exoPlayer?.isPlaying == true
+        val currentPos = exoPlayer?.currentPosition?.coerceAtLeast(0L) ?: 0L
+        val dur = exoPlayer?.duration?.takeIf { it > 0L } ?: 0L
 
         val playPauseAction = if (isCurrentlyPlaying) {
             NotificationCompat.Action(
@@ -489,17 +594,21 @@ class MediaPlaybackForegroundService : Service() {
             )
         }
 
+        val mediaStyle = MediaStyle()
+            .setShowActionsInCompactView(0, 1, 2)
+        mediaSession?.let {
+            mediaStyle.setMediaSession(it.sessionToken)
+        }
+
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_media_notification)
             .setContentTitle(title)
             .setContentText(artist)
+            .setSubText(file.extension.uppercase())
             .setOngoing(isCurrentlyPlaying)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
-            .setStyle(
-                MediaStyle()
-                    .setShowActionsInCompactView(0, 1, 2)
-            )
+            .setStyle(mediaStyle)
             .addAction(
                 NotificationCompat.Action(
                     R.drawable.ic_previous,
@@ -516,6 +625,10 @@ class MediaPlaybackForegroundService : Service() {
                 )
             )
             .setContentIntent(createContentIntent())
+
+        if (dur > 0L) {
+            builder.setProgress(dur.toInt(), currentPos.toInt(), false)
+        }
 
         val art = cachedArtwork ?: getDefaultArtwork()
         if (art != null) {
@@ -588,6 +701,11 @@ class MediaPlaybackForegroundService : Service() {
         stopPositionTracker()
         exoPlayer?.removeListener(playerListener)
         MediaPlaybackStateHolder.releasePlayer()
+        mediaSession?.run {
+            isActive = false
+            release()
+        }
+        mediaSession = null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {

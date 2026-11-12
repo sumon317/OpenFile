@@ -35,6 +35,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -87,6 +88,7 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Forward10
+import androidx.compose.material.icons.filled.Forward5
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -103,6 +105,7 @@ import androidx.compose.material.icons.filled.RepeatOn
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.Replay5
 import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
@@ -496,11 +499,10 @@ fun AudioPlayerPreview(
         val targetUri = resolveMediaUri(file)
         val currentUri = exoPlayer.currentMediaItem?.localConfiguration?.uri
         if (currentUri != targetUri) {
+            currentPositionMs = 0L
             val mediaItem = MediaItem.fromUri(targetUri)
-            exoPlayer.setMediaItem(mediaItem)
-            if (currentPositionMs > 0L) {
-                exoPlayer.seekTo(currentPositionMs)
-            }
+            exoPlayer.setMediaItem(mediaItem, true)
+            exoPlayer.seekTo(0L)
             if (playbackSpeed != 1.0f) {
                 exoPlayer.setPlaybackSpeed(playbackSpeed)
             }
@@ -510,7 +512,10 @@ fun AudioPlayerPreview(
                 AudioRepeatMode.ONE -> Player.REPEAT_MODE_ONE
             }
             exoPlayer.prepare()
-            exoPlayer.playWhenReady = wasPlaying
+            exoPlayer.play()
+            isPlaying = true
+            wasPlaying = true
+            isPrepared = true
         } else {
             isPrepared = true
             isPlaying = exoPlayer.isPlaying
@@ -522,6 +527,7 @@ fun AudioPlayerPreview(
 
     // Skip Navigation Handlers
     val handleSkipNext: () -> Unit = {
+        currentPositionMs = 0L
         if (isShuffleEnabled && effectivePlaylist.size > 1) {
             val candidates = effectivePlaylist.filter { it.uriOrPath != file.uriOrPath }
             val nextRandom = candidates.randomOrNull()
@@ -540,13 +546,16 @@ fun AudioPlayerPreview(
     }
 
     val handleSkipPrevious: () -> Unit = {
-        if (currentPositionMs > 3000L || (!canGoPrevious && onPrevious == null)) {
+        val curPos = exoPlayer.currentPosition
+        if (curPos > 3000L || (!canGoPrevious && onPrevious == null)) {
             exoPlayer.seekTo(0L)
             currentPositionMs = 0L
             exoPlayer.play()
         } else if (currentIdx > 0) {
+            currentPositionMs = 0L
             if (onPrevious != null) onPrevious() else onSelectMedia?.invoke(effectivePlaylist[currentIdx - 1])
         } else if (hasPrevious && onPrevious != null) {
+            currentPositionMs = 0L
             onPrevious()
         } else {
             exoPlayer.seekTo(0L)
@@ -580,9 +589,6 @@ fun AudioPlayerPreview(
                         isPrepared = true
                         val d = exoPlayer.duration
                         if (d > 0L) durationMs = d
-                        if (currentPositionMs > 0L && abs(exoPlayer.currentPosition - currentPositionMs) > 1000L) {
-                            exoPlayer.seekTo(currentPositionMs)
-                        }
                     }
                     Player.STATE_ENDED -> {
                         if (sleepTimerMinutes == -1) {
@@ -840,7 +846,10 @@ fun AudioPlayerPreview(
                 color = Color.White,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.testTag("audio_track_title")
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .basicMarquee(iterations = Int.MAX_VALUE)
+                    .testTag("audio_track_title")
             )
             Spacer(modifier = Modifier.height(2.dp))
             val artistAlbum = listOfNotNull(
@@ -923,6 +932,23 @@ fun AudioPlayerPreview(
                 )
             }
 
+            // 5s Rewind
+            IconButton(
+                onClick = {
+                    val target = (exoPlayer.currentPosition - 5000L).coerceAtLeast(0L)
+                    exoPlayer.seekTo(target)
+                    currentPositionMs = target
+                },
+                enabled = isPrepared
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Replay5,
+                    contentDescription = "Rewind 5 seconds",
+                    tint = if (isPrepared) Color.White else Color(0xFF4A4A4F),
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+
             // Large Squircle Play / Pause Button
             Surface(
                 shape = RoundedCornerShape(26.dp),
@@ -960,6 +986,23 @@ fun AudioPlayerPreview(
                 }
             }
 
+            // 5s Forward
+            IconButton(
+                onClick = {
+                    val target = (exoPlayer.currentPosition + 5000L).coerceAtMost(if (durationMs > 0L) durationMs else Long.MAX_VALUE)
+                    exoPlayer.seekTo(target)
+                    currentPositionMs = target
+                },
+                enabled = isPrepared
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Forward5,
+                    contentDescription = "Forward 5 seconds",
+                    tint = if (isPrepared) Color.White else Color(0xFF4A4A4F),
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+
             // Next Button
             IconButton(
                 onClick = handleSkipNext,
@@ -990,7 +1033,7 @@ fun AudioPlayerPreview(
         }
     }
 
-    // Bottom Action Bar (Volume, Favorite, Queue, More)
+    // Bottom Action Bar (Volume, Playback Speed, Favorite, Queue, More)
     val bottomActionBar = @Composable {
         Row(
             modifier = Modifier
@@ -999,13 +1042,44 @@ fun AudioPlayerPreview(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = { showVolumeDialog = true }) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.VolumeUp,
-                    contentDescription = "Volume",
-                    tint = Color(0xFFB0B0B0),
-                    modifier = Modifier.size(26.dp)
-                )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                IconButton(onClick = { showVolumeDialog = true }) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                        contentDescription = "Volume",
+                        tint = Color(0xFFB0B0B0),
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+
+                // Dedicated One-Tap Playback Speed Quick Badge
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (playbackSpeed != 1.0f) AudioPurple.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.12f),
+                    modifier = Modifier.clickable { showSpeedDialog = true }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Speed,
+                            contentDescription = "Playback Speed",
+                            tint = if (playbackSpeed != 1.0f) AudioPurple else Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "${playbackSpeed}x",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (playbackSpeed != 1.0f) AudioPurple else Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
             }
 
             Row(

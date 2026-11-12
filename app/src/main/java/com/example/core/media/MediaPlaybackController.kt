@@ -46,6 +46,7 @@ class MediaPlaybackController(
 
     fun play(file: FileReference, playlist: List<FileReference>, index: Int) {
         MediaPlaybackStateHolder.updateCurrentFile(file)
+        MediaPlaybackStateHolder.updateCurrentPosition(0L)
         MediaPlaybackStateHolder.updateIsPlaying(true)
         val intent = Intent(context, MediaPlaybackForegroundService::class.java).apply {
             action = MediaPlaybackForegroundService.ACTION_SET_PLAYLIST
