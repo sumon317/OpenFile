@@ -18,6 +18,7 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -129,6 +130,7 @@ import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -190,11 +192,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -505,6 +512,11 @@ fun AudioPlayerPreview(
 
     LaunchedEffect(Unit) {
         EqualizerEngine.initialize(context)
+        // Cleanly pause any active background audio playback so audio sessions do not clash
+        if (com.example.core.media.MediaPlaybackStateHolder.isPlaying.value) {
+            com.example.core.media.MediaPlaybackStateHolder.activePlayer?.pause()
+            com.example.core.media.MediaPlaybackStateHolder.updateIsPlaying(false)
+        }
     }
 
     LaunchedEffect(file.uriOrPath) {
@@ -2354,6 +2366,11 @@ fun VideoPlayerPreview(
 
     LaunchedEffect(Unit) {
         EqualizerEngine.initialize(context)
+        // Cleanly pause any active background audio playback so audio sessions do not clash
+        if (com.example.core.media.MediaPlaybackStateHolder.isPlaying.value) {
+            com.example.core.media.MediaPlaybackStateHolder.activePlayer?.pause()
+            com.example.core.media.MediaPlaybackStateHolder.updateIsPlaying(false)
+        }
     }
 
     // Lock & Audio-only mode states
@@ -2413,8 +2430,15 @@ fun VideoPlayerPreview(
             }
         }
 
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
+
         ExoPlayer.Builder(context, renderersFactory).build().apply {
             try {
+                setAudioAttributes(audioAttributes, true)
+                setHandleAudioBecomingNoisy(true)
                 val mediaItem = MediaItem.fromUri(resolveMediaUri(file))
                 setMediaItem(mediaItem)
                 if (currentPositionMs > 0L) {
@@ -2501,7 +2525,18 @@ fun VideoPlayerPreview(
 
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 if (audioSessionId != C.AUDIO_SESSION_ID_UNSET && audioSessionId > 0) {
-                    EqualizerEngine.attachAudioSession(audioSessionId)
+                    val hasAudio = exoPlayer.currentTracks.isTypeSupported(C.TRACK_TYPE_AUDIO)
+                    if (hasAudio) {
+                        EqualizerEngine.attachAudioSession(audioSessionId)
+                    }
+                }
+            }
+
+            override fun onTracksChanged(tracks: Tracks) {
+                val hasAudio = tracks.isTypeSupported(C.TRACK_TYPE_AUDIO)
+                val sid = exoPlayer.audioSessionId
+                if (hasAudio && sid != C.AUDIO_SESSION_ID_UNSET && sid > 0) {
+                    EqualizerEngine.attachAudioSession(sid)
                 }
             }
 
@@ -2520,6 +2555,10 @@ fun VideoPlayerPreview(
 
         onDispose {
             runCatching {
+                val sid = exoPlayer.audioSessionId
+                if (sid > 0) {
+                    EqualizerEngine.detachAudioSession(sid)
+                }
                 playerViewRef.value?.player = null
                 if (exoPlayer.playbackState != Player.STATE_ENDED) {
                     currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
@@ -2535,13 +2574,50 @@ fun VideoPlayerPreview(
         }
     }
 
-    // Attach Equalizer on video audio session ready
+    // Attach Equalizer on video audio session ready (only when video has an audio track)
     LaunchedEffect(isPrepared) {
         if (isPrepared) {
+            val hasAudio = exoPlayer.currentTracks.isTypeSupported(C.TRACK_TYPE_AUDIO)
             val sid = exoPlayer.audioSessionId
-            if (sid != C.AUDIO_SESSION_ID_UNSET && sid > 0) {
+            if (hasAudio && sid != C.AUDIO_SESSION_ID_UNSET && sid > 0) {
                 EqualizerEngine.attachAudioSession(sid)
             }
+        }
+    }
+
+    // Keep screen ON while playing video to prevent display sleep / surface destruction
+    DisposableEffect(activity, isPlaying) {
+        if (activity != null && isPlaying) {
+            runCatching {
+                activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
+        }
+        onDispose {
+            if (activity != null) {
+                runCatching {
+                    activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+        }
+    }
+
+    // Lifecycle-aware playback pause on app background / screen lock (unless in PiP mode)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, exoPlayer) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
+                    val inPip = activity?.isInPictureInPictureMode == true
+                    if (!inPip && exoPlayer.isPlaying) {
+                        exoPlayer.pause()
+                    }
+                }
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
@@ -2632,16 +2708,18 @@ fun VideoPlayerPreview(
             .testTag("video_player_preview")
     ) {
         if (errorMessage != null) {
-            Column(
+            Box(
                 modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                    .fillMaxSize()
+                    .background(Color.Black)
             ) {
                 if (onDismiss != null) {
                     IconButton(
                         onClick = onDismiss,
-                        modifier = Modifier.align(Alignment.Start)
+                        modifier = Modifier
+                            .statusBarsPadding()
+                            .padding(16.dp)
+                            .align(Alignment.TopStart)
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
@@ -2650,22 +2728,52 @@ fun VideoPlayerPreview(
                         )
                     }
                 }
-                Icon(
-                    imageVector = Icons.Filled.ErrorOutline,
-                    contentDescription = null,
-                    tint = VideoCoral,
-                    modifier = Modifier.size(48.dp)
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = errorMessage ?: "Unable to play video",
-                    color = Color.White,
-                    textAlign = TextAlign.Center
-                )
-                if (onOpenExternal != null) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ErrorOutline,
+                        contentDescription = null,
+                        tint = VideoCoral,
+                        modifier = Modifier.size(56.dp)
+                    )
                     Spacer(modifier = Modifier.height(16.dp))
-                    Button(onClick = onOpenExternal) {
-                        Text("Open in External Player")
+                    Text(
+                        text = "Playback Error",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = errorMessage ?: "Unable to play video",
+                        color = Color.LightGray,
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(
+                            onClick = {
+                                errorMessage = null
+                                exoPlayer.prepare()
+                                exoPlayer.play()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = VideoCoral)
+                        ) {
+                            Text("Retry")
+                        }
+                        if (onOpenExternal != null) {
+                            OutlinedButton(
+                                onClick = onOpenExternal,
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                            ) {
+                                Text("Open in External Player")
+                            }
+                        }
                     }
                 }
             }
@@ -2685,6 +2793,9 @@ fun VideoPlayerPreview(
                             ViewGroup.LayoutParams.MATCH_PARENT
                         )
                         useController = false
+                        keepScreenOn = true
+                        setKeepContentOnPlayerReset(true)
+                        setShutterBackgroundColor(android.graphics.Color.BLACK)
                         resizeMode = resizeModes[currentResizeModeIndex].first
                         player = exoPlayer
                         playerViewRef.value = this
@@ -2882,13 +2993,16 @@ fun VideoPlayerPreview(
                                     delay(350)
                                     isBoosting = true
                                     isSpeedBoosting = true
-                                    exoPlayer.setPlaybackSpeed(2.0f)
+                                    runCatching { exoPlayer.setPlaybackSpeed(2.0f) }
                                 }
-                                tryAwaitRelease()
-                                boostJob.cancel()
-                                if (isBoosting) {
-                                    isSpeedBoosting = false
-                                    exoPlayer.setPlaybackSpeed(playbackSpeed)
+                                try {
+                                    tryAwaitRelease()
+                                } finally {
+                                    boostJob.cancel()
+                                    if (isBoosting) {
+                                        isSpeedBoosting = false
+                                        runCatching { exoPlayer.setPlaybackSpeed(playbackSpeed) }
+                                    }
                                 }
                             },
                             onTap = {

@@ -170,20 +170,23 @@ object EqualizerEngine {
             releaseEffectsInternal()
             runCatching {
                 val eq = Equalizer(0, audioSessionId)
-                val numBands = eq.numberOfBands.toInt()
-                val minLevel = eq.bandLevelRange[0].toInt()
-                val maxLevel = eq.bandLevelRange[1].toInt()
+                val numBands = runCatching { eq.numberOfBands.toInt() }.getOrDefault(0)
+                val range = runCatching { eq.bandLevelRange }.getOrNull()
+                val minLevel = range?.getOrNull(0)?.toInt() ?: -1500
+                val maxLevel = range?.getOrNull(1)?.toInt() ?: 1500
 
-                val configuredBands = (0 until numBands).map { idx ->
-                    val centerFreq = eq.getCenterFreq(idx.toShort()) / 1000
-                    val existingLevel = _state.value.bands.getOrNull(idx)?.levelMb ?: 0
-                    EqualizerBand(
-                        index = idx,
-                        centerFreqHz = centerFreq,
-                        levelMb = existingLevel.coerceIn(minLevel, maxLevel),
-                        minLevelMb = minLevel,
-                        maxLevelMb = maxLevel
-                    )
+                val configuredBands = (0 until numBands).mapNotNull { idx ->
+                    runCatching {
+                        val centerFreq = eq.getCenterFreq(idx.toShort()) / 1000
+                        val existingLevel = _state.value.bands.getOrNull(idx)?.levelMb ?: 0
+                        EqualizerBand(
+                            index = idx,
+                            centerFreqHz = centerFreq,
+                            levelMb = existingLevel.coerceIn(minLevel, maxLevel),
+                            minLevelMb = minLevel,
+                            maxLevelMb = maxLevel
+                        )
+                    }.getOrNull()
                 }
 
                 equalizer = eq
@@ -201,6 +204,12 @@ object EqualizerEngine {
             }.onFailure {
                 _state.update { s -> s.copy(isHardwareEffectBound = false) }
             }
+        }
+    }
+
+    fun detachAudioSession(audioSessionId: Int) {
+        if (audioSessionId > 0 && audioSessionId == attachedAudioSessionId) {
+            releaseEffects()
         }
     }
 

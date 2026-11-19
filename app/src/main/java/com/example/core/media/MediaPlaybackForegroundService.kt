@@ -146,6 +146,7 @@ class MediaPlaybackForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        updateNotification()
 
         mediaSession = MediaSessionCompat(this, "OpenFileMediaPlayback").apply {
             setCallback(object : MediaSessionCompat.Callback() {
@@ -184,6 +185,9 @@ class MediaPlaybackForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!isForegroundServiceStarted) {
+            updateNotification()
+        }
         intent?.action?.let { action ->
             when (action) {
                 ACTION_SET_PLAYLIST -> {
@@ -226,6 +230,15 @@ class MediaPlaybackForegroundService : Service() {
                     updateMediaSessionState()
                 }
                 ACTION_STOP -> {
+                    if (isForegroundServiceStarted) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                            stopForeground(STOP_FOREGROUND_REMOVE)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            stopForeground(true)
+                        }
+                        isForegroundServiceStarted = false
+                    }
                     stopSelf()
                 }
             }
