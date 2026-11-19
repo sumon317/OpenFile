@@ -1,5 +1,7 @@
 @file:OptIn(
-    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.compose.material3.ExperimentalMaterial3Api::class
+)
+@file:androidx.annotation.OptIn(
     androidx.media3.common.util.UnstableApi::class
 )
 
@@ -1187,7 +1189,10 @@ fun AudioPlayerPreview(
                 }
 
                 Box {
-                    IconButton(onClick = { showMoreMenu = true }) {
+                    IconButton(
+                        onClick = { showMoreMenu = true },
+                        modifier = Modifier.testTag("audio_more_options_button")
+                    ) {
                         Icon(
                             imageVector = Icons.Filled.MoreVert,
                             contentDescription = "More Options",
@@ -1198,7 +1203,8 @@ fun AudioPlayerPreview(
 
                     DropdownMenu(
                         expanded = showMoreMenu,
-                        onDismissRequest = { showMoreMenu = false }
+                        onDismissRequest = { showMoreMenu = false },
+                        containerColor = Color(0xFF22242D)
                     ) {
                         DropdownMenuItem(
                             text = { Text("Studio Equalizer & DSP") },

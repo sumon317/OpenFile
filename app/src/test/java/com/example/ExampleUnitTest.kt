@@ -846,6 +846,30 @@ class ExampleUnitTest {
             assertTrue("Preset ${preset.name} must have a category", preset.category.isNotBlank())
         }
     }
+
+    @Test
+    fun `lrc parser finds matching lrc using localBackingPath metadata`() {
+        val tempDir = Files.createTempDirectory("openfile_lrc_test").toFile()
+        try {
+            val audioFile = File(tempDir, "sample_track.mp3").apply { writeText("audio-content") }
+            val lrcFile = File(tempDir, "sample_track.lrc").apply { writeText("[00:01.00]Hello world") }
+
+            val fileRefWithMetadata = FileReference(
+                providerType = ProviderType.LOCAL,
+                uriOrPath = "content://media/external/audio/media/12345",
+                displayName = "sample_track.mp3",
+                parentUriOrPath = "content://media/external/audio/media",
+                isDirectory = false,
+                metadata = mapOf("localBackingPath" to audioFile.absolutePath)
+            )
+
+            val matched = com.example.core.media.LrcParser.findMatchingLrcFile(fileRefWithMetadata)
+            org.junit.Assert.assertNotNull(matched)
+            assertEquals(lrcFile.absolutePath, matched?.absolutePath)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
 }
 
 

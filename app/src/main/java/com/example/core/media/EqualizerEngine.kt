@@ -353,5 +353,6 @@ object EqualizerEngine {
         virtualizer = null
         loudnessEnhancer = null
         attachedAudioSessionId = 0
+        _state.update { it.copy(isHardwareEffectBound = false) }
     }
 }

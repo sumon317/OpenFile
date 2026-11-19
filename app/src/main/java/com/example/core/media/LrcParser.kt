@@ -67,7 +67,7 @@ object LrcParser {
     }
 
     fun findMatchingLrcFile(file: FileReference): File? {
-        val path = file.uriOrPath
+        val path = file.metadata["localBackingPath"] ?: file.uriOrPath
         val audioFile = File(path)
         if (!audioFile.exists()) return null
 
