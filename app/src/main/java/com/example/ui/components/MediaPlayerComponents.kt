@@ -61,6 +61,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardActions
@@ -157,6 +158,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -767,7 +769,7 @@ fun AudioPlayerPreview(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 4.dp),
+                .padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -824,32 +826,194 @@ fun AudioPlayerPreview(
                             tint = Color.White
                         )
                     }
-                } else {
-                    Spacer(modifier = Modifier.width(48.dp))
+                }
+                Box {
+                    IconButton(
+                        onClick = { showMoreMenu = true },
+                        modifier = Modifier.testTag("audio_more_options_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.MoreVert,
+                            contentDescription = "More Options",
+                            tint = Color.White
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = showMoreMenu,
+                        onDismissRequest = { showMoreMenu = false },
+                        containerColor = Color(0xFF22242D)
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Studio Equalizer & DSP", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Filled.GraphicEq, contentDescription = null, tint = AudioPurple) },
+                            onClick = {
+                                showMoreMenu = false
+                                showEqualizerSheet = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Synchronized Lyrics (.lrc)", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Filled.Lyrics, contentDescription = null, tint = AudioPurple) },
+                            onClick = {
+                                showMoreMenu = false
+                                showLyricsSheet = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (isAbLoopActive) "Disable A-B Loop" else "Enable A-B Repeat Loop", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Filled.Replay, contentDescription = null, tint = Color(0xFFB0B0B0)) },
+                            onClick = {
+                                showMoreMenu = false
+                                isAbLoopActive = !isAbLoopActive
+                                toastMessage = if (isAbLoopActive) "A-B Loop Enabled" else "A-B Loop Disabled"
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (isVinylMode) "Artwork Card View" else "Spinning Vinyl Mode", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Filled.Album, contentDescription = null, tint = Color(0xFFB0B0B0)) },
+                            onClick = {
+                                showMoreMenu = false
+                                isVinylMode = !isVinylMode
+                            }
+                        )
+                        HorizontalDivider(color = Color(0xFF333645))
+                        DropdownMenuItem(
+                            text = { Text("Playback Speed (${playbackSpeed}x)", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Filled.Speed, contentDescription = null, tint = Color(0xFFB0B0B0)) },
+                            onClick = {
+                                showMoreMenu = false
+                                showSpeedDialog = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (sleepTimerMinutes > 0) "Sleep Timer (${sleepTimerRemainingSeconds / 60}m)"
+                                    else if (sleepTimerMinutes == -1) "Sleep Timer (End of song)"
+                                    else "Sleep Timer",
+                                    color = Color.White
+                                )
+                            },
+                            leadingIcon = { Icon(Icons.Filled.Timer, contentDescription = null, tint = Color(0xFFB0B0B0)) },
+                            onClick = {
+                                showMoreMenu = false
+                                showSleepTimerDialog = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Audio Details & Tags", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Filled.Info, contentDescription = null, tint = Color(0xFFB0B0B0)) },
+                            onClick = {
+                                showMoreMenu = false
+                                showAudioDetailsDialog = true
+                            }
+                        )
+                        if (onOpenExternal != null) {
+                            HorizontalDivider(color = Color(0xFF333645))
+                            DropdownMenuItem(
+                                text = { Text("Open in External Player", color = Color.White) },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, tint = Color(0xFFB0B0B0)) },
+                                onClick = {
+                                    showMoreMenu = false
+                                    onOpenExternal()
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 
-    // Scrubber Row with Times & Capsule Thumb
-    val scrubberRow = @Composable {
+    // Metadata (Title, Artist/Album, Tech Specs badge, Favorite Heart)
+    val metadataSection = @Composable {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 24.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(
-                text = formatMediaDuration(currentPositionMs),
-                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-                color = Color(0xFFB0B0B0),
-                modifier = Modifier.width(38.dp)
-            )
+            Column(
+                modifier = Modifier.weight(1f),
+                horizontalAlignment = Alignment.Start
+            ) {
+                Text(
+                    text = trackInfo?.title ?: file.displayName.substringBeforeLast('.'),
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 22.sp
+                    ),
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .basicMarquee(iterations = Int.MAX_VALUE)
+                        .testTag("audio_track_title")
+                )
+                Spacer(modifier = Modifier.height(3.dp))
+                val artistAlbum = listOfNotNull(
+                    trackInfo?.artist?.takeIf { it.isNotBlank() && it != "Unknown Artist" },
+                    trackInfo?.album?.takeIf { it.isNotBlank() }
+                ).joinToString(" • ").ifBlank {
+                    trackInfo?.artist?.takeIf { it.isNotBlank() } ?: "Unknown Artist"
+                }
+                Text(
+                    text = artistAlbum,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp),
+                    color = Color(0xFFA0A5B5),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (techSpecsText.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color(0xFF1B1D26),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF2B2E3D))
+                    ) {
+                        Text(
+                            text = techSpecsText,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = Color(0xFF8E92A4),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
 
+            // Favorite Button (Heart) right aligned with Title & Artist
+            IconButton(
+                onClick = {
+                    isFavorite = !isFavorite
+                    toastMessage = if (isFavorite) "Added to Favorites" else "Removed from Favorites"
+                },
+                modifier = Modifier.padding(start = 12.dp)
+            ) {
+                Icon(
+                    imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                    contentDescription = "Favorite",
+                    tint = if (isFavorite) Color(0xFFFF4081) else Color(0xFF8E8E93),
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+        }
+    }
+
+    // Scrubber Row: Full-width slider with elapsed and duration times below
+    val scrubberRow = @Composable {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+        ) {
             Box(
                 modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 4.dp)
+                    .fillMaxWidth()
                     .testTag("audio_seek_slider")
             ) {
                 Slider(
@@ -869,157 +1033,88 @@ fun AudioPlayerPreview(
                     thumb = {
                         Box(
                             modifier = Modifier
-                                .width(4.dp)
-                                .height(16.dp)
-                                .clip(RoundedCornerShape(2.dp))
+                                .size(14.dp)
+                                .clip(CircleShape)
                                 .background(Color.White)
+                                .border(2.dp, AudioPurple, CircleShape)
                         )
                     },
                     colors = SliderDefaults.colors(
                         thumbColor = Color.White,
-                        activeTrackColor = Color.White,
-                        inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                        activeTrackColor = AudioPurple,
+                        inactiveTrackColor = Color.White.copy(alpha = 0.15f)
                     ),
                     modifier = Modifier.fillMaxWidth()
                 )
             }
 
-            Text(
-                text = formatMediaDuration(durationMs),
-                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-                color = Color(0xFFB0B0B0),
-                textAlign = TextAlign.End,
-                modifier = Modifier.width(38.dp)
-            )
-        }
-    }
-
-    // Metadata (Title, Artist/Album, Tech Specs)
-    val metadataSection = @Composable {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp),
-            horizontalAlignment = Alignment.Start
-        ) {
-            Text(
-                text = trackInfo?.title ?: file.displayName.substringBeforeLast('.'),
-                style = MaterialTheme.typography.titleLarge.copy(
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 22.sp
-                ),
-                color = Color.White,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .basicMarquee(iterations = Int.MAX_VALUE)
-                    .testTag("audio_track_title")
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            val artistAlbum = listOfNotNull(
-                trackInfo?.artist?.takeIf { it.isNotBlank() && it != "Unknown Artist" },
-                trackInfo?.album?.takeIf { it.isNotBlank() }
-            ).joinToString(" • ").ifBlank {
-                trackInfo?.artist?.takeIf { it.isNotBlank() } ?: "Unknown Artist"
-            }
-            Text(
-                text = artistAlbum,
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF9E9E9E),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (techSpecsText.isNotBlank()) {
-                Spacer(modifier = Modifier.height(4.dp))
+                    .padding(horizontal = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    text = techSpecsText,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF757575),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    text = formatMediaDuration(currentPositionMs),
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                    color = Color(0xFF9E9E9E)
+                )
+                Text(
+                    text = formatMediaDuration(durationMs),
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                    color = Color(0xFF9E9E9E)
                 )
             }
         }
     }
 
-    // Main Playback Controls Row (Repeat, Previous, Play/Pause squircle, Next, Shuffle)
+    // Main Playback Controls: Generously spaced 5-button transport layout
     val controlsRow = @Composable {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp),
+                .padding(horizontal = 24.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Repeat mode toggle
+            // Shuffle Toggle
             IconButton(
                 onClick = {
-                    audioRepeatMode = when (audioRepeatMode) {
-                        AudioRepeatMode.OFF -> AudioRepeatMode.ALL
-                        AudioRepeatMode.ALL -> AudioRepeatMode.ONE
-                        AudioRepeatMode.ONE -> AudioRepeatMode.OFF
-                    }
-                    exoPlayer.repeatMode = when (audioRepeatMode) {
-                        AudioRepeatMode.OFF -> Player.REPEAT_MODE_OFF
-                        AudioRepeatMode.ALL -> Player.REPEAT_MODE_ALL
-                        AudioRepeatMode.ONE -> Player.REPEAT_MODE_ONE
-                    }
-                    toastMessage = when (audioRepeatMode) {
-                        AudioRepeatMode.ALL -> "Repeat All"
-                        AudioRepeatMode.ONE -> "Repeat Current"
-                        AudioRepeatMode.OFF -> "Repeat Off"
-                    }
-                }
+                    isShuffleEnabled = !isShuffleEnabled
+                    toastMessage = if (isShuffleEnabled) "Shuffle On" else "Shuffle Off"
+                },
+                modifier = Modifier.size(48.dp)
             ) {
                 Icon(
-                    imageVector = when (audioRepeatMode) {
-                        AudioRepeatMode.ONE -> Icons.Filled.RepeatOne
-                        AudioRepeatMode.ALL -> Icons.Filled.RepeatOn
-                        AudioRepeatMode.OFF -> Icons.Filled.Repeat
-                    },
-                    contentDescription = "Repeat Mode",
-                    tint = if (audioRepeatMode != AudioRepeatMode.OFF) AudioPurple else Color(0xFF8E8E93),
-                    modifier = Modifier.size(26.dp)
+                    imageVector = if (isShuffleEnabled) Icons.Filled.ShuffleOn else Icons.Filled.Shuffle,
+                    contentDescription = "Shuffle",
+                    tint = if (isShuffleEnabled) AudioPurple else Color(0xFF7A7D8A),
+                    modifier = Modifier.size(24.dp)
                 )
             }
 
             // Previous Button
             IconButton(
                 onClick = handleSkipPrevious,
-                enabled = isPrepared
+                enabled = isPrepared,
+                modifier = Modifier.size(54.dp)
             ) {
                 Icon(
                     imageVector = Icons.Filled.SkipPrevious,
                     contentDescription = "Previous Track",
                     tint = if (canGoPrevious || currentPositionMs > 3000L) Color.White else Color(0xFF4A4A4F),
-                    modifier = Modifier.size(34.dp)
+                    modifier = Modifier.size(36.dp)
                 )
             }
 
-            // 5s Rewind
-            IconButton(
-                onClick = {
-                    val target = (exoPlayer.currentPosition - 5000L).coerceAtLeast(0L)
-                    exoPlayer.seekTo(target)
-                    currentPositionMs = target
-                },
-                enabled = isPrepared
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Replay5,
-                    contentDescription = "Rewind 5 seconds",
-                    tint = if (isPrepared) Color.White else Color(0xFF4A4A4F),
-                    modifier = Modifier.size(28.dp)
-                )
-            }
-
-            // Large Squircle Play / Pause Button
+            // Center Hero Play / Pause Button
             Surface(
-                shape = RoundedCornerShape(26.dp),
-                color = Color(0xFFE2E8F0),
+                shape = CircleShape,
+                color = Color.White,
+                shadowElevation = 8.dp,
                 modifier = Modifier
-                    .size(76.dp)
+                    .size(72.dp)
                     .clickable {
                         if (isPlaying) {
                             exoPlayer.pause()
@@ -1051,238 +1146,128 @@ fun AudioPlayerPreview(
                 }
             }
 
-            // 5s Forward
-            IconButton(
-                onClick = {
-                    val target = (exoPlayer.currentPosition + 5000L).coerceAtMost(if (durationMs > 0L) durationMs else Long.MAX_VALUE)
-                    exoPlayer.seekTo(target)
-                    currentPositionMs = target
-                },
-                enabled = isPrepared
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Forward5,
-                    contentDescription = "Forward 5 seconds",
-                    tint = if (isPrepared) Color.White else Color(0xFF4A4A4F),
-                    modifier = Modifier.size(28.dp)
-                )
-            }
-
             // Next Button
             IconButton(
                 onClick = handleSkipNext,
-                enabled = isPrepared
+                enabled = isPrepared,
+                modifier = Modifier.size(54.dp)
             ) {
                 Icon(
                     imageVector = Icons.Filled.SkipNext,
                     contentDescription = "Next Track",
                     tint = if (canGoNext) Color.White else Color(0xFF4A4A4F),
-                    modifier = Modifier.size(34.dp)
+                    modifier = Modifier.size(36.dp)
                 )
             }
 
-            // Shuffle Toggle
+            // Repeat Mode Toggle
             IconButton(
                 onClick = {
-                    isShuffleEnabled = !isShuffleEnabled
-                    toastMessage = if (isShuffleEnabled) "Shuffle On" else "Shuffle Off"
-                }
+                    audioRepeatMode = when (audioRepeatMode) {
+                        AudioRepeatMode.OFF -> AudioRepeatMode.ALL
+                        AudioRepeatMode.ALL -> AudioRepeatMode.ONE
+                        AudioRepeatMode.ONE -> AudioRepeatMode.OFF
+                    }
+                    exoPlayer.repeatMode = when (audioRepeatMode) {
+                        AudioRepeatMode.OFF -> Player.REPEAT_MODE_OFF
+                        AudioRepeatMode.ALL -> Player.REPEAT_MODE_ALL
+                        AudioRepeatMode.ONE -> Player.REPEAT_MODE_ONE
+                    }
+                    toastMessage = when (audioRepeatMode) {
+                        AudioRepeatMode.ALL -> "Repeat All"
+                        AudioRepeatMode.ONE -> "Repeat Current"
+                        AudioRepeatMode.OFF -> "Repeat Off"
+                    }
+                },
+                modifier = Modifier.size(48.dp)
             ) {
                 Icon(
-                    imageVector = if (isShuffleEnabled) Icons.Filled.ShuffleOn else Icons.Filled.Shuffle,
-                    contentDescription = "Shuffle",
-                    tint = if (isShuffleEnabled) AudioPurple else Color(0xFF8E8E93),
-                    modifier = Modifier.size(26.dp)
+                    imageVector = when (audioRepeatMode) {
+                        AudioRepeatMode.ONE -> Icons.Filled.RepeatOne
+                        AudioRepeatMode.ALL -> Icons.Filled.RepeatOn
+                        AudioRepeatMode.OFF -> Icons.Filled.Repeat
+                    },
+                    contentDescription = "Repeat Mode",
+                    tint = if (audioRepeatMode != AudioRepeatMode.OFF) AudioPurple else Color(0xFF7A7D8A),
+                    modifier = Modifier.size(24.dp)
                 )
             }
         }
     }
 
-    // Bottom Action Bar (Volume, Playback Speed, Favorite, Queue, More)
+    // Bottom Action Bar: Balanced 5-utility layout (Volume, Playback Speed, Equalizer DSP, Lyrics, Queue)
     val bottomActionBar = @Composable {
+        val eqActive by EqualizerEngine.state.collectAsState()
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 6.dp),
+                .padding(horizontal = 24.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                IconButton(onClick = { showVolumeDialog = true }) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.VolumeUp,
-                        contentDescription = "Volume",
-                        tint = Color(0xFFB0B0B0),
-                        modifier = Modifier.size(26.dp)
-                    )
-                }
+            IconButton(onClick = { showVolumeDialog = true }) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                    contentDescription = "Volume",
+                    tint = Color(0xFF9E9E9E),
+                    modifier = Modifier.size(24.dp)
+                )
+            }
 
-                // Dedicated One-Tap Playback Speed Quick Badge
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (playbackSpeed != 1.0f) AudioPurple.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.12f),
-                    modifier = Modifier.clickable { showSpeedDialog = true }
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = if (playbackSpeed != 1.0f) AudioPurple.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.08f),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    if (playbackSpeed != 1.0f) AudioPurple else Color.White.copy(alpha = 0.15f)
+                ),
+                modifier = Modifier.clickable { showSpeedDialog = true }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Speed,
-                            contentDescription = "Playback Speed",
-                            tint = if (playbackSpeed != 1.0f) AudioPurple else Color.White,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "${playbackSpeed}x",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (playbackSpeed != 1.0f) AudioPurple else Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-                // Studio Equalizer Button
-                IconButton(onClick = { showEqualizerSheet = true }) {
                     Icon(
-                        imageVector = Icons.Filled.GraphicEq,
-                        contentDescription = "Studio Equalizer & DSP",
-                        tint = AudioPurple,
-                        modifier = Modifier.size(26.dp)
+                        imageVector = Icons.Filled.Speed,
+                        contentDescription = "Playback Speed",
+                        tint = if (playbackSpeed != 1.0f) AudioPurple else Color.White,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "${playbackSpeed}x",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (playbackSpeed != 1.0f) AudioPurple else Color.White,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
 
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Synchronized Lyrics Button
-                IconButton(onClick = { showLyricsSheet = true }) {
-                    Icon(
-                        imageVector = Icons.Filled.Lyrics,
-                        contentDescription = "Synchronized Lyrics",
-                        tint = if (parsedLyrics.isNotEmpty()) AudioPurple else Color(0xFFB0B0B0),
-                        modifier = Modifier.size(26.dp)
-                    )
-                }
+            IconButton(onClick = { showEqualizerSheet = true }) {
+                Icon(
+                    imageVector = Icons.Filled.GraphicEq,
+                    contentDescription = "Studio Equalizer & DSP",
+                    tint = if (eqActive.enabled) AudioPurple else Color(0xFF9E9E9E),
+                    modifier = Modifier.size(25.dp)
+                )
+            }
 
-                IconButton(onClick = { isFavorite = !isFavorite }) {
-                    Icon(
-                        imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                        contentDescription = "Favorite",
-                        tint = if (isFavorite) Color(0xFFFF5252) else Color(0xFFB0B0B0),
-                        modifier = Modifier.size(26.dp)
-                    )
-                }
+            IconButton(onClick = { showLyricsSheet = true }) {
+                Icon(
+                    imageVector = Icons.Filled.Lyrics,
+                    contentDescription = "Synchronized Lyrics",
+                    tint = if (parsedLyrics.isNotEmpty()) AudioPurple else Color(0xFF9E9E9E),
+                    modifier = Modifier.size(25.dp)
+                )
+            }
 
-                IconButton(onClick = { showQueueSheet = true }) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                        contentDescription = "Queue",
-                        tint = Color(0xFFB0B0B0),
-                        modifier = Modifier.size(26.dp)
-                    )
-                }
-
-                Box {
-                    IconButton(
-                        onClick = { showMoreMenu = true },
-                        modifier = Modifier.testTag("audio_more_options_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.MoreVert,
-                            contentDescription = "More Options",
-                            tint = Color(0xFFB0B0B0),
-                            modifier = Modifier.size(26.dp)
-                        )
-                    }
-
-                    DropdownMenu(
-                        expanded = showMoreMenu,
-                        onDismissRequest = { showMoreMenu = false },
-                        containerColor = Color(0xFF22242D)
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Studio Equalizer & DSP") },
-                            leadingIcon = { Icon(Icons.Filled.GraphicEq, contentDescription = null, tint = AudioPurple) },
-                            onClick = {
-                                showMoreMenu = false
-                                showEqualizerSheet = true
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Synchronized Lyrics (.lrc)") },
-                            leadingIcon = { Icon(Icons.Filled.Lyrics, contentDescription = null, tint = AudioPurple) },
-                            onClick = {
-                                showMoreMenu = false
-                                showLyricsSheet = true
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text(if (isAbLoopActive) "Disable A-B Loop" else "Enable A-B Repeat Loop") },
-                            leadingIcon = { Icon(Icons.Filled.Replay, contentDescription = null) },
-                            onClick = {
-                                showMoreMenu = false
-                                isAbLoopActive = !isAbLoopActive
-                                toastMessage = if (isAbLoopActive) "A-B Loop Enabled" else "A-B Loop Disabled"
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text(if (isVinylMode) "Artwork Card View" else "Spinning Vinyl Mode") },
-                            leadingIcon = { Icon(Icons.Filled.Album, contentDescription = null) },
-                            onClick = {
-                                showMoreMenu = false
-                                isVinylMode = !isVinylMode
-                            }
-                        )
-                        HorizontalDivider()
-                        DropdownMenuItem(
-                            text = { Text("Playback Speed (${playbackSpeed}x)") },
-                            leadingIcon = { Icon(Icons.Filled.Speed, contentDescription = null) },
-                            onClick = {
-                                showMoreMenu = false
-                                showSpeedDialog = true
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    if (sleepTimerMinutes > 0) "Sleep Timer (${sleepTimerRemainingSeconds / 60}m)"
-                                    else if (sleepTimerMinutes == -1) "Sleep Timer (End of song)"
-                                    else "Sleep Timer"
-                                )
-                            },
-                            leadingIcon = { Icon(Icons.Filled.Timer, contentDescription = null) },
-                            onClick = {
-                                showMoreMenu = false
-                                showSleepTimerDialog = true
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Audio Details & Tags") },
-                            leadingIcon = { Icon(Icons.Filled.Info, contentDescription = null) },
-                            onClick = {
-                                showMoreMenu = false
-                                showAudioDetailsDialog = true
-                            }
-                        )
-                        if (onOpenExternal != null) {
-                            HorizontalDivider()
-                            DropdownMenuItem(
-                                text = { Text("Open in External Player") },
-                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null) },
-                                onClick = {
-                                    showMoreMenu = false
-                                    onOpenExternal()
-                                }
-                            )
-                        }
-                    }
-                }
+            IconButton(onClick = { showQueueSheet = true }) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                    contentDescription = "Queue",
+                    tint = Color(0xFF9E9E9E),
+                    modifier = Modifier.size(25.dp)
+                )
             }
         }
     }
@@ -1339,7 +1324,15 @@ fun AudioPlayerPreview(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF090A0C))
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color(0xFF13151D),
+                        Color(0xFF0E0F14),
+                        Color(0xFF07080A)
+                    )
+                )
+            )
             .testTag("audio_player_preview")
     ) {
         if (isLandscape) {
@@ -1493,27 +1486,31 @@ fun AudioPlayerPreview(
                 }
             }
         } else {
-            // Portrait Mode: Exact replica of the screenshot layout
+            // Portrait Mode: Spacious, un-cramped modern audio player
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState()),
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(bottom = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    playerTopBar()
+                playerTopBar()
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Album Art Carousel (HorizontalPager with peeking edges)
+                // Album Art Carousel / Turntable (flexible weight so it NEVER cramps controls)
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
                     HorizontalPager(
                         state = pagerState,
-                        contentPadding = PaddingValues(horizontal = 48.dp),
+                        contentPadding = PaddingValues(horizontal = 32.dp),
                         pageSpacing = 16.dp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(290.dp)
+                        modifier = Modifier.fillMaxSize()
                     ) { page ->
                         val pageFile = effectivePlaylist[page]
                         val isCurrent = page == currentIdx
@@ -1530,11 +1527,37 @@ fun AudioPlayerPreview(
                             modifier = Modifier
                                 .fillMaxHeight()
                                 .aspectRatio(1f)
-                                .clickable { isVinylMode = !isVinylMode }
+                                .sizeIn(maxWidth = 340.dp, maxHeight = 340.dp)
+                                .pointerInput(Unit) {
+                                    detectTapGestures(
+                                        onTap = { isVinylMode = !isVinylMode },
+                                        onDoubleTap = { offset ->
+                                            if (offset.x < size.width * 0.4f) {
+                                                val target = (exoPlayer.currentPosition - 5000L).coerceAtLeast(0L)
+                                                exoPlayer.seekTo(target)
+                                                currentPositionMs = target
+                                                toastMessage = "-5s"
+                                            } else if (offset.x > size.width * 0.6f) {
+                                                val target = (exoPlayer.currentPosition + 5000L).coerceAtMost(if (durationMs > 0L) durationMs else Long.MAX_VALUE)
+                                                exoPlayer.seekTo(target)
+                                                currentPositionMs = target
+                                                toastMessage = "+5s"
+                                            } else {
+                                                isVinylMode = !isVinylMode
+                                            }
+                                        }
+                                    )
+                                }
                                 .testTag(if (isCurrent) "audio_album_card" else "audio_album_card_$page"),
-                            shape = if (isVinylMode) CircleShape else RoundedCornerShape(24.dp),
-                            elevation = CardDefaults.cardElevation(defaultElevation = if (isCurrent) 12.dp else 4.dp),
-                            colors = CardDefaults.cardColors(containerColor = if (isVinylMode) Color(0xFF101116) else Color(0xFF16171B))
+                            shape = if (isVinylMode) CircleShape else RoundedCornerShape(26.dp),
+                            elevation = CardDefaults.cardElevation(defaultElevation = if (isCurrent) 10.dp else 2.dp),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                if (isVinylMode) Color(0xFF282A36) else Color.White.copy(alpha = 0.08f)
+                            ),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isVinylMode) Color(0xFF101116) else Color(0xFF16171F)
+                            )
                         ) {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 if (isVinylMode) {
@@ -1556,13 +1579,13 @@ fun AudioPlayerPreview(
                                         modifier = Modifier.fillMaxSize().padding(10.dp).then(rotationModifier)
                                     ) {
                                         Box(contentAlignment = Alignment.Center) {
-                                            Box(modifier = Modifier.size(200.dp).border(1.dp, Color(0xFF22242E), CircleShape))
-                                            Box(modifier = Modifier.size(155.dp).border(1.dp, Color(0xFF22242E), CircleShape))
-                                            Box(modifier = Modifier.size(110.dp).border(1.dp, Color(0xFF22242E), CircleShape))
+                                            Box(modifier = Modifier.fillMaxSize(0.85f).border(1.dp, Color(0xFF22242E), CircleShape))
+                                            Box(modifier = Modifier.fillMaxSize(0.65f).border(1.dp, Color(0xFF22242E), CircleShape))
+                                            Box(modifier = Modifier.fillMaxSize(0.45f).border(1.dp, Color(0xFF22242E), CircleShape))
                                             Surface(
                                                 shape = CircleShape,
                                                 color = AudioPurple,
-                                                modifier = Modifier.size(80.dp)
+                                                modifier = Modifier.fillMaxSize(0.35f)
                                             ) {
                                                 if (pageArtwork != null) {
                                                     Image(
@@ -1618,10 +1641,17 @@ fun AudioPlayerPreview(
                             }
                         }
                     }
+                }
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                // Controls & Details Column
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    metadataSection()
 
                     if (isAbLoopActive || abPointA != null || abPointB != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
                         ABRepeatBar(
                             pointA = abPointA,
                             pointB = abPointB,
@@ -1644,24 +1674,19 @@ fun AudioPlayerPreview(
                                 abPointB = null
                                 isAbLoopActive = false
                             },
-                            modifier = Modifier.padding(bottom = 6.dp)
+                            modifier = Modifier.padding(horizontal = 24.dp)
                         )
                     }
 
+                    Spacer(modifier = Modifier.height(10.dp))
+
                     scrubberRow()
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
 
-                    metadataSection()
-                }
-
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
                     controlsRow()
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     // Next Song Preview Indicator
                     if (nextTrackTitle != null) {
@@ -1674,17 +1699,13 @@ fun AudioPlayerPreview(
                             textAlign = TextAlign.Center,
                             modifier = Modifier
                                 .clickable { handleSkipNext() }
-                                .padding(horizontal = 24.dp, vertical = 4.dp)
+                                .padding(horizontal = 24.dp, vertical = 2.dp)
                         )
-                    } else {
-                        Spacer(modifier = Modifier.height(24.dp))
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
 
                     bottomActionBar()
-
-                    Spacer(modifier = Modifier.height(8.dp))
                 }
             }
         }
