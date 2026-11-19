@@ -62,6 +62,9 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.ZoomOut
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -1400,7 +1403,11 @@ class PdfDocumentSession(
 }
 
 @Composable
-fun PdfDocumentViewer(file: FileReference) {
+fun PdfDocumentViewer(
+    file: FileReference,
+    isBarsVisible: Boolean = true,
+    onToggleImmersive: () -> Unit = {}
+) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var session by remember(file.uriOrPath) { mutableStateOf<PdfDocumentSession?>(null) }
@@ -1485,7 +1492,8 @@ fun PdfDocumentViewer(file: FileReference) {
                             isCurrentPage = firstVisibleItem == pageIndex,
                             onZoomChanged = { zoomed ->
                                 zoomedPageIndex = if (zoomed) pageIndex else null
-                            }
+                            },
+                            onSingleTap = onToggleImmersive
                         )
                     }
                 }
@@ -1526,6 +1534,11 @@ fun PdfDocumentViewer(file: FileReference) {
             }
 
             // Bottom Navigation & Controls
+            AnimatedVisibility(
+                visible = isBarsVisible,
+                enter = slideInVertically(initialOffsetY = { it }),
+                exit = slideOutVertically(targetOffsetY = { it })
+            ) {
             Surface(
                 color = when (readingTheme) {
                     PdfReadingTheme.DAY -> MaterialTheme.colorScheme.surfaceContainer
@@ -1640,6 +1653,7 @@ fun PdfDocumentViewer(file: FileReference) {
                     }
                 }
             }
+            } // end AnimatedVisibility (bottom bar)
 
             // Jump to Page Dialog
             if (showJumpDialog) {
@@ -1719,7 +1733,8 @@ private fun PdfPageItem(
     targetWidthPx: Int,
     readingTheme: PdfReadingTheme,
     isCurrentPage: Boolean,
-    onZoomChanged: (Boolean) -> Unit
+    onZoomChanged: (Boolean) -> Unit,
+    onSingleTap: () -> Unit = {}
 ) {
     val cacheKey = "${session.sessionKey}::$pageIndex::$targetWidthPx"
 
@@ -1760,6 +1775,7 @@ private fun PdfPageItem(
             .aspectRatio(dimension.aspectRatio)
             .pointerInput(pageIndex) {
                 detectTapGestures(
+                    onTap = { onSingleTap() },
                     onDoubleTap = {
                         if (scale > 1.05f) {
                             scale = 1f

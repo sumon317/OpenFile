@@ -1090,6 +1090,10 @@ fun FilePreviewScreen(
         )
     }
 
+    // Immersive mode state for PDF viewer (hides top + bottom bars on tap)
+    var isPdfImmersive by remember(file) { mutableStateOf(false) }
+    val isPdf = ext == "pdf"
+
     // Intercept back gesture immediately to dismiss the preview
     BackHandler {
         onDismiss()
@@ -1106,7 +1110,7 @@ fun FilePreviewScreen(
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Full-Window Top App Bar: only for non-media document and image types
-            if (!isMedia) {
+            if (!isMedia && !(isPdf && isPdfImmersive)) {
                 TopAppBar(
                     title = {
                         Column {
@@ -1178,7 +1182,11 @@ fun FilePreviewScreen(
                         )
                     }
                     ext == "pdf" -> {
-                        PdfDocumentViewer(file)
+                        PdfDocumentViewer(
+                            file = file,
+                            isBarsVisible = !isPdfImmersive,
+                            onToggleImmersive = { isPdfImmersive = !isPdfImmersive }
+                        )
                     }
                     ext in setOf("docx", "doc", "odt", "odf") -> {
                         DocxDocumentPreview(file)
