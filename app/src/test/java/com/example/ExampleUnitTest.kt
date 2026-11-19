@@ -781,6 +781,72 @@ class ExampleUnitTest {
         assertTrue("Top bar should reappear when exiting immersive mode", isTopBarVisible())
         assertTrue("Bottom bar should reappear when exiting immersive mode", isBottomBarVisible())
     }
+
+    @Test
+    fun `lrc parser parses standard timestamps and sorts chronologically`() {
+        val sampleLrc = """
+            [ti:God Level Media Test]
+            [ar:AetherPlay]
+            [00:05.50]First line of the song
+            [00:12.00]Second verse coming in
+            [00:02.10]Intro melody starts
+            [00:25.80]Chorus exploding with bass
+        """.trimIndent()
+
+        val parsed = com.example.core.media.LrcParser.parse(sampleLrc)
+        assertEquals(4, parsed.size)
+        // Verify chronological ordering
+        assertEquals(2100L, parsed[0].timeMs)
+        assertEquals("Intro melody starts", parsed[0].text)
+        assertEquals(5500L, parsed[1].timeMs)
+        assertEquals("First line of the song", parsed[1].text)
+        assertEquals(12000L, parsed[2].timeMs)
+        assertEquals("Second verse coming in", parsed[2].text)
+        assertEquals(25800L, parsed[3].timeMs)
+        assertEquals("Chorus exploding with bass", parsed[3].text)
+    }
+
+    @Test
+    fun `lrc parser finds active line index via binary search accurately`() {
+        val lines = listOf(
+            com.example.core.media.LrcLine(1000L, "Line 1"),
+            com.example.core.media.LrcLine(5000L, "Line 2"),
+            com.example.core.media.LrcLine(10000L, "Line 3"),
+            com.example.core.media.LrcLine(20000L, "Line 4")
+        )
+
+        // Before first line
+        assertEquals(-1, com.example.core.media.LrcParser.findCurrentLineIndex(lines, 500L))
+        // Exactly on first line
+        assertEquals(0, com.example.core.media.LrcParser.findCurrentLineIndex(lines, 1000L))
+        // Between first and second
+        assertEquals(0, com.example.core.media.LrcParser.findCurrentLineIndex(lines, 3500L))
+        // Exactly on second
+        assertEquals(1, com.example.core.media.LrcParser.findCurrentLineIndex(lines, 5000L))
+        // Between second and third
+        assertEquals(1, com.example.core.media.LrcParser.findCurrentLineIndex(lines, 7800L))
+        // After last line
+        assertEquals(3, com.example.core.media.LrcParser.findCurrentLineIndex(lines, 25000L))
+    }
+
+    @Test
+    fun `equalizer presets provide 10 studio tunings with 5 bands each`() {
+        val presets = com.example.core.media.EqualizerEngine.presets
+        assertEquals(10, presets.size)
+
+        val presetNames = presets.map { it.name }
+        assertTrue(presetNames.contains("Studio Monitor"))
+        assertTrue(presetNames.contains("Bass Boost"))
+        assertTrue(presetNames.contains("Vocal Clarity"))
+        assertTrue(presetNames.contains("Cinema"))
+        assertTrue(presetNames.contains("Flat"))
+
+        for (preset in presets) {
+            assertEquals("Preset ${preset.name} must have 5 bands", 5, preset.levelsMb.size)
+            assertTrue("Preset ${preset.name} must have a category", preset.category.isNotBlank())
+        }
+    }
 }
+
 
 

@@ -80,6 +80,7 @@ import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.VolumeMute
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.BrightnessMedium
@@ -93,11 +94,13 @@ import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Forward5
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
@@ -171,6 +174,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -196,6 +200,9 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.rememberAsyncImagePainter
+import com.example.core.media.EqualizerEngine
+import com.example.core.media.LrcLine
+import com.example.core.media.LrcParser
 import com.example.core.model.FileReference
 import com.example.core.model.ProviderType
 import com.example.ui.theme.AudioPurple
@@ -483,6 +490,36 @@ fun AudioPlayerPreview(
     var showAudioDetailsDialog by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
 
+    // God-Level Audio Studio: Equalizer, Synchronized Lyrics & A-B Repeat Loop
+    var showEqualizerSheet by remember { mutableStateOf(false) }
+    var showLyricsSheet by remember { mutableStateOf(false) }
+    var parsedLyrics by remember(file.uriOrPath) { mutableStateOf<List<LrcLine>>(emptyList()) }
+    var isAbLoopActive by rememberSaveable(file.uriOrPath) { mutableStateOf(false) }
+    var abPointA by rememberSaveable(file.uriOrPath) { mutableStateOf<Long?>(null) }
+    var abPointB by rememberSaveable(file.uriOrPath) { mutableStateOf<Long?>(null) }
+    var isVinylMode by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        EqualizerEngine.initialize(context)
+    }
+
+    LaunchedEffect(file.uriOrPath) {
+        val lrcFile = LrcParser.findMatchingLrcFile(file)
+        if (lrcFile != null && lrcFile.exists()) {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val content = lrcFile.readText()
+                    val lines = LrcParser.parse(content)
+                    withContext(Dispatchers.Main) {
+                        parsedLyrics = lines
+                    }
+                }
+            }
+        } else {
+            parsedLyrics = emptyList()
+        }
+    }
+
     // Sleep Timer (0 = off, -1 = end of current track, >0 = minutes)
     var sleepTimerMinutes by rememberSaveable { mutableIntStateOf(0) }
     var sleepTimerRemainingSeconds by rememberSaveable { mutableIntStateOf(0) }
@@ -624,6 +661,12 @@ fun AudioPlayerPreview(
                 }
             }
 
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                if (audioSessionId != C.AUDIO_SESSION_ID_UNSET && audioSessionId > 0) {
+                    EqualizerEngine.attachAudioSession(audioSessionId)
+                }
+            }
+
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 val format = exoPlayer.audioFormat
                 if (format != null) {
@@ -654,6 +697,16 @@ fun AudioPlayerPreview(
         }
     }
 
+    // Attach Equalizer on audio session ready
+    LaunchedEffect(isPrepared) {
+        if (isPrepared) {
+            val sid = exoPlayer.audioSessionId
+            if (sid != C.AUDIO_SESSION_ID_UNSET && sid > 0) {
+                EqualizerEngine.attachAudioSession(sid)
+            }
+        }
+    }
+
     // Load track metadata off main thread
     LaunchedEffect(file) {
         val info = withContext(Dispatchers.IO) {
@@ -665,13 +718,19 @@ fun AudioPlayerPreview(
         }
     }
 
-    // Position updater
-    LaunchedEffect(isPlaying, isPrepared, isUserSeeking) {
+    // Position updater & A-B Loop handler
+    LaunchedEffect(isPlaying, isPrepared, isUserSeeking, isAbLoopActive, abPointA, abPointB) {
         while (isActive && isPlaying && !isUserSeeking) {
             val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
             currentPositionMs = pos
             val dur = exoPlayer.duration
             if (dur > 0L) durationMs = dur
+            if (isAbLoopActive && abPointA != null && abPointB != null && abPointB!! > abPointA!!) {
+                if (pos >= abPointB!!) {
+                    exoPlayer.seekTo(abPointA!!)
+                    currentPositionMs = abPointA!!
+                }
+            }
             delay(250)
         }
     }
@@ -1084,12 +1143,31 @@ fun AudioPlayerPreview(
                         )
                     }
                 }
+                // Studio Equalizer Button
+                IconButton(onClick = { showEqualizerSheet = true }) {
+                    Icon(
+                        imageVector = Icons.Filled.GraphicEq,
+                        contentDescription = "Studio Equalizer & DSP",
+                        tint = AudioPurple,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
             }
 
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Synchronized Lyrics Button
+                IconButton(onClick = { showLyricsSheet = true }) {
+                    Icon(
+                        imageVector = Icons.Filled.Lyrics,
+                        contentDescription = "Synchronized Lyrics",
+                        tint = if (parsedLyrics.isNotEmpty()) AudioPurple else Color(0xFFB0B0B0),
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+
                 IconButton(onClick = { isFavorite = !isFavorite }) {
                     Icon(
                         imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
@@ -1122,6 +1200,40 @@ fun AudioPlayerPreview(
                         expanded = showMoreMenu,
                         onDismissRequest = { showMoreMenu = false }
                     ) {
+                        DropdownMenuItem(
+                            text = { Text("Studio Equalizer & DSP") },
+                            leadingIcon = { Icon(Icons.Filled.GraphicEq, contentDescription = null, tint = AudioPurple) },
+                            onClick = {
+                                showMoreMenu = false
+                                showEqualizerSheet = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Synchronized Lyrics (.lrc)") },
+                            leadingIcon = { Icon(Icons.Filled.Lyrics, contentDescription = null, tint = AudioPurple) },
+                            onClick = {
+                                showMoreMenu = false
+                                showLyricsSheet = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (isAbLoopActive) "Disable A-B Loop" else "Enable A-B Repeat Loop") },
+                            leadingIcon = { Icon(Icons.Filled.Replay, contentDescription = null) },
+                            onClick = {
+                                showMoreMenu = false
+                                isAbLoopActive = !isAbLoopActive
+                                toastMessage = if (isAbLoopActive) "A-B Loop Enabled" else "A-B Loop Disabled"
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (isVinylMode) "Artwork Card View" else "Spinning Vinyl Mode") },
+                            leadingIcon = { Icon(Icons.Filled.Album, contentDescription = null) },
+                            onClick = {
+                                showMoreMenu = false
+                                isVinylMode = !isVinylMode
+                            }
+                        )
+                        HorizontalDivider()
                         DropdownMenuItem(
                             text = { Text("Playback Speed (${playbackSpeed}x)") },
                             leadingIcon = { Icon(Icons.Filled.Speed, contentDescription = null) },
@@ -1242,37 +1354,84 @@ fun AudioPlayerPreview(
                     Card(
                         modifier = Modifier
                             .size(240.dp)
+                            .clickable { isVinylMode = !isVinylMode }
                             .testTag("audio_album_card"),
-                        shape = RoundedCornerShape(24.dp),
+                        shape = if (isVinylMode) CircleShape else RoundedCornerShape(24.dp),
                         elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF16171B))
+                        colors = CardDefaults.cardColors(containerColor = if (isVinylMode) Color(0xFF101116) else Color(0xFF16171B))
                     ) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            val art = trackInfo?.artwork
-                            if (art != null) {
-                                Image(
-                                    bitmap = art,
-                                    contentDescription = "Album Art",
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
+                            if (isVinylMode) {
+                                val vinylTransition = rememberInfiniteTransition(label = "vinyl_rot_land")
+                                val vinylAngle by vinylTransition.animateFloat(
+                                    initialValue = 0f,
+                                    targetValue = 360f,
+                                    animationSpec = infiniteRepeatable(
+                                        animation = tween(durationMillis = 6000, easing = androidx.compose.animation.core.LinearEasing),
+                                        repeatMode = RepeatMode.Restart
+                                    ),
+                                    label = "vinyl_angle_land"
                                 )
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .background(
-                                            Brush.verticalGradient(
-                                                listOf(AudioPurple.copy(alpha = 0.5f), Color(0xFF16171B))
-                                            )
-                                        ),
-                                    contentAlignment = Alignment.Center
+                                val rotationModifier = if (isPlaying) Modifier.graphicsLayer(rotationZ = vinylAngle) else Modifier
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Color(0xFF15161C),
+                                    border = androidx.compose.foundation.BorderStroke(3.dp, Color(0xFF282A36)),
+                                    modifier = Modifier.fillMaxSize().padding(8.dp).then(rotationModifier)
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.Audiotrack,
-                                        contentDescription = null,
-                                        tint = Color.White.copy(alpha = 0.6f),
-                                        modifier = Modifier.size(72.dp)
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Box(modifier = Modifier.size(175.dp).border(1.dp, Color(0xFF22242E), CircleShape))
+                                        Box(modifier = Modifier.size(135.dp).border(1.dp, Color(0xFF22242E), CircleShape))
+                                        Box(modifier = Modifier.size(95.dp).border(1.dp, Color(0xFF22242E), CircleShape))
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = AudioPurple,
+                                            modifier = Modifier.size(68.dp)
+                                        ) {
+                                            val art = trackInfo?.artwork
+                                            if (art != null) {
+                                                Image(
+                                                    bitmap = art,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.fillMaxSize(),
+                                                    contentScale = ContentScale.Crop
+                                                )
+                                            } else {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Icon(Icons.Filled.Album, contentDescription = null, tint = Color.White, modifier = Modifier.size(32.dp))
+                                                }
+                                            }
+                                        }
+                                        Surface(shape = CircleShape, color = Color.Black, modifier = Modifier.size(12.dp)) {}
+                                    }
+                                }
+                            } else {
+                                val art = trackInfo?.artwork
+                                if (art != null) {
+                                    Image(
+                                        bitmap = art,
+                                        contentDescription = "Album Art",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
                                     )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(
+                                                Brush.verticalGradient(
+                                                    listOf(AudioPurple.copy(alpha = 0.5f), Color(0xFF16171B))
+                                                )
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Audiotrack,
+                                            contentDescription = null,
+                                            tint = Color.White.copy(alpha = 0.6f),
+                                            modifier = Modifier.size(72.dp)
+                                        )
+                                    }
                                 }
                             }
                             if (isPlaying) {
@@ -1296,6 +1455,32 @@ fun AudioPlayerPreview(
                 ) {
                     playerTopBar()
                     metadataSection()
+                    if (isAbLoopActive || abPointA != null || abPointB != null) {
+                        ABRepeatBar(
+                            pointA = abPointA,
+                            pointB = abPointB,
+                            currentPositionMs = currentPositionMs,
+                            onSetPointA = {
+                                abPointA = currentPositionMs
+                                if (abPointB != null && abPointB!! <= abPointA!!) {
+                                    abPointB = null
+                                }
+                            },
+                            onSetPointB = {
+                                val cur = currentPositionMs
+                                if (abPointA != null && cur > abPointA!!) {
+                                    abPointB = cur
+                                    isAbLoopActive = true
+                                }
+                            },
+                            onClearLoop = {
+                                abPointA = null
+                                abPointB = null
+                                isAbLoopActive = false
+                            },
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+                    }
                     scrubberRow()
                     controlsRow()
                     bottomActionBar()
@@ -1339,36 +1524,82 @@ fun AudioPlayerPreview(
                             modifier = Modifier
                                 .fillMaxHeight()
                                 .aspectRatio(1f)
+                                .clickable { isVinylMode = !isVinylMode }
                                 .testTag(if (isCurrent) "audio_album_card" else "audio_album_card_$page"),
-                            shape = RoundedCornerShape(24.dp),
+                            shape = if (isVinylMode) CircleShape else RoundedCornerShape(24.dp),
                             elevation = CardDefaults.cardElevation(defaultElevation = if (isCurrent) 12.dp else 4.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF16171B))
+                            colors = CardDefaults.cardColors(containerColor = if (isVinylMode) Color(0xFF101116) else Color(0xFF16171B))
                         ) {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                if (pageArtwork != null) {
-                                    Image(
-                                        bitmap = pageArtwork!!,
-                                        contentDescription = "Album Art",
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentScale = ContentScale.Crop
+                                if (isVinylMode) {
+                                    val vinylTransition = rememberInfiniteTransition(label = "vinyl_rot_port")
+                                    val vinylAngle by vinylTransition.animateFloat(
+                                        initialValue = 0f,
+                                        targetValue = 360f,
+                                        animationSpec = infiniteRepeatable(
+                                            animation = tween(durationMillis = 6000, easing = androidx.compose.animation.core.LinearEasing),
+                                            repeatMode = RepeatMode.Restart
+                                        ),
+                                        label = "vinyl_angle_port"
                                     )
-                                } else {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .background(
-                                                Brush.verticalGradient(
-                                                    listOf(AudioPurple.copy(alpha = 0.5f), Color(0xFF16171B))
-                                                )
-                                            ),
-                                        contentAlignment = Alignment.Center
+                                    val rotationModifier = if (isCurrent && isPlaying) Modifier.graphicsLayer(rotationZ = vinylAngle) else Modifier
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color(0xFF15161C),
+                                        border = androidx.compose.foundation.BorderStroke(3.dp, Color(0xFF282A36)),
+                                        modifier = Modifier.fillMaxSize().padding(10.dp).then(rotationModifier)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Audiotrack,
-                                            contentDescription = null,
-                                            tint = Color.White.copy(alpha = 0.6f),
-                                            modifier = Modifier.size(72.dp)
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Box(modifier = Modifier.size(200.dp).border(1.dp, Color(0xFF22242E), CircleShape))
+                                            Box(modifier = Modifier.size(155.dp).border(1.dp, Color(0xFF22242E), CircleShape))
+                                            Box(modifier = Modifier.size(110.dp).border(1.dp, Color(0xFF22242E), CircleShape))
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = AudioPurple,
+                                                modifier = Modifier.size(80.dp)
+                                            ) {
+                                                if (pageArtwork != null) {
+                                                    Image(
+                                                        bitmap = pageArtwork!!,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.fillMaxSize(),
+                                                        contentScale = ContentScale.Crop
+                                                    )
+                                                } else {
+                                                    Box(contentAlignment = Alignment.Center) {
+                                                        Icon(Icons.Filled.Album, contentDescription = null, tint = Color.White, modifier = Modifier.size(36.dp))
+                                                    }
+                                                }
+                                            }
+                                            Surface(shape = CircleShape, color = Color.Black, modifier = Modifier.size(16.dp)) {}
+                                        }
+                                    }
+                                } else {
+                                    if (pageArtwork != null) {
+                                        Image(
+                                            bitmap = pageArtwork!!,
+                                            contentDescription = "Album Art",
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
                                         )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(
+                                                    Brush.verticalGradient(
+                                                        listOf(AudioPurple.copy(alpha = 0.5f), Color(0xFF16171B))
+                                                    )
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Audiotrack,
+                                                contentDescription = null,
+                                                tint = Color.White.copy(alpha = 0.6f),
+                                                modifier = Modifier.size(72.dp)
+                                            )
+                                        }
                                     }
                                 }
                                 if (isCurrent && isPlaying) {
@@ -1382,7 +1613,34 @@ fun AudioPlayerPreview(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    if (isAbLoopActive || abPointA != null || abPointB != null) {
+                        ABRepeatBar(
+                            pointA = abPointA,
+                            pointB = abPointB,
+                            currentPositionMs = currentPositionMs,
+                            onSetPointA = {
+                                abPointA = currentPositionMs
+                                if (abPointB != null && abPointB!! <= abPointA!!) {
+                                    abPointB = null
+                                }
+                            },
+                            onSetPointB = {
+                                val cur = currentPositionMs
+                                if (abPointA != null && cur > abPointA!!) {
+                                    abPointB = cur
+                                    isAbLoopActive = true
+                                }
+                            },
+                            onClearLoop = {
+                                abPointA = null
+                                abPointB = null
+                                isAbLoopActive = false
+                            },
+                            modifier = Modifier.padding(bottom = 6.dp)
+                        )
+                    }
 
                     scrubberRow()
 
@@ -1761,6 +2019,26 @@ fun AudioPlayerPreview(
             containerColor = Color(0xFF222228)
         )
     }
+
+    // Studio Equalizer Bottom Sheet
+    if (showEqualizerSheet) {
+        EqualizerStudioSheet(
+            onDismiss = { showEqualizerSheet = false }
+        )
+    }
+
+    // Synchronized Lyrics Bottom Sheet
+    if (showLyricsSheet) {
+        SynchronizedLyricsSheet(
+            lyrics = parsedLyrics,
+            currentPositionMs = currentPositionMs,
+            onSeekTo = { targetMs ->
+                exoPlayer.seekTo(targetMs)
+                currentPositionMs = targetMs
+            },
+            onDismiss = { showLyricsSheet = false }
+        )
+    }
 }
 
 /**
@@ -2040,10 +2318,16 @@ fun VideoPlayerPreview(
     var isPrepared by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
     var showSpeedMenu by remember { mutableStateOf(false) }
+    var showEqualizerSheet by remember { mutableStateOf(false) }
+    var isSpeedBoosting by remember { mutableStateOf(false) }
     var showControls by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isUserSeeking by remember { mutableStateOf(false) }
     var seekFraction by remember { mutableFloatStateOf(0f) }
+
+    LaunchedEffect(Unit) {
+        EqualizerEngine.initialize(context)
+    }
 
     // Lock & Audio-only mode states
     var isControlsLocked by rememberSaveable { mutableStateOf(false) }
@@ -2188,6 +2472,12 @@ fun VideoPlayerPreview(
                 }
             }
 
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                if (audioSessionId != C.AUDIO_SESSION_ID_UNSET && audioSessionId > 0) {
+                    EqualizerEngine.attachAudioSession(audioSessionId)
+                }
+            }
+
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
                 wasPlaying = playing
@@ -2214,6 +2504,16 @@ fun VideoPlayerPreview(
                 exoPlayer.removeListener(listener)
                 exoPlayer.stop()
                 exoPlayer.release()
+            }
+        }
+    }
+
+    // Attach Equalizer on video audio session ready
+    LaunchedEffect(isPrepared) {
+        if (isPrepared) {
+            val sid = exoPlayer.audioSessionId
+            if (sid != C.AUDIO_SESSION_ID_UNSET && sid > 0) {
+                EqualizerEngine.attachAudioSession(sid)
             }
         }
     }
@@ -2549,6 +2849,21 @@ fun VideoPlayerPreview(
                 .pointerInput(isControlsLocked) {
                     if (!isControlsLocked) {
                         detectTapGestures(
+                            onPress = { offset ->
+                                var isBoosting = false
+                                val boostJob = coroutineScope.launch {
+                                    delay(350)
+                                    isBoosting = true
+                                    isSpeedBoosting = true
+                                    exoPlayer.setPlaybackSpeed(2.0f)
+                                }
+                                tryAwaitRelease()
+                                boostJob.cancel()
+                                if (isBoosting) {
+                                    isSpeedBoosting = false
+                                    exoPlayer.setPlaybackSpeed(playbackSpeed)
+                                }
+                            },
                             onTap = {
                                 showControls = !showControls
                             },
@@ -2689,6 +3004,36 @@ fun VideoPlayerPreview(
             }
         }
 
+        // 2.0X Speed Boost Floating Indicator
+        if (isSpeedBoosting) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .padding(top = 28.dp),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color.Black.copy(alpha = 0.85f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, VideoCoral.copy(alpha = 0.8f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Filled.Speed, contentDescription = null, tint = VideoCoral, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "2.0X SPEED >>",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
+                            color = Color.White
+                        )
+                    }
+                }
+            }
+        }
+
         // 4. Floating Unlock Button (When Locked)
         AnimatedVisibility(
             visible = isControlsLocked && showUnlockButton,
@@ -2816,6 +3161,15 @@ fun VideoPlayerPreview(
                                 tint = Color.White
                             )
                         }
+
+                        // Studio Equalizer & Audio FX
+                        IconButton(onClick = { showEqualizerSheet = true }) {
+                            Icon(
+                                imageVector = Icons.Filled.GraphicEq,
+                                contentDescription = "Studio Equalizer & DSP",
+                                tint = Color.White
+                            )
+                        }
                     }
                 }
 
@@ -2911,6 +3265,7 @@ fun VideoPlayerPreview(
                         .navigationBarsPadding()
                         .displayCutoutPadding()
                         .padding(horizontal = 14.dp, vertical = 6.dp)
+                        .padding(bottom = 10.dp)
                 ) {
                     // Time Label (Left) and Speed / Rotate Buttons (Right)
                     Row(
@@ -3205,6 +3560,13 @@ fun VideoPlayerPreview(
             exoPlayer = exoPlayer,
             file = file,
             onDismiss = { showHwInfoDialog = false }
+        )
+    }
+
+    // --- Studio Equalizer Sheet for Video ---
+    if (showEqualizerSheet) {
+        EqualizerStudioSheet(
+            onDismiss = { showEqualizerSheet = false }
         )
     }
 }
