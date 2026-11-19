@@ -569,6 +569,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         if (directory.providerType == ProviderType.LOCAL) {
             val norm = directory.uriOrPath.replace('\\', '/').trimEnd('/')
             if (isRestrictedSystemPath(norm)) {
+                _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
                 openPrimaryStorageRoot()
                 return
             }

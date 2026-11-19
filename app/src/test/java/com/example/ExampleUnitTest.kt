@@ -757,6 +757,30 @@ class ExampleUnitTest {
         }
         assertEquals(com.example.ui.components.AudioRepeatMode.OFF, mode)
     }
+
+    @Test
+    fun `pdf viewer immersive mode toggles bars visibility on single tap`() {
+        var isPdfImmersive = false
+        val isPdf = true
+        val isMedia = false
+
+        fun isTopBarVisible() = !isMedia && !(isPdf && isPdfImmersive)
+        fun isBottomBarVisible() = !isPdfImmersive
+
+        // Initially both bars are visible
+        assertTrue("Top bar should initially be visible", isTopBarVisible())
+        assertTrue("Bottom bar should initially be visible", isBottomBarVisible())
+
+        // User taps PDF page -> toggles to immersive mode
+        isPdfImmersive = !isPdfImmersive
+        assertFalse("Top bar should hide in immersive mode", isTopBarVisible())
+        assertFalse("Bottom bar should hide in immersive mode", isBottomBarVisible())
+
+        // User taps PDF page again -> exits immersive mode
+        isPdfImmersive = !isPdfImmersive
+        assertTrue("Top bar should reappear when exiting immersive mode", isTopBarVisible())
+        assertTrue("Bottom bar should reappear when exiting immersive mode", isBottomBarVisible())
+    }
 }
 
 

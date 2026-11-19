@@ -2213,6 +2213,7 @@ class ExampleRobolectricTest {
             }
             assertNotNull(innerIntent)
             assertEquals(Intent.ACTION_SEND_MULTIPLE, innerIntent?.action)
+            @Suppress("DEPRECATION")
             val streamUris = innerIntent?.getParcelableArrayListExtra<android.net.Uri>(Intent.EXTRA_STREAM)
             assertEquals(2, streamUris?.size)
         } finally {
