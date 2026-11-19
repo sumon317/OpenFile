@@ -78,7 +78,7 @@ data class EqualizerUiState(
             EqualizerPreset("Acoustic", listOf(250, 150, 200, 300, 350), 100, 250, 100, "Music"),
             EqualizerPreset("Jazz", listOf(300, 200, -150, 250, 400), 200, 350, 150, "Music"),
             EqualizerPreset("Rock", listOf(500, 300, -100, 350, 550), 450, 250, 200, "Music"),
-            EqualizerPreset("Night Mode", listOf(-300, -150, 200, -100, -350), 0, 100, -200, "Night")
+            EqualizerPreset("Night Mode", listOf(-300, -150, 200, -100, -350), 0, 100, 0, "Night")
         )
 
         fun defaultBands(): List<EqualizerBand> {
@@ -106,6 +106,7 @@ object EqualizerEngine {
     private var bassBoost: BassBoost? = null
     private var virtualizer: Virtualizer? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
+    @Volatile
     private var attachedAudioSessionId: Int = 0
 
     private val _state = MutableStateFlow(EqualizerUiState())
@@ -116,7 +117,7 @@ object EqualizerEngine {
 
     fun initialize(context: Context) {
         if (prefs == null) {
-            prefs = context.getSharedPreferences("openfile_eq_settings", Context.MODE_PRIVATE)
+            prefs = context.applicationContext.getSharedPreferences("openfile_eq_settings", Context.MODE_PRIVATE)
             loadSavedSettings()
         }
     }
@@ -125,16 +126,16 @@ object EqualizerEngine {
         val p = prefs ?: return
         val enabled = p.getBoolean("eq_enabled", false)
         val preset = p.getString("eq_preset", "Flat") ?: "Flat"
-        val bass = p.getInt("eq_bass", 0)
-        val virt = p.getInt("eq_virt", 0)
-        val gain = p.getInt("eq_gain", 0)
+        val bass = p.getInt("eq_bass", 0).coerceIn(0, 1000)
+        val virt = p.getInt("eq_virt", 0).coerceIn(0, 1000)
+        val gain = p.getInt("eq_gain", 0).coerceIn(0, 1500)
         val levelsStr = p.getString("eq_levels", null)
 
         val levels = levelsStr?.split(",")?.mapNotNull { it.toIntOrNull() }
 
         _state.update { cur ->
             val updatedBands = if (levels != null && levels.size == cur.bands.size) {
-                cur.bands.mapIndexed { i, b -> b.copy(levelMb = levels[i]) }
+                cur.bands.mapIndexed { i, b -> b.copy(levelMb = levels[i].coerceIn(b.minLevelMb, b.maxLevelMb)) }
             } else {
                 cur.bands
             }
@@ -202,6 +203,7 @@ object EqualizerEngine {
                 }
                 applyAllEffectsInternal()
             }.onFailure {
+                attachedAudioSessionId = 0
                 _state.update { s -> s.copy(isHardwareEffectBound = false) }
             }
         }
@@ -248,9 +250,9 @@ object EqualizerEngine {
                 enabled = true,
                 selectedPreset = preset.name,
                 bands = updatedBands,
-                bassBoostStrength = preset.bassBoost,
-                virtualizerStrength = preset.virtualizer,
-                loudnessGainMb = preset.loudnessGainMb
+                bassBoostStrength = preset.bassBoost.coerceIn(0, 1000),
+                virtualizerStrength = preset.virtualizer.coerceIn(0, 1000),
+                loudnessGainMb = preset.loudnessGainMb.coerceIn(0, 1500)
             )
         }
         scheduleApplyAllEffects()
@@ -312,9 +314,18 @@ object EqualizerEngine {
             equalizer?.let { eq ->
                 eq.enabled = current.enabled
                 if (current.enabled) {
+                    val numBands = runCatching { eq.numberOfBands.toInt() }.getOrDefault(0)
+                    val range = runCatching { eq.bandLevelRange }.getOrNull()
+                    val minLevel = range?.getOrNull(0)?.toInt() ?: -1500
+                    val maxLevel = range?.getOrNull(1)?.toInt() ?: 1500
                     current.bands.forEach { band ->
-                        if (band.index < eq.numberOfBands) {
-                            eq.setBandLevel(band.index.toShort(), band.levelMb.toShort())
+                        if (band.index in 0 until numBands) {
+                            runCatching {
+                                eq.setBandLevel(
+                                    band.index.toShort(),
+                                    band.levelMb.coerceIn(minLevel, maxLevel).toShort()
+                                )
+                            }
                         }
                     }
                 }
@@ -322,25 +333,28 @@ object EqualizerEngine {
         }
         runCatching {
             bassBoost?.let { bb ->
-                bb.enabled = current.enabled && current.bassBoostStrength > 0
+                val bass = current.bassBoostStrength.coerceIn(0, 1000)
+                bb.enabled = current.enabled && bass > 0
                 if (bb.strengthSupported && current.enabled) {
-                    bb.setStrength(current.bassBoostStrength.toShort())
+                    bb.setStrength(bass.toShort())
                 }
             }
         }
         runCatching {
             virtualizer?.let { vz ->
-                vz.enabled = current.enabled && current.virtualizerStrength > 0
+                val virt = current.virtualizerStrength.coerceIn(0, 1000)
+                vz.enabled = current.enabled && virt > 0
                 if (vz.strengthSupported && current.enabled) {
-                    vz.setStrength(current.virtualizerStrength.toShort())
+                    vz.setStrength(virt.toShort())
                 }
             }
         }
         runCatching {
             loudnessEnhancer?.let { le ->
-                le.enabled = current.enabled && current.loudnessGainMb > 0
-                if (current.enabled) {
-                    le.setTargetGain(current.loudnessGainMb)
+                val gain = current.loudnessGainMb.coerceIn(0, 1500)
+                le.enabled = current.enabled && gain > 0
+                if (current.enabled && gain > 0) {
+                    le.setTargetGain(gain)
                 }
             }
         }
@@ -353,10 +367,22 @@ object EqualizerEngine {
     }
 
     private fun releaseEffectsInternal() {
-        runCatching { equalizer?.release() }
-        runCatching { bassBoost?.release() }
-        runCatching { virtualizer?.release() }
-        runCatching { loudnessEnhancer?.release() }
+        runCatching {
+            equalizer?.enabled = false
+            equalizer?.release()
+        }
+        runCatching {
+            bassBoost?.enabled = false
+            bassBoost?.release()
+        }
+        runCatching {
+            virtualizer?.enabled = false
+            virtualizer?.release()
+        }
+        runCatching {
+            loudnessEnhancer?.enabled = false
+            loudnessEnhancer?.release()
+        }
         equalizer = null
         bassBoost = null
         virtualizer = null

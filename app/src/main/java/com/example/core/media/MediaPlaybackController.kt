@@ -3,7 +3,10 @@ package com.example.core.media
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Looper
 import androidx.lifecycle.LifecycleObserver
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -150,11 +153,11 @@ class MediaPlaybackController(
     }
 
     fun stop() {
+        MediaPlaybackStateHolder.updateIsPlaying(false)
         val intent = Intent(context, MediaPlaybackForegroundService::class.java).apply {
             action = MediaPlaybackForegroundService.ACTION_STOP
         }
         startService(intent)
-        MediaPlaybackStateHolder.releasePlayer()
     }
 
     fun release() {
@@ -174,6 +177,7 @@ class MediaPlaybackController(
 
 // Singleton to hold shared state and ExoPlayer between service and UI
 object MediaPlaybackStateHolder {
+    @Volatile
     private var _exoPlayer: ExoPlayer? = null
 
     val activePlayer: ExoPlayer?
@@ -181,28 +185,40 @@ object MediaPlaybackStateHolder {
 
     @androidx.annotation.OptIn(UnstableApi::class)
     fun getOrCreatePlayer(context: Context): ExoPlayer {
-        val existing = _exoPlayer
-        if (existing != null) return existing
-        val renderersFactory = DefaultRenderersFactory(context.applicationContext).apply {
-            setEnableDecoderFallback(true)
+        synchronized(this) {
+            val existing = _exoPlayer
+            if (existing != null) return existing
+            val appContext = context.applicationContext
+            val renderersFactory = DefaultRenderersFactory(appContext).apply {
+                setEnableDecoderFallback(true)
+            }
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                .setUsage(C.USAGE_MEDIA)
+                .build()
+            val player = ExoPlayer.Builder(appContext, renderersFactory)
+                .setLooper(Looper.getMainLooper())
+                .build().apply {
+                    setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)
+                    setHandleAudioBecomingNoisy(true)
+                }
+            _exoPlayer = player
+            return player
         }
-        val player = ExoPlayer.Builder(context.applicationContext, renderersFactory).build().apply {
-            setHandleAudioBecomingNoisy(true)
-        }
-        _exoPlayer = player
-        return player
     }
 
     fun releasePlayer() {
-        _exoPlayer?.run {
-            stop()
-            release()
+        synchronized(this) {
+            _exoPlayer?.run {
+                stop()
+                release()
+            }
+            _exoPlayer = null
+            updateIsPlaying(false)
+            updateCurrentPosition(0L)
+            updateDuration(0L)
+            updateCurrentFile(null)
         }
-        _exoPlayer = null
-        updateIsPlaying(false)
-        updateCurrentPosition(0L)
-        updateDuration(0L)
-        updateCurrentFile(null)
     }
 
     private val _isPlaying = MutableStateFlow(false)

@@ -458,7 +458,7 @@ fun SynchronizedLyricsSheet(
     LaunchedEffect(currentLineIndex) {
         if (currentLineIndex >= 0 && currentLineIndex < lyrics.size) {
             val target = (currentLineIndex - 2).coerceAtLeast(0)
-            coroutineScope.launch {
+            runCatching {
                 listState.animateScrollToItem(target)
             }
         }

@@ -34,6 +34,7 @@ import com.example.core.model.ProviderType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -230,15 +231,8 @@ class MediaPlaybackForegroundService : Service() {
                     updateMediaSessionState()
                 }
                 ACTION_STOP -> {
-                    if (isForegroundServiceStarted) {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                            stopForeground(STOP_FOREGROUND_REMOVE)
-                        } else {
-                            @Suppress("DEPRECATION")
-                            stopForeground(true)
-                        }
-                        isForegroundServiceStarted = false
-                    }
+                    exoPlayer?.stop()
+                    stopForegroundAndRemove()
                     stopSelf()
                 }
             }
@@ -364,9 +358,10 @@ class MediaPlaybackForegroundService : Service() {
     }
 
     private fun resolveMediaUri(file: FileReference): Uri {
-        val localBacking = file.metadata["localBackingPath"]?.let { File(it) }
-            ?: if (file.providerType == ProviderType.LOCAL) File(file.uriOrPath) else null
-        return if (localBacking != null && localBacking.exists()) {
+        val rawPath = file.metadata["localBackingPath"] ?: file.uriOrPath
+        val cleanPath = rawPath.removePrefix("file://")
+        val localBacking = File(cleanPath)
+        return if (localBacking.exists()) {
             Uri.fromFile(localBacking)
         } else {
             Uri.parse(file.uriOrPath)
@@ -534,20 +529,44 @@ class MediaPlaybackForegroundService : Service() {
         mediaSession?.setMetadata(meta.build())
     }
 
+    private fun decodeSampledBitmap(data: ByteArray, reqWidth: Int, reqHeight: Int): Bitmap? {
+        return try {
+            val options = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            BitmapFactory.decodeByteArray(data, 0, data.size, options)
+            var inSampleSize = 1
+            if (options.outHeight > reqHeight || options.outWidth > reqWidth) {
+                val halfHeight = options.outHeight / 2
+                val halfWidth = options.outWidth / 2
+                while ((halfHeight / inSampleSize) >= reqHeight && (halfWidth / inSampleSize) >= reqWidth) {
+                    inSampleSize *= 2
+                }
+            }
+            options.inSampleSize = inSampleSize
+            options.inJustDecodeBounds = false
+            options.inPreferredConfig = Bitmap.Config.ARGB_8888
+            BitmapFactory.decodeByteArray(data, 0, data.size, options)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     private fun extractMetadata(file: FileReference): Pair<String, Bitmap?> {
         var retriever: MediaMetadataRetriever? = null
         return try {
             retriever = MediaMetadataRetriever()
-            val localBacking = file.metadata["localBackingPath"]?.let { File(it) }
-                ?: if (file.providerType == ProviderType.LOCAL) File(file.uriOrPath) else null
-            if (localBacking != null && localBacking.exists()) {
+            val rawPath = file.metadata["localBackingPath"] ?: file.uriOrPath
+            val cleanPath = rawPath.removePrefix("file://")
+            val localBacking = File(cleanPath)
+            if (localBacking.exists()) {
                 retriever.setDataSource(localBacking.absolutePath)
             } else {
                 retriever.setDataSource(this, Uri.parse(file.uriOrPath))
             }
             val artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)?.takeIf { it.isNotBlank() } ?: "Unknown Artist"
             val pic = retriever.embeddedPicture
-            val artwork = if (pic != null) BitmapFactory.decodeByteArray(pic, 0, pic.size) else null
+            val artwork = if (pic != null) decodeSampledBitmap(pic, 512, 512) else null
             Pair(artist, artwork)
         } catch (_: Exception) {
             Pair("Unknown Artist", null)
@@ -562,14 +581,18 @@ class MediaPlaybackForegroundService : Service() {
         val notification = buildNotification()
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (!isForegroundServiceStarted) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+                } else {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+                isForegroundServiceStarted = true
+            }.onFailure {
+                runCatching { notificationManager.notify(NOTIFICATION_ID, notification) }
             }
-            isForegroundServiceStarted = true
         } else {
-            notificationManager.notify(NOTIFICATION_ID, notification)
+            runCatching { notificationManager.notify(NOTIFICATION_ID, notification) }
         }
     }
 
@@ -714,7 +737,29 @@ class MediaPlaybackForegroundService : Service() {
         )
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        val isPlaying = exoPlayer?.isPlaying == true
+        if (!isPlaying) {
+            stopForegroundAndRemove()
+            stopSelf()
+        }
+    }
+
+    private fun stopForegroundAndRemove() {
+        if (isForegroundServiceStarted) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+            isForegroundServiceStarted = false
+        }
+    }
+
     override fun onDestroy() {
+        mainScope.cancel()
         stopPositionTracker()
         exoPlayer?.removeListener(playerListener)
         MediaPlaybackStateHolder.releasePlayer()
@@ -723,14 +768,10 @@ class MediaPlaybackForegroundService : Service() {
             release()
         }
         mediaSession = null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(true)
-        }
+        stopForegroundAndRemove()
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.cancel(NOTIFICATION_ID)
+        cachedArtwork = null
         super.onDestroy()
     }
 

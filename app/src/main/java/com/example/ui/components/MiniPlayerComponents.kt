@@ -240,13 +240,37 @@ fun MiniPlayer(
     }
 }
 
+private fun decodeSampledBitmap(data: ByteArray, reqWidth: Int, reqHeight: Int): android.graphics.Bitmap? {
+    return try {
+        val options = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        BitmapFactory.decodeByteArray(data, 0, data.size, options)
+        var inSampleSize = 1
+        if (options.outHeight > reqHeight || options.outWidth > reqWidth) {
+            val halfHeight = options.outHeight / 2
+            val halfWidth = options.outWidth / 2
+            while ((halfHeight / inSampleSize) >= reqHeight && (halfWidth / inSampleSize) >= reqWidth) {
+                inSampleSize *= 2
+            }
+        }
+        options.inSampleSize = inSampleSize
+        options.inJustDecodeBounds = false
+        options.inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+        BitmapFactory.decodeByteArray(data, 0, data.size, options)
+    } catch (_: Throwable) {
+        null
+    }
+}
+
 private fun extractArtworkAndArtist(context: Context, file: FileReference): Pair<ImageBitmap?, String?> {
     var retriever: MediaMetadataRetriever? = null
     return try {
         retriever = MediaMetadataRetriever()
-        val localBacking = file.metadata["localBackingPath"]?.let { File(it) }
-            ?: if (file.providerType == ProviderType.LOCAL) File(file.uriOrPath) else null
-        if (localBacking != null && localBacking.exists()) {
+        val rawPath = file.metadata["localBackingPath"] ?: file.uriOrPath
+        val cleanPath = rawPath.removePrefix("file://")
+        val localBacking = File(cleanPath)
+        if (localBacking.exists()) {
             retriever.setDataSource(localBacking.absolutePath)
         } else {
             retriever.setDataSource(context, Uri.parse(file.uriOrPath))
@@ -254,7 +278,7 @@ private fun extractArtworkAndArtist(context: Context, file: FileReference): Pair
         val artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)?.takeIf { it.isNotBlank() }
         val picture = retriever.embeddedPicture
         val bitmap = if (picture != null) {
-            BitmapFactory.decodeByteArray(picture, 0, picture.size)?.asImageBitmap()
+            decodeSampledBitmap(picture, 256, 256)?.asImageBitmap()
         } else null
         Pair(bitmap, artist)
     } catch (_: Exception) {
