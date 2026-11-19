@@ -69,6 +69,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Image
@@ -514,9 +516,9 @@ fun FileItemRow(
                     if (bookmarked) {
                         Spacer(modifier = Modifier.width(6.dp))
                         Icon(
-                            imageVector = Icons.Filled.Bookmark,
-                            contentDescription = "Bookmarked",
-                            tint = FolderAmber,
+                            imageVector = Icons.Filled.Favorite,
+                            contentDescription = "Favorited",
+                            tint = Color(0xFFE91E63),
                             modifier = Modifier.size(14.dp)
                         )
                     }
@@ -650,11 +652,12 @@ fun FileItemRow(
                             )
                         }
                         DropdownMenuItem(
-                            text = { Text(if (bookmarked) "Remove Bookmark" else "Add Bookmark") },
+                            text = { Text(if (bookmarked) "Remove from Favorites" else "Add to Favorites") },
                             leadingIcon = {
                                 Icon(
-                                    if (bookmarked) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
-                                    contentDescription = null
+                                    if (bookmarked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                                    contentDescription = null,
+                                    tint = if (bookmarked) Color(0xFFE91E63) else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             },
                             onClick = {

@@ -2246,6 +2246,70 @@ class ExampleRobolectricTest {
             tempServerRoot.deleteRecursively()
         }
     }
+
+    @Test
+    fun testFavoritesSpaceAndToolbarHeartToggle() {
+        runBlocking {
+            composeTestRule.waitForIdle()
+            val viewModel = composeTestRule.activity.viewModel
+            val tempDir = File(composeTestRule.activity.cacheDir, "fav_folder_test").apply { mkdirs() }
+            File(tempDir, "sample_document.pdf").writeText("Sample PDF content")
+            try {
+                val dirRef = viewModel.localProvider.toFileReference(tempDir)
+
+                // 1. Navigate to directory and verify toolbar heart button favorites the current directory
+                composeTestRule.runOnUiThread {
+                    viewModel.openVolumeInBrowser(dirRef)
+                }
+                composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+                    org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                    !viewModel.browserState.value.isLoading && viewModel.browserState.value.items.isNotEmpty()
+                }
+                composeTestRule.waitForIdle()
+
+                // Verify toolbar heart icon exists and tap it to add to Favorites
+                composeTestRule.onNodeWithTag("browser_favorite_current_dir_button").assertIsDisplayed()
+                composeTestRule.onNodeWithTag("browser_favorite_current_dir_button").performClick()
+                composeTestRule.waitForIdle()
+
+                // Verify bookmark/favorite was saved in database
+                composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+                    org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                    viewModel.bookmarks.value.any { it.uriOrPath == tempDir.absolutePath && it.isDirectory }
+                }
+                val bookmarksList = viewModel.bookmarks.value
+                assertTrue("Expected bookmarks to contain $tempDir", bookmarksList.any { it.uriOrPath == tempDir.absolutePath && it.isDirectory })
+
+                // 2. Navigate to Favorites Space
+                composeTestRule.runOnUiThread {
+                    viewModel.navigateToDestination(OpenFileDestination.BOOKMARKS)
+                }
+                composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+                    org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                    viewModel.currentDestination.value == OpenFileDestination.BOOKMARKS
+                }
+                composeTestRule.waitForIdle()
+
+                // Verify Favorites Space components: Screen, Folders tab, and the folder card
+                composeTestRule.onNodeWithTag("bookmarks_screen").assertIsDisplayed()
+                composeTestRule.onNodeWithTag("favorites_tab_0").assertIsDisplayed()
+                composeTestRule.onNodeWithTag("favorite_card_${dirRef.displayName}").assertIsDisplayed()
+
+                // 3. Navigate back to Home and verify Favorites shortcut tile is displayed
+                composeTestRule.runOnUiThread {
+                    viewModel.navigateToDestination(OpenFileDestination.HOME)
+                }
+                composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+                    org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                    viewModel.currentDestination.value == OpenFileDestination.HOME
+                }
+                composeTestRule.waitForIdle()
+                composeTestRule.onNodeWithTag("shortcut_favorites").assertIsDisplayed()
+            } finally {
+                tempDir.deleteRecursively()
+            }
+        }
+    }
 }
 
 

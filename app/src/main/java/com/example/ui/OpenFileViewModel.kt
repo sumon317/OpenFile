@@ -1710,7 +1710,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             val existing = bookmarks.value.firstOrNull { it.uriOrPath == item.uriOrPath }
             if (existing != null) {
                 dao.deleteBookmarkById(existing.id)
-                showStatus("Removed bookmark '${item.displayName}'")
+                showStatus("Removed '${item.displayName}' from Favorites")
             } else {
                 dao.insertBookmark(
                     BookmarkEntity(
@@ -1721,22 +1721,43 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                         mimeType = item.mimeType
                     )
                 )
-                showStatus("Bookmarked '${item.displayName}'")
+                showStatus("Added '${item.displayName}' to Favorites")
             }
+        }
+    }
+
+    /**
+     * Adds an existing local or storage folder to Favorites by path.
+     */
+    fun addFavoriteDirectory(path: String, customTitle: String? = null) {
+        viewModelScope.launch {
+            val file = File(path)
+            val name = customTitle?.trim()?.ifEmpty { null }
+                ?: if (file.name.isNotEmpty()) file.name else path
+            dao.insertBookmark(
+                BookmarkEntity(
+                    title = name,
+                    providerType = ProviderType.LOCAL.name,
+                    uriOrPath = file.absolutePath,
+                    isDirectory = true,
+                    mimeType = "inode/directory"
+                )
+            )
+            showStatus("Added '$name' to Favorites")
         }
     }
 
     fun renameBookmark(bookmark: BookmarkEntity, newTitle: String) {
         viewModelScope.launch {
             dao.updateBookmark(bookmark.copy(title = newTitle.trim().ifEmpty { bookmark.title }))
-            showStatus("Renamed bookmark")
+            showStatus("Renamed favorite")
         }
     }
 
     fun deleteBookmark(bookmark: BookmarkEntity) {
         viewModelScope.launch {
             dao.deleteBookmarkById(bookmark.id)
-            showStatus("Removed bookmark '${bookmark.title}'")
+            showStatus("Removed '${bookmark.title}' from Favorites")
         }
     }
 

@@ -36,6 +36,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Sort
@@ -57,6 +58,8 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FolderZip
@@ -241,6 +244,14 @@ fun HomeScreen(
                 badgeColor = Color(0xFF29B6F6),
                 testTag = "shortcut_${OpenFileDestination.RECENT_FILES.route}",
                 onClick = { onNavigateDestination(OpenFileDestination.RECENT_FILES) }
+            ),
+            HomeTileSpec(
+                label = "Favorites",
+                subtitle = if (bookmarks.isNotEmpty()) "${bookmarks.count { it.isDirectory }} folders" else "Liked Folders",
+                icon = Icons.Filled.Favorite,
+                badgeColor = Color(0xFFE91E63),
+                testTag = "shortcut_favorites",
+                onClick = { onNavigateDestination(OpenFileDestination.BOOKMARKS) }
             ),
             HomeTileSpec(
                 label = "Downloads",
@@ -747,23 +758,63 @@ fun HomeScreen(
             }
         }
 
-        // Section 3: Bookmarks
-        if (bookmarks.isNotEmpty()) {
-            item(key = "pinned_bookmarks_section", contentType = "bookmarks_section") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+        // Section 3: Favorite Folders
+        item(key = "pinned_bookmarks_section", contentType = "bookmarks_section") {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Filled.Favorite,
+                        contentDescription = null,
+                        tint = Color(0xFFE91E63),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Pinned Bookmarks",
+                        text = "Favorite Folders",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold
                     )
-                    TextButton(onClick = { onNavigateDestination(OpenFileDestination.BOOKMARKS) }) {
-                        Text("View All")
+                }
+                TextButton(
+                    onClick = { onNavigateDestination(OpenFileDestination.BOOKMARKS) },
+                    modifier = Modifier.testTag("home_view_all_favorites_button")
+                ) {
+                    Text(if (bookmarks.isNotEmpty()) "View All (${bookmarks.size})" else "Manage")
+                }
+            }
+            if (bookmarks.isEmpty()) {
+                Surface(
+                    onClick = { onNavigateDestination(OpenFileDestination.BOOKMARKS) },
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth().testTag("home_empty_favorites_card")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .background(Color(0xFFE91E63).copy(alpha = 0.12f), RoundedCornerShape(10.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Filled.FavoriteBorder, contentDescription = null, tint = Color(0xFFE91E63), modifier = Modifier.size(20.dp))
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("No favorite folders yet", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
+                            Text("Tap here to add your frequent folders for 1-tap access", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                     }
                 }
+            } else {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -773,10 +824,18 @@ fun HomeScreen(
                             onClick = { onBookmarkClick(bm) },
                             leadingIcon = {
                                 Icon(
-                                    Icons.Filled.Bookmark,
+                                    if (bm.isDirectory) Icons.Filled.Folder else Icons.Filled.Bookmark,
                                     contentDescription = null,
-                                    tint = FolderAmber,
+                                    tint = if (bm.isDirectory) FolderAmber else MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            trailingIcon = {
+                                Icon(
+                                    Icons.Filled.Favorite,
+                                    contentDescription = null,
+                                    tint = Color(0xFFE91E63),
+                                    modifier = Modifier.size(12.dp)
                                 )
                             },
                             label = { Text(bm.title, maxLines = 1, overflow = TextOverflow.Ellipsis) }
@@ -1253,6 +1312,19 @@ fun FileBrowserScreen(
             }
 
             if (browserState.currentDirectory != null) {
+                val currentDir = browserState.currentDirectory
+                val isCurrentDirFavorite = bookmarks.any { it.uriOrPath == currentDir.uriOrPath }
+                IconButton(
+                    onClick = { onToggleBookmark(currentDir) },
+                    modifier = Modifier.size(38.dp).testTag("browser_favorite_current_dir_button")
+                ) {
+                    Icon(
+                        imageVector = if (isCurrentDirFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                        contentDescription = if (isCurrentDirFavorite) "Remove from Favorites" else "Add to Favorites",
+                        tint = if (isCurrentDirFavorite) Color(0xFFE91E63) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
                 IconButton(
                     onClick = { showNewFolderDialog = true },
                     modifier = Modifier.size(38.dp).testTag("browser_new_folder_button")

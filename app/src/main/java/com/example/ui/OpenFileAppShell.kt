@@ -1072,11 +1072,15 @@ private fun DestinationRouter(
 
         OpenFileDestination.BOOKMARKS -> {
             val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
+            val volumes by viewModel.storageVolumes.collectAsStateWithLifecycle()
             BookmarksScreen(
                 bookmarks = bookmarks,
                 onOpenBookmark = { bm -> viewModel.openBookmark(bm) },
                 onRenameBookmark = { bm, title -> viewModel.renameBookmark(bm, title) },
-                onDeleteBookmark = { bm -> viewModel.deleteBookmark(bm) }
+                onDeleteBookmark = { bm -> viewModel.deleteBookmark(bm) },
+                onAddFavoriteDirectory = { path, title -> viewModel.addFavoriteDirectory(path, title) },
+                onNavigateToStorage = { viewModel.navigateToDestination(OpenFileDestination.INTERNAL_STORAGE) },
+                availableVolumes = volumes
             )
         }
 

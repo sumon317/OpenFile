@@ -20,11 +20,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
@@ -36,6 +39,8 @@ import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FolderZip
@@ -1693,53 +1698,237 @@ fun ApplicationsScreen(
 }
 
 /**
- * Bookmarks Manager Screen.
+ * Favorites & Liked Folders / Bookmarks Manager Screen.
  */
 @Composable
 fun BookmarksScreen(
     bookmarks: List<BookmarkEntity>,
     onOpenBookmark: (BookmarkEntity) -> Unit,
     onRenameBookmark: (BookmarkEntity, String) -> Unit,
-    onDeleteBookmark: (BookmarkEntity) -> Unit
+    onDeleteBookmark: (BookmarkEntity) -> Unit,
+    onAddFavoriteDirectory: ((path: String, title: String?) -> Unit)? = null,
+    onNavigateToStorage: (() -> Unit)? = null,
+    availableVolumes: List<StorageVolumeInfo> = emptyList()
 ) {
+    var selectedFilterIndex by remember { mutableIntStateOf(0) } // 0: Folders, 1: All, 2: Files
+    var searchQuery by remember { mutableStateOf("") }
     var editingBookmark by remember { mutableStateOf<BookmarkEntity?>(null) }
+    var showAddFolderDialog by remember { mutableStateOf(false) }
+
+    val folderBookmarks = remember(bookmarks) { bookmarks.filter { it.isDirectory } }
+    val fileBookmarks = remember(bookmarks) { bookmarks.filter { !it.isDirectory } }
+
+    val displayedBookmarks = remember(bookmarks, selectedFilterIndex, searchQuery) {
+        val baseList = when (selectedFilterIndex) {
+            0 -> folderBookmarks
+            2 -> fileBookmarks
+            else -> bookmarks
+        }
+        if (searchQuery.isBlank()) {
+            baseList
+        } else {
+            val q = searchQuery.trim()
+            baseList.filter {
+                it.title.contains(q, ignoreCase = true) || it.uriOrPath.contains(q, ignoreCase = true)
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .testTag("bookmarks_screen")
     ) {
-        Text(
-            text = "Pinned Bookmarks (${bookmarks.size})",
-            style = MaterialTheme.typography.titleLarge,
-            modifier = Modifier.padding(16.dp)
-        )
-        HorizontalDivider()
-        if (bookmarks.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No bookmarks yet. Use the file menu to pin frequent folders or files.")
+        // Hero Header: Title, Counts, and "+ Add Favorite Folder" Button
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Filled.Favorite,
+                        contentDescription = null,
+                        tint = Color(0xFFE91E63),
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Favorites & Liked Folders",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Text(
+                    text = "${folderBookmarks.size} favorite folders • ${fileBookmarks.size} favorite files",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (onAddFavoriteDirectory != null) {
+                Button(
+                    onClick = { showAddFolderDialog = true },
+                    modifier = Modifier.testTag("favorites_add_folder_button")
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Add Folder")
+                }
+            }
+        }
+
+        // Sub-navigation Filter Chips
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val filterOptions = listOf(
+                "Folders (${folderBookmarks.size})",
+                "All (${bookmarks.size})",
+                "Files (${fileBookmarks.size})"
+            )
+            filterOptions.forEachIndexed { index, label ->
+                FilterChip(
+                    selected = selectedFilterIndex == index,
+                    onClick = { selectedFilterIndex = index },
+                    label = { Text(label) },
+                    modifier = Modifier.testTag("favorites_tab_$index")
+                )
+            }
+        }
+
+        if (bookmarks.size >= 4) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Filter favorites...") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Clear", modifier = Modifier.size(16.dp))
+                        }
+                    }
+                },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(top = 4.dp))
+
+        if (displayedBookmarks.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(68.dp)
+                            .background(Color(0xFFE91E63).copy(alpha = 0.12f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.FavoriteBorder,
+                            contentDescription = null,
+                            tint = Color(0xFFE91E63),
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
+                    Text(
+                        text = if (selectedFilterIndex == 0) "No favorite folders yet" else "No favorites yet",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "Pin frequent folders or files here so you can access them with one tap from anywhere in OpenFile. Tap the ❤️ icon in any folder while browsing to add it.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                    if (onAddFavoriteDirectory != null) {
+                        Button(
+                            onClick = { showAddFolderDialog = true },
+                            modifier = Modifier.testTag("favorites_empty_add_folder_button")
+                        ) {
+                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Add Favorite Folder")
+                        }
+                    }
+
+                    // Popular Quick-Add suggestions
+                    Text(
+                        text = "Or tap to add popular folders:",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val popularPresets = listOf(
+                            "Downloads" to "/storage/emulated/0/Download",
+                            "Camera" to "/storage/emulated/0/DCIM/Camera",
+                            "Documents" to "/storage/emulated/0/Documents",
+                            "Pictures" to "/storage/emulated/0/Pictures",
+                            "Music" to "/storage/emulated/0/Music"
+                        )
+                        popularPresets.forEach { (title, path) ->
+                            OutlinedButton(
+                                onClick = { onAddFavoriteDirectory?.invoke(path, title) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Icon(Icons.Filled.Folder, contentDescription = null, modifier = Modifier.size(16.dp), tint = FolderAmber)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("+ $title")
+                            }
+                        }
+                    }
+                }
             }
         } else {
             LazyColumn(
                 contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxSize()
             ) {
                 items(
-                    items = bookmarks,
+                    items = displayedBookmarks,
                     key = { it.id },
-                    contentType = { "bookmark" }
+                    contentType = { if (it.isDirectory) "folder_bookmark" else "file_bookmark" }
                 ) { bm ->
                     Card(
                         onClick = { onOpenBookmark(bm) },
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.surfaceContainerLow
                         ),
-                        modifier = Modifier.fillMaxWidth()
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("favorite_card_${bm.title}")
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(12.dp),
+                                .padding(14.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
@@ -1747,28 +1936,86 @@ fun BookmarksScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Icon(Icons.Filled.Bookmark, contentDescription = null, tint = FolderAmber)
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
-                                    Text(bm.title, style = MaterialTheme.typography.titleSmall)
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .background(
+                                            if (bm.isDirectory) FolderAmber.copy(alpha = 0.16f) else MaterialTheme.colorScheme.primaryContainer,
+                                            RoundedCornerShape(12.dp)
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = if (bm.isDirectory) Icons.Filled.Folder else Icons.Filled.Bookmark,
+                                        contentDescription = null,
+                                        tint = if (bm.isDirectory) FolderAmber else MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = bm.title,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Icon(
+                                            imageVector = Icons.Filled.Favorite,
+                                            contentDescription = null,
+                                            tint = Color(0xFFE91E63),
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
                                     Text(
-                                        text = "${bm.providerType} • ${bm.uriOrPath}",
+                                        text = bm.uriOrPath,
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        overflow = TextOverflow.Ellipsis,
+                                        fontFamily = JetBrainsMonoFamily
                                     )
+                                    val localFile = remember(bm.uriOrPath) { File(bm.uriOrPath) }
+                                    if (bm.isDirectory && localFile.exists()) {
+                                        val childCount = remember(bm.uriOrPath) { localFile.listFiles()?.size ?: 0 }
+                                        Text(
+                                            text = "$childCount items • Tap to open folder",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
                                 }
                             }
-                            Row {
-                                IconButton(onClick = { editingBookmark = bm }) {
-                                    Icon(Icons.Filled.Edit, contentDescription = "Rename bookmark")
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(
+                                    onClick = { editingBookmark = bm },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(Icons.Filled.Edit, contentDescription = "Rename favorite", modifier = Modifier.size(18.dp))
                                 }
-                                IconButton(onClick = { onDeleteBookmark(bm) }) {
+                                IconButton(
+                                    onClick = { onDeleteBookmark(bm) },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
                                     Icon(
                                         Icons.Filled.Delete,
-                                        contentDescription = "Remove bookmark",
-                                        tint = MaterialTheme.colorScheme.error
+                                        contentDescription = "Remove from Favorites",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { onOpenBookmark(bm) },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        Icons.AutoMirrored.Filled.ArrowForward,
+                                        contentDescription = "Open folder",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
                             }
@@ -1779,17 +2026,29 @@ fun BookmarksScreen(
         }
     }
 
+    if (showAddFolderDialog && onAddFavoriteDirectory != null) {
+        AddFavoriteFolderDialog(
+            bookmarks = bookmarks,
+            availableVolumes = availableVolumes,
+            onDismiss = { showAddFolderDialog = false },
+            onAddFolder = { path, title ->
+                onAddFavoriteDirectory(path, title)
+            },
+            onBrowseStorage = onNavigateToStorage
+        )
+    }
+
     if (editingBookmark != null) {
         val bm = editingBookmark!!
         var newTitle by remember(bm) { mutableStateOf(bm.title) }
         AlertDialog(
             onDismissRequest = { editingBookmark = null },
-            title = { Text("Rename Bookmark") },
+            title = { Text("Rename Favorite") },
             text = {
                 OutlinedTextField(
                     value = newTitle,
                     onValueChange = { newTitle = it },
-                    label = { Text("Bookmark title") },
+                    label = { Text("Favorite title") },
                     singleLine = true
                 )
             },
@@ -1808,6 +2067,144 @@ fun BookmarksScreen(
             }
         )
     }
+}
+
+@Composable
+fun AddFavoriteFolderDialog(
+    bookmarks: List<BookmarkEntity>,
+    availableVolumes: List<StorageVolumeInfo>,
+    onDismiss: () -> Unit,
+    onAddFolder: (path: String, title: String?) -> Unit,
+    onBrowseStorage: (() -> Unit)? = null
+) {
+    var customPath by remember { mutableStateOf("") }
+    var customTitle by remember { mutableStateOf("") }
+    val existingPaths = remember(bookmarks) { bookmarks.map { it.uriOrPath }.toSet() }
+
+    val presetFolders = remember(availableVolumes) {
+        val list = mutableListOf<Pair<String, String>>()
+        list.add("Downloads" to "/storage/emulated/0/Download")
+        list.add("Camera" to "/storage/emulated/0/DCIM/Camera")
+        list.add("DCIM" to "/storage/emulated/0/DCIM")
+        list.add("Documents" to "/storage/emulated/0/Documents")
+        list.add("Pictures" to "/storage/emulated/0/Pictures")
+        list.add("Music" to "/storage/emulated/0/Music")
+        list.add("Movies" to "/storage/emulated/0/Movies")
+        list.add("Internal Storage Root" to "/storage/emulated/0")
+        availableVolumes.filter { it.isRemovable }.forEach { vol ->
+            list.add(vol.title to vol.rootReference.uriOrPath)
+        }
+        list
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Favorite, contentDescription = null, tint = Color(0xFFE91E63), modifier = Modifier.size(22.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Add Folder to Favorites")
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Quick Suggestions:",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                presetFolders.forEach { (name, path) ->
+                    val isAlreadyFav = path in existingPaths
+                    Surface(
+                        onClick = {
+                            if (!isAlreadyFav) {
+                                onAddFolder(path, name)
+                                onDismiss()
+                            }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (isAlreadyFav) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.surfaceContainerLow,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Filled.Folder, contentDescription = null, tint = FolderAmber, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                                    Text(path, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                            if (isAlreadyFav) {
+                                Icon(Icons.Filled.Check, contentDescription = "Already favorite", tint = ApkGreen, modifier = Modifier.size(16.dp))
+                            } else {
+                                Icon(Icons.Filled.Add, contentDescription = "Add", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                Text(
+                    text = "Or Enter Custom Path:",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                OutlinedTextField(
+                    value = customPath,
+                    onValueChange = { customPath = it },
+                    label = { Text("Directory Path (e.g. /storage/emulated/0/Work)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = customTitle,
+                    onValueChange = { customTitle = it },
+                    label = { Text("Favorite Name (Optional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (onBrowseStorage != null) {
+                    TextButton(
+                        onClick = {
+                            onDismiss()
+                            onBrowseStorage()
+                        },
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    ) {
+                        Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Browse Folders in File Manager")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (customPath.isNotBlank()) {
+                        onAddFolder(customPath.trim(), customTitle.trim().ifEmpty { null })
+                        onDismiss()
+                    }
+                },
+                enabled = customPath.isNotBlank()
+            ) {
+                Text("Add")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }
 
 /**

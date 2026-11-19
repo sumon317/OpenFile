@@ -10,6 +10,8 @@ import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
@@ -161,10 +163,10 @@ enum class OpenFileDestination(
     ),
     BOOKMARKS(
         route = "bookmarks",
-        title = "Bookmarks",
+        title = "Favorites",
         section = DrawerSection.OVERVIEW,
-        selectedIcon = Icons.Filled.Bookmarks,
-        unselectedIcon = Icons.Outlined.Bookmarks,
+        selectedIcon = Icons.Filled.Favorite,
+        unselectedIcon = Icons.Filled.FavoriteBorder,
         testTag = "nav_bookmarks"
     ),
     TRASH(
