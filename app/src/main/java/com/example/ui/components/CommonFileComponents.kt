@@ -1,6 +1,9 @@
 package com.example.ui.components
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.media.MediaPlayer
@@ -1110,57 +1113,63 @@ fun FilePreviewScreen(
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Full-Window Top App Bar: only for non-media document and image types
-            if (!isMedia && !(isPdf && isPdfImmersive)) {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text(
-                                text = activeTitle,
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = activeSubtitle,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (isImageOrDarkMedia) Color.LightGray else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = onDismiss) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back",
-                                tint = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    },
-                    actions = {
-                        TextButton(onClick = { onOpenExternal(file) }) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                tint = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                "Open With",
-                                color = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = if (isImageOrDarkMedia) Color.Black.copy(alpha = 0.85f) else MaterialTheme.colorScheme.surfaceContainer,
-                        titleContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface,
-                        navigationIconContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface,
-                        actionIconContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
+            AnimatedVisibility(
+                visible = !isMedia && !(isPdf && isPdfImmersive),
+                enter = slideInVertically(initialOffsetY = { -it }),
+                exit = slideOutVertically(targetOffsetY = { -it })
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    TopAppBar(
+                        title = {
+                            Column {
+                                Text(
+                                    text = activeTitle,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = activeSubtitle,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (isImageOrDarkMedia) Color.LightGray else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        },
+                        navigationIcon = {
+                            IconButton(onClick = onDismiss) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Back",
+                                    tint = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        },
+                        actions = {
+                            TextButton(onClick = { onOpenExternal(file) }) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                    tint = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    "Open With",
+                                    color = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = if (isImageOrDarkMedia) Color.Black.copy(alpha = 0.85f) else MaterialTheme.colorScheme.surfaceContainer,
+                            titleContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface,
+                            navigationIconContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.onSurface,
+                            actionIconContentColor = if (isImageOrDarkMedia) Color.White else MaterialTheme.colorScheme.primary
+                        )
                     )
-                )
 
-                if (!isImageOrDarkMedia) {
-                    HorizontalDivider()
+                    if (!isImageOrDarkMedia) {
+                        HorizontalDivider()
+                    }
                 }
             }
 
