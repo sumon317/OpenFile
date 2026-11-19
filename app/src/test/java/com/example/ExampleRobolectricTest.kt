@@ -2155,6 +2155,97 @@ class ExampleRobolectricTest {
 
         vm.mediaPlaybackController.stop()
     }
+
+    @Test
+    fun `multi-selection displays share button when multiple items are selected and shares multiple files`() = runBlocking {
+        composeTestRule.waitForIdle()
+        val viewModel = composeTestRule.activity.viewModel
+        val tempDir = File(composeTestRule.activity.cacheDir, "openfile_multishare_test").apply { mkdirs() }
+        try {
+            val file1 = File(tempDir, "shared_doc1.txt").apply { writeText("Content 1") }
+            val file2 = File(tempDir, "shared_doc2.txt").apply { writeText("Content 2") }
+
+            val dirRef = viewModel.localProvider.toFileReference(tempDir)
+            composeTestRule.runOnUiThread {
+                viewModel.openVolumeInBrowser(dirRef)
+            }
+            composeTestRule.waitUntil(timeoutMillis = 5_000L) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                !viewModel.browserState.value.isLoading && viewModel.browserState.value.items.size >= 2
+            }
+            composeTestRule.waitForIdle()
+
+            val browserItem1 = viewModel.browserState.value.items.first { it.displayName == "shared_doc1.txt" }
+            val browserItem2 = viewModel.browserState.value.items.first { it.displayName == "shared_doc2.txt" }
+
+            composeTestRule.runOnUiThread {
+                viewModel.toggleSelection(browserItem1)
+                viewModel.toggleSelection(browserItem2)
+            }
+            composeTestRule.waitForIdle()
+
+            // Verify multiselect toolbar displays Share button even when 2 items are selected
+            composeTestRule.onNodeWithTag("multiselect_share").assertIsDisplayed()
+
+            // Test multi-share action
+            composeTestRule.runOnUiThread {
+                viewModel.shareFileItems(listOf(browserItem1, browserItem2))
+            }
+            composeTestRule.waitForIdle()
+
+            val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+            var startedIntent: Intent? = null
+            while (true) {
+                val next = org.robolectric.Shadows.shadowOf(app).nextStartedActivity ?: break
+                if (next.action == Intent.ACTION_CHOOSER) {
+                    startedIntent = next
+                    break
+                }
+            }
+            assertNotNull(startedIntent)
+            val finalChooser = checkNotNull(startedIntent)
+            assertEquals(Intent.ACTION_CHOOSER, finalChooser.action)
+            val innerIntent = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                finalChooser.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                finalChooser.getParcelableExtra(Intent.EXTRA_INTENT)
+            }
+            assertNotNull(innerIntent)
+            assertEquals(Intent.ACTION_SEND_MULTIPLE, innerIntent?.action)
+            val streamUris = innerIntent?.getParcelableArrayListExtra<android.net.Uri>(Intent.EXTRA_STREAM)
+            assertEquals(2, streamUris?.size)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `LAN scanner finds local server and respects timeout without socket exhaustion`() = runBlocking {
+        val tempServerRoot = java.nio.file.Files.createTempDirectory("ftp_server_lan_scan").toFile()
+        try {
+            val startRes = FtpServerEngine.startServer(
+                FtpServerConfig(
+                    bindAddress = "127.0.0.1",
+                    port = 2121,
+                    passivePortStart = 52000,
+                    passivePortEnd = 52020,
+                    rootDirectory = tempServerRoot,
+                    username = "admin",
+                    password = "secret99",
+                    allowAnonymous = true,
+                    allowWrite = false
+                )
+            )
+            assertTrue(startRes.isSuccess)
+
+            val discovered = RemoteNetworkClients.scanLocalNetworkForFileServers("127.0.0.1")
+            assertTrue("Expected discovered list to contain local FTP port 2121", discovered.any { it.port == 2121 })
+        } finally {
+            FtpServerEngine.stopServer()
+            tempServerRoot.deleteRecursively()
+        }
+    }
 }
 
 

@@ -162,13 +162,47 @@ class AppManagerEngine(
 
     fun shareApkOrFile(file: File, mimeType: String = "application/vnd.android.package-archive"): Result<Unit> = runCatching {
         val authority = "${context.packageName}.fileprovider"
-        val uri = FileProvider.getUriForFile(context, authority, file)
+        val uri = runCatching {
+            FileProvider.getUriForFile(context, authority, file)
+        }.getOrElse {
+            Uri.fromFile(file)
+        }
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type = mimeType
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         val chooser = Intent.createChooser(shareIntent, "Share ${file.name}").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(chooser)
+    }
+
+    /**
+     * Shares multiple files simultaneously using `Intent.ACTION_SEND_MULTIPLE`.
+     */
+    fun shareMultipleFiles(files: List<File>, mimeType: String = "*/*"): Result<Unit> = runCatching {
+        if (files.isEmpty()) return@runCatching
+        if (files.size == 1) {
+            shareApkOrFile(files.first(), mimeType).getOrThrow()
+            return@runCatching
+        }
+        val authority = "${context.packageName}.fileprovider"
+        val uris = ArrayList<Uri>(files.size)
+        for (f in files) {
+            val uri = runCatching {
+                FileProvider.getUriForFile(context, authority, f)
+            }.getOrElse {
+                Uri.fromFile(f)
+            }
+            uris.add(uri)
+        }
+        val shareIntent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+            type = mimeType
+            putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val chooser = Intent.createChooser(shareIntent, "Share ${files.size} items").apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(chooser)

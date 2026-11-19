@@ -1018,6 +1018,7 @@ fun FileBrowserScreen(
     onDeleteItems: (List<FileReference>, Boolean) -> Unit,
     onToggleBookmark: (FileReference) -> Unit,
     onShareItem: (FileReference) -> Unit,
+    onShareItems: (List<FileReference>) -> Unit = { list -> list.firstOrNull()?.let(onShareItem) },
     onOpenProperties: (FileReference) -> Unit,
     onSelectAll: () -> Unit,
     onClearSelection: () -> Unit,
@@ -1795,12 +1796,13 @@ fun FileBrowserScreen(
                             }
                         }
                     )
-                    if (selectedItemsList.size == 1) {
+                    val shareableFiles = selectedItemsList.filter { !it.isDirectory }
+                    if (shareableFiles.isNotEmpty()) {
                         BottomActionBarItem(
                             icon = Icons.Filled.Share,
                             label = "Share",
                             testTag = "multiselect_share",
-                            onClick = { onShareItem(selectedItemsList.first()) }
+                            onClick = { onShareItems(shareableFiles) }
                         )
                     }
                     BottomActionBarItem(

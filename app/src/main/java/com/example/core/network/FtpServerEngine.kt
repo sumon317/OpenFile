@@ -116,19 +116,29 @@ object FtpServerEngine {
     fun resolveLocalLanIpAddress(): String {
         return runCatching {
             val interfaces = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
-            val preferredOrder = listOf("wlan", "ap", "rndis", "eth", "en")
+            val preferredPrefixes = listOf("ap", "softap", "p2p", "wlan", "swlan", "tiwlan", "wigig", "rndis", "eth", "en")
             val candidates = mutableListOf<Pair<String, String>>()
 
             for (nif in interfaces) {
-                if (!nif.isUp || nif.isLoopback) continue
+                val isUp = runCatching { nif.isUp }.getOrDefault(true)
+                if (!isUp || nif.isLoopback) continue
                 for (addr in nif.inetAddresses) {
-                    if (addr is Inet4Address && !addr.isLoopbackAddress && addr.isSiteLocalAddress) {
+                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
                         val hostAddr = addr.hostAddress ?: continue
-                        candidates.add(nif.name.lowercase() to hostAddr)
+                        if (hostAddr == "127.0.0.1" || hostAddr.startsWith("169.254.")) continue
+                        if (addr.isSiteLocalAddress || hostAddr.startsWith("192.168.") || hostAddr.startsWith("10.") || hostAddr.startsWith("172.")) {
+                            candidates.add(nif.name.lowercase() to hostAddr)
+                        }
                     }
                 }
             }
-            for (prefix in preferredOrder) {
+            // Prioritize standard Android hotspot (192.168.43.x) and Wi-Fi Direct (192.168.49.x)
+            val hotspotCandidate = candidates.firstOrNull {
+                it.second.startsWith("192.168.43.") || it.second.startsWith("192.168.49.")
+            }
+            if (hotspotCandidate != null) return@runCatching hotspotCandidate.second
+
+            for (prefix in preferredPrefixes) {
                 val match = candidates.firstOrNull { it.first.startsWith(prefix) }
                 if (match != null) return@runCatching match.second
             }
@@ -222,8 +232,8 @@ object FtpServerEngine {
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             serverScope = scope
 
-            val bindInet = InetAddress.getByName(config.bindAddress)
-            val listener = ServerSocket(config.port, 50, bindInet)
+            val wildcard = InetAddress.getByName("0.0.0.0")
+            val listener = ServerSocket(config.port, 50, wildcard)
             serverSocket = listener
 
             val mountsSummary = if (config.virtualMounts.isNotEmpty()) {
@@ -299,13 +309,13 @@ object FtpServerEngine {
     }
 
     private fun allocatePassiveServerSocket(config: FtpServerConfig): ServerSocket {
-        val bindInet = InetAddress.getByName(config.bindAddress)
+        val wildcard = InetAddress.getByName("0.0.0.0")
         val rangeSize = (config.passivePortEnd - config.passivePortStart + 1).coerceAtLeast(1)
         for (attempt in 0 until rangeSize) {
             val offset = (nextPassivePortIndex.getAndIncrement() and Int.MAX_VALUE) % rangeSize
             val candidatePort = config.passivePortStart + offset
             try {
-                return ServerSocket(candidatePort, 50, bindInet).apply {
+                return ServerSocket(candidatePort, 50, wildcard).apply {
                     receiveBufferSize = 512 * 1024
                     reuseAddress = true
                 }
@@ -313,7 +323,7 @@ object FtpServerEngine {
                 // Port in use, try next in passive range
             }
         }
-        return ServerSocket(0, 50, bindInet).apply {
+        return ServerSocket(0, 50, wildcard).apply {
             receiveBufferSize = 512 * 1024
             reuseAddress = true
         }
@@ -439,7 +449,10 @@ object FtpServerEngine {
                                 runCatching { passiveServer?.close() }
                                 val pasv = allocatePassiveServerSocket(config)
                                 passiveServer = pasv
-                                val ipParts = config.bindAddress.split('.').map { it.toIntOrNull() ?: 0 }
+                                val activeLocalIp = controlSocket.localAddress?.hostAddress?.takeIf {
+                                    it.contains('.') && it != "0.0.0.0"
+                                } ?: config.bindAddress.takeIf { it.contains('.') && it != "0.0.0.0" } ?: "127.0.0.1"
+                                val ipParts = activeLocalIp.split('.').map { it.toIntOrNull() ?: 0 }
                                 val p1 = (pasv.localPort shr 8) and 0xFF
                                 val p2 = pasv.localPort and 0xFF
                                 val tuple = "${ipParts.getOrElse(0) { 127 }},${ipParts.getOrElse(1) { 0 }},${ipParts.getOrElse(2) { 0 }},${ipParts.getOrElse(3) { 1 }},$p1,$p2"

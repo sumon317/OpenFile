@@ -143,6 +143,7 @@ fun StorageAnalysisScreen(
     },
     onToggleBookmark: (FileReference) -> Unit = {},
     onShareItem: (FileReference) -> Unit = {},
+    onShareItems: (List<FileReference>) -> Unit = { list -> list.firstOrNull()?.let(onShareItem) },
     onOpenProperties: (FileReference) -> Unit = {},
     onOpenParentFolder: (FileReference) -> Unit = {},
     onOpenWithExternal: ((FileReference) -> Unit)? = null,
@@ -727,12 +728,13 @@ fun StorageAnalysisScreen(
                             }
                         }
                     )
-                    if (selectedItemsList.size == 1 && !selectedItemsList.first().isDirectory) {
+                    val shareableFiles = selectedItemsList.filter { !it.isDirectory }
+                    if (shareableFiles.isNotEmpty()) {
                         AnalyzerBottomActionItem(
                             icon = Icons.Filled.Share,
                             label = "Share",
                             testTag = "analyzer_multiselect_share",
-                            onClick = { onShareItem(selectedItemsList.first()) }
+                            onClick = { onShareItems(shareableFiles) }
                         )
                     }
                     AnalyzerBottomActionItem(

@@ -19,6 +19,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.apache.commons.net.ftp.FTP
 import org.apache.commons.net.ftp.FTPClient
@@ -28,7 +30,9 @@ import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
+import java.net.NoRouteToHostException
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.security.MessageDigest
 import java.util.EnumSet
 import java.util.Properties
@@ -865,49 +869,96 @@ object RemoteNetworkClients {
     }
 
     /**
-     * Scans the local /24 subnet for responsive FTP (21, 2121), SFTP/SSH (22), and SMB (445) hosts.
+     * Scans the local /24 subnet for responsive FTP (21, 2121), SFTP/SSH (22, 8022), and SMB (445) hosts.
+     * Throttles network sockets using a Semaphore to prevent socket exhaustion (`EMFILE`) on older devices,
+     * checks high-priority targets (gateways, Android hotspot hosts, localhost) first, and falls back to
+     * known mobile tethering subnets (192.168.43.x, 192.168.49.x) even when offline or on 127.0.0.1.
      */
     suspend fun scanLocalNetworkForFileServers(localIp: String): List<DiscoveredLanHost> = withContext(Dispatchers.IO) {
-        val prefix = localIp.substringBeforeLast('.', "")
-        if (prefix.isBlank() || prefix == "127.0.0") {
-            // Check localhost ports (including active OpenFile FTP Server)
-            return@withContext probeHostPorts("127.0.0.1")
-        }
         val results = mutableListOf<DiscoveredLanHost>()
-        results.addAll(probeHostPorts(localIp))
+        val seen = HashSet<String>()
 
+        fun addResult(host: DiscoveredLanHost) {
+            val key = "${host.ipAddress}:${host.port}"
+            if (seen.add(key)) {
+                results.add(host)
+            }
+        }
+
+        val primaryPrefix = localIp.substringBeforeLast('.', "").takeIf { it.isNotBlank() && it != "127.0.0" }
+
+        // 1. High-priority instant targets (Gateway, Hotspot Host, and Localhost)
+        val priorityIps = linkedSetOf<String>()
+        if (primaryPrefix != null) {
+            priorityIps.add("$primaryPrefix.1")
+        }
+        priorityIps.add("192.168.43.1") // Standard Android hotspot host
+        priorityIps.add("192.168.49.1") // Standard Android Wi-Fi Direct host
+        if (localIp.isNotBlank() && localIp != "127.0.0.1") {
+            priorityIps.add(localIp)
+        }
+        priorityIps.add("127.0.0.1")
+
+        for (ip in priorityIps) {
+            probeHostPorts(ip, timeoutMs = 600).forEach(::addResult)
+        }
+
+        // 2. Determine subnet prefixes to sweep
+        val prefixesToScan = linkedSetOf<String>()
+        if (primaryPrefix != null) {
+            prefixesToScan.add(primaryPrefix)
+        } else {
+            // When localIp is 127.0.0.1 or offline/hotspot fallback
+            prefixesToScan.add("192.168.43")
+            prefixesToScan.add("192.168.1")
+            prefixesToScan.add("192.168.0")
+        }
+
+        // 3. Sweep subnet with Semaphore throttle to prevent EMFILE socket exhaustion on older phones
+        val semaphore = Semaphore(24)
         coroutineScope {
-            val deferreds = (1..254).chunked(32).flatMap { batch ->
-                batch.map { hostOctet ->
-                    val candidateIp = "$prefix.$hostOctet"
-                    async {
-                        if (candidateIp == localIp) emptyList()
-                        else probeHostPorts(candidateIp, timeoutMs = 180)
+            val jobs = prefixesToScan.flatMap { prefix ->
+                (1..254).map { octet ->
+                    val candidateIp = "$prefix.$octet"
+                    if (candidateIp in priorityIps) {
+                        null
+                    } else {
+                        async {
+                            semaphore.withPermit {
+                                probeHostPorts(candidateIp, timeoutMs = 350)
+                            }
+                        }
                     }
                 }
+            }.filterNotNull()
+
+            jobs.awaitAll().forEach { list ->
+                list.forEach(::addResult)
             }
-            deferreds.awaitAll().forEach { results.addAll(it) }
         }
-        results.distinctBy { "${it.ipAddress}:${it.port}" }
+
+        results
     }
 
-    private fun probeHostPorts(ip: String, timeoutMs: Int = 250): List<DiscoveredLanHost> {
+    private fun probeHostPorts(ip: String, timeoutMs: Int = 350): List<DiscoveredLanHost> {
         val found = mutableListOf<DiscoveredLanHost>()
         // port, protocol label, normalised protocol, friendly name
         val targetPorts = listOf(
             listOf(2121, "FTP (OpenFile / Alt)", "FTP", "OpenFile FTP"),
+            listOf(445, "SMB2/3 Share", "SMB", "SMB Share"),
             listOf(21, "FTP", "FTP", "FTP Server"),
             listOf(22, "SFTP / SSH", "SFTP", "SFTP Server"),
-            listOf(8022, "SFTP / SSH (Termux)", "SFTP", "SFTP Server"),
-            listOf(445, "SMB2/3 Share", "SMB", "SMB Share")
+            listOf(8022, "SFTP / SSH (Termux)", "SFTP", "SFTP Server")
         )
-        for (entry in targetPorts) {
+        var timeoutsCount = 0
+        for ((index, entry) in targetPorts.withIndex()) {
             val port = entry[0] as Int
             val label = entry[1] as String
             val protocol = entry[2] as String
             val friendly = entry[3] as String
             try {
                 Socket().use { socket ->
+                    socket.reuseAddress = true
                     socket.connect(InetSocketAddress(ip, port), timeoutMs)
                     found.add(
                         DiscoveredLanHost(
@@ -919,7 +970,17 @@ object RemoteNetworkClients {
                         )
                     )
                 }
+            } catch (_: SocketTimeoutException) {
+                timeoutsCount++
+                // If both port 2121 and port 445 time out on this IP, the host is unresponsive/dead on this LAN
+                if (timeoutsCount >= 2 && index <= 1) {
+                    break
+                }
+            } catch (_: NoRouteToHostException) {
+                // Abort all subsequent ports for this dead host
+                break
             } catch (_: Exception) {
+                // Port closed or rejected (RST): host is alive, continue checking other ports
             }
         }
         return found

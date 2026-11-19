@@ -1262,13 +1262,35 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun shareFileItem(item: FileReference) {
-        if (item.providerType == ProviderType.LOCAL) {
-            appManager.shareApkOrFile(File(item.uriOrPath), item.mimeType)
-                .onFailure { showStatus("Share failed: ${it.message}") }
+    fun shareFileItems(items: List<FileReference>) {
+        if (items.isEmpty()) return
+        val localFiles = items.filter { it.providerType == ProviderType.LOCAL && !it.isDirectory }
+            .map { File(it.uriOrPath) }
+            .filter { it.exists() && it.isFile }
+
+        if (localFiles.isEmpty()) {
+            showStatus("Only local files can be shared. Download remote files first.")
             return
         }
-        showStatus("Download remote file to local storage before sharing.")
+
+        val mimeTypes = items.map { it.mimeType }.filter { it.isNotBlank() && it != "*/*" }
+        val commonMimeType = if (mimeTypes.isEmpty()) {
+            "*/*"
+        } else {
+            val firstMajor = mimeTypes.first().substringBefore('/')
+            if (mimeTypes.all { it.startsWith("$firstMajor/") }) {
+                "$firstMajor/*"
+            } else {
+                "*/*"
+            }
+        }
+
+        appManager.shareMultipleFiles(localFiles, commonMimeType)
+            .onFailure { showStatus("Share failed: ${it.message}") }
+    }
+
+    fun shareFileItem(item: FileReference) {
+        shareFileItems(listOf(item))
     }
 
     fun toggleSelection(item: FileReference) {
