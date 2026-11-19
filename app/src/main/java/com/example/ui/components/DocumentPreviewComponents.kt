@@ -57,7 +57,11 @@ import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Slideshow
 import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material.icons.filled.Contrast
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -76,6 +80,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -90,6 +95,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -97,6 +104,7 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
@@ -140,9 +148,13 @@ import android.content.Intent
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Warning
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 import java.io.File
 
 // ---------------------------------------------------------------------------------------------
@@ -401,6 +413,21 @@ fun SpreadsheetPreview(file: FileReference) {
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Document Format Indicator Badge
+            Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier.padding(end = 6.dp)
+            ) {
+                Text(
+                    text = file.extension.uppercase().ifBlank { "SHEET" },
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+                )
+            }
+
             // Formula / Cell Reference Box
             val cellCoordText = selectedCellCoords?.let { (r, c) ->
                 "${SpreadsheetParser.indexToColumnLetter(c)}${r + 1}"
@@ -444,7 +471,7 @@ fun SpreadsheetPreview(file: FileReference) {
 
             val screenConfig = LocalConfiguration.current
             val isSmallScreen = screenConfig.screenWidthDp < 360
-            val searchInputWidth = if (isSmallScreen) 100.dp else 130.dp
+            val searchInputWidth = if (isSmallScreen) 100.dp else 125.dp
 
             Spacer(modifier = Modifier.width(6.dp))
 
@@ -458,6 +485,34 @@ fun SpreadsheetPreview(file: FileReference) {
                     .width(searchInputWidth)
                     .height(44.dp)
             )
+
+            // Copy Range Button (when range is selected)
+            if (selectedRange != null) {
+                val clipMgr = LocalClipboardManager.current
+                IconButton(
+                    onClick = {
+                        val r = selectedRange!!
+                        val tsv = buildString {
+                            val rLimit = minOf(r.lastRow, r.firstRow + 500)
+                            val cLimit = minOf(r.lastCol, r.firstCol + 100)
+                            for (row in r.firstRow..rLimit) {
+                                val rowValues = (r.firstCol..cLimit).map { col ->
+                                    currentSheet.getCell(row, col)?.displayValue ?: ""
+                                }
+                                append(rowValues.joinToString("\t")).append("\n")
+                            }
+                        }
+                        clipMgr.setText(AnnotatedString(tsv.trimEnd()))
+                    },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ContentCopy,
+                        contentDescription = "Copy Selected Range",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
         }
 
         // 3. High-Performance Virtualized Canvas Grid
@@ -1203,31 +1258,144 @@ private fun MarkdownTableView(table: MarkdownNode.Table) {
 }
 
 // =============================================================================================
-// 6. Enhanced Multi-Page PDF Viewer
+// 6. High-Performance Multi-Page PDF Viewer (60/120fps Zero-Jank Architecture)
 // =============================================================================================
 
-// =============================================================================================
-// 6. Enhanced Multi-Page Horizontal Scroll PDF Viewer
-// =============================================================================================
+data class PdfPageDimension(val width: Int, val height: Int) {
+    val aspectRatio: Float
+        get() = if (height > 0) (width.toFloat() / height.toFloat()).coerceIn(0.2f, 5.0f) else (1f / 1.414f)
+}
+
+enum class PdfReadingTheme(val label: String) {
+    DAY("Day"),
+    NIGHT("Night"),
+    SEPIA("Sepia")
+}
+
+private val NightInvertColorMatrix = ColorMatrix(floatArrayOf(
+    -1f,  0f,  0f, 0f, 255f,
+     0f, -1f,  0f, 0f, 255f,
+     0f,  0f, -1f, 0f, 255f,
+     0f,  0f,  0f, 1f,   0f
+))
+
+private val SepiaColorMatrix = ColorMatrix(floatArrayOf(
+    0.393f * 1.15f, 0.769f * 1.15f, 0.189f * 1.15f, 0f, 0f,
+    0.349f * 1.05f, 0.686f * 1.05f, 0.168f * 1.05f, 0f, 0f,
+    0.272f * 0.90f, 0.534f * 0.90f, 0.131f * 0.90f, 0f, 0f,
+    0f,             0f,            0f,            1f, 0f
+))
 
 object PdfPageCache {
-    private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024L).toInt()
-    private val cacheSize = (maxMemory / 8).coerceAtLeast(1024)
+    private val maxMemoryKb = (Runtime.getRuntime().maxMemory() / 1024L).toInt()
+    private val cacheSizeKb = (maxMemoryKb / 5).coerceAtLeast(16 * 1024)
 
-    private val lruCache = object : LruCache<String, Bitmap>(cacheSize) {
+    private val lruCache = object : LruCache<String, Bitmap>(cacheSizeKb) {
         override fun sizeOf(key: String, bitmap: Bitmap): Int {
-            return bitmap.byteCount / 1024
+            return (bitmap.byteCount / 1024).coerceAtLeast(1)
         }
     }
 
-    fun get(key: String): Bitmap? = lruCache.get(key)?.takeIf { !it.isRecycled }
-
-    fun put(key: String, bitmap: Bitmap) {
-        lruCache.put(key, bitmap)
+    fun get(key: String): Bitmap? = synchronized(this) {
+        val bmp = lruCache.get(key)
+        if (bmp != null && !bmp.isRecycled) bmp else null
     }
 
-    fun clear() {
+    fun put(key: String, bitmap: Bitmap) = synchronized(this) {
+        if (!bitmap.isRecycled) {
+            lruCache.put(key, bitmap)
+        }
+    }
+
+    fun evictFile(fileKey: String) = synchronized(this) {
+        val snapshot = lruCache.snapshot()
+        for (k in snapshot.keys) {
+            if (k.startsWith(fileKey)) {
+                lruCache.remove(k)
+            }
+        }
+    }
+
+    fun clear() = synchronized(this) {
         lruCache.evictAll()
+    }
+}
+
+class PdfDocumentSession(
+    private val descriptor: ParcelFileDescriptor,
+    private val renderer: PdfRenderer,
+    val pageDimensions: List<PdfPageDimension>,
+    val sessionKey: String
+) : AutoCloseable {
+    val pageCount: Int get() = pageDimensions.size
+    private val renderMutex = Mutex()
+
+    suspend fun renderPage(pageIndex: Int, targetWidthPx: Int): Bitmap? = withContext(Dispatchers.IO) {
+        if (pageIndex !in 0 until pageCount) return@withContext null
+        val cacheKey = "$sessionKey::$pageIndex::$targetWidthPx"
+        PdfPageCache.get(cacheKey)?.let { return@withContext it }
+
+        renderMutex.withLock {
+            PdfPageCache.get(cacheKey)?.let { return@withLock it }
+            runCatching {
+                renderer.openPage(pageIndex).use { page ->
+                    val dim = pageDimensions.getOrNull(pageIndex) ?: PdfPageDimension(page.width, page.height)
+                    val targetH = (targetWidthPx / dim.aspectRatio).toInt().coerceIn(100, 4096)
+                    val bmp = Bitmap.createBitmap(targetWidthPx, targetH, Bitmap.Config.ARGB_8888)
+                    bmp.eraseColor(android.graphics.Color.WHITE)
+                    page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    PdfPageCache.put(cacheKey, bmp)
+                    bmp
+                }
+            }.getOrNull()
+        }
+    }
+
+    fun prefetchAdjacent(currentPage: Int, targetWidthPx: Int, scope: CoroutineScope) {
+        val candidates = listOf(currentPage + 1, currentPage - 1, currentPage + 2)
+            .filter { it in 0 until pageCount }
+        for (pageIdx in candidates) {
+            val cacheKey = "$sessionKey::$pageIdx::$targetWidthPx"
+            if (PdfPageCache.get(cacheKey) == null) {
+                scope.launch(Dispatchers.IO) {
+                    renderPage(pageIdx, targetWidthPx)
+                }
+            }
+        }
+    }
+
+    override fun close() {
+        runCatching { renderer.close() }
+        runCatching { descriptor.close() }
+        PdfPageCache.evictFile(sessionKey)
+    }
+
+    companion object {
+        suspend fun open(file: FileReference, context: Context): Result<PdfDocumentSession> = withContext(Dispatchers.IO) {
+            runCatching {
+                val localFile = resolveOrCacheLocalFile(file, context)
+                val pfd = if (localFile != null) {
+                    ParcelFileDescriptor.open(localFile, ParcelFileDescriptor.MODE_READ_ONLY)
+                } else {
+                    context.contentResolver.openFileDescriptor(Uri.parse(file.uriOrPath), "r")
+                } ?: throw IllegalStateException("Cannot open file descriptor for PDF: ${file.displayName}")
+
+                try {
+                    val renderer = PdfRenderer(pfd)
+                    val count = renderer.pageCount
+                    val dims = ArrayList<PdfPageDimension>(count)
+                    for (i in 0 until count) {
+                        renderer.openPage(i).use { page ->
+                            dims.add(PdfPageDimension(page.width.coerceAtLeast(1), page.height.coerceAtLeast(1)))
+                        }
+                    }
+                    PdfDocumentSession(pfd, renderer, dims, file.uriOrPath)
+                } catch (t: Throwable) {
+                    pfd.close()
+                    throw t
+                }
+            }
+        }
     }
 }
 
@@ -1235,37 +1403,46 @@ object PdfPageCache {
 fun PdfDocumentViewer(file: FileReference) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    var pageCount by remember { mutableIntStateOf(0) }
+    var session by remember(file.uriOrPath) { mutableStateOf<PdfDocumentSession?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var errorText by remember { mutableStateOf<String?>(null) }
     var showJumpDialog by remember { mutableStateOf(false) }
+    var readingTheme by remember { mutableStateOf(PdfReadingTheme.DAY) }
+    var zoomedPageIndex by remember { mutableStateOf<Int?>(null) }
+
+    DisposableEffect(file.uriOrPath) {
+        onDispose {
+            session?.close()
+        }
+    }
 
     LaunchedEffect(file.uriOrPath) {
         isLoading = true
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val localFile = resolveOrCacheLocalFile(file, context)
-                val pfd = if (localFile != null) {
-                    ParcelFileDescriptor.open(localFile, ParcelFileDescriptor.MODE_READ_ONLY)
-                } else {
-                    context.contentResolver.openFileDescriptor(Uri.parse(file.uriOrPath), "r")
-                } ?: throw IllegalStateException("Cannot open file descriptor for PDF")
-
-                pfd.use { descriptor ->
-                    PdfRenderer(descriptor).use { renderer ->
-                        pageCount = renderer.pageCount
-                    }
-                }
-            }.onFailure {
-                errorText = it.message ?: "Unable to read PDF"
-            }
-            isLoading = false
+        errorText = null
+        val result = PdfDocumentSession.open(file, context)
+        result.onSuccess { newSession ->
+            session = newSession
+        }.onFailure { err ->
+            errorText = err.message ?: "Unable to read PDF document"
         }
+        isLoading = false
+    }
+
+    val density = LocalDensity.current
+    val config = LocalConfiguration.current
+    val screenWidthPx = with(density) { config.screenWidthDp.dp.roundToPx() }
+    val targetWidthPx = (screenWidthPx * 1.5f).toInt().coerceIn(600, 1600)
+
+    val viewportBg = when (readingTheme) {
+        PdfReadingTheme.DAY -> MaterialTheme.colorScheme.surfaceContainerLowest
+        PdfReadingTheme.NIGHT -> Color(0xFF121212)
+        PdfReadingTheme.SEPIA -> Color(0xFFF7F1E5)
     }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(viewportBg)
             .testTag("pdf_document_viewer"),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -1273,85 +1450,193 @@ fun PdfDocumentViewer(file: FileReference) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(text = errorText!!, color = MaterialTheme.colorScheme.error)
             }
-        } else if (pageCount > 0) {
+        } else if (session != null && session!!.pageCount > 0) {
+            val docSession = session!!
+            val pageCount = docSession.pageCount
             val listState = rememberLazyListState()
             val firstVisibleItem by remember { derivedStateOf { listState.firstVisibleItemIndex } }
             val currentPage = (firstVisibleItem + 1).coerceIn(1, pageCount)
-            var zoomedPageIndex by remember { mutableStateOf<Int?>(null) }
 
-            // Vertical Scrollable Page Viewport
-            LazyColumn(
-                state = listState,
-                userScrollEnabled = zoomedPageIndex == null,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-                    .testTag("pdf_vertical_scroll"),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(pageCount, key = { it }) { pageIndex ->
-                    PdfPageItem(
-                        file = file,
-                        pageIndex = pageIndex,
-                        isCurrentPage = firstVisibleItem == pageIndex,
-                        onZoomChanged = { zoomed ->
-                            zoomedPageIndex = if (zoomed) pageIndex else null
+            // Trigger proactive lookahead prefetching whenever current visible page changes
+            LaunchedEffect(firstVisibleItem, targetWidthPx) {
+                docSession.prefetchAdjacent(firstVisibleItem, targetWidthPx, this)
+            }
+
+            // Vertical Continuous Scrollable Viewport
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(
+                    state = listState,
+                    userScrollEnabled = zoomedPageIndex == null,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("pdf_vertical_scroll"),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(pageCount, key = { it }) { pageIndex ->
+                        val dimension = docSession.pageDimensions.getOrElse(pageIndex) { PdfPageDimension(595, 842) }
+                        PdfPageItem(
+                            session = docSession,
+                            pageIndex = pageIndex,
+                            dimension = dimension,
+                            targetWidthPx = targetWidthPx,
+                            readingTheme = readingTheme,
+                            isCurrentPage = firstVisibleItem == pageIndex,
+                            onZoomChanged = { zoomed ->
+                                zoomedPageIndex = if (zoomed) pageIndex else null
+                            }
+                        )
+                    }
+                }
+
+                // Floating Reset Zoom Badge (appears when any page is zoomed in)
+                if (zoomedPageIndex != null) {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shadowElevation = 6.dp,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 16.dp)
+                            .clickable {
+                                zoomedPageIndex = null
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.ZoomOut,
+                                contentDescription = "Reset Zoom",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                text = "Reset Zoom",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
                         }
-                    )
+                    }
                 }
             }
 
-            // Bottom Navigation Bar (No Slider)
+            // Bottom Navigation & Controls
             Surface(
-                color = MaterialTheme.colorScheme.surfaceContainer,
+                color = when (readingTheme) {
+                    PdfReadingTheme.DAY -> MaterialTheme.colorScheme.surfaceContainer
+                    PdfReadingTheme.NIGHT -> Color(0xFF1E1E1E)
+                    PdfReadingTheme.SEPIA -> Color(0xFFEDE3D0)
+                },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
                 ) {
-                    IconButton(
-                        onClick = {
-                            if (firstVisibleItem > 0) {
-                                coroutineScope.launch {
-                                    listState.animateScrollToItem(firstVisibleItem - 1)
-                                }
-                            }
-                        },
-                        enabled = firstVisibleItem > 0
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous Page")
+                    // Continuous Page Scrubber Slider (for multi-page documents)
+                    if (pageCount > 1) {
+                        var sliderPosition by remember(currentPage) { mutableFloatStateOf(currentPage.toFloat()) }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "1",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Slider(
+                                value = sliderPosition,
+                                onValueChange = { sliderPosition = it },
+                                onValueChangeFinished = {
+                                    val targetIndex = (sliderPosition.roundToInt() - 1).coerceIn(0, pageCount - 1)
+                                    coroutineScope.launch {
+                                        listState.scrollToItem(targetIndex)
+                                    }
+                                },
+                                valueRange = 1f..pageCount.toFloat(),
+                                steps = if (pageCount in 3..50) pageCount - 2 else 0,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 8.dp)
+                            )
+                            Text(
+                                text = "$pageCount",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
 
-                    val config = LocalConfiguration.current
-                    val pageTitleStyle = if (config.screenWidthDp < 360) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium
-                    TextButton(onClick = { showJumpDialog = true }) {
-                        Text(
-                            text = "Page $currentPage of $pageCount (Jump)",
-                            style = pageTitleStyle,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    // Navigation & Theme Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Previous Page
+                        IconButton(
+                            onClick = {
+                                if (firstVisibleItem > 0) {
+                                    coroutineScope.launch {
+                                        listState.animateScrollToItem(firstVisibleItem - 1)
+                                    }
+                                }
+                            },
+                            enabled = firstVisibleItem > 0
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous Page")
+                        }
 
-                    IconButton(
-                        onClick = {
-                            if (firstVisibleItem < pageCount - 1) {
-                                coroutineScope.launch {
-                                    listState.animateScrollToItem(firstVisibleItem + 1)
+                        // Page Jump Button
+                        val pageTitleStyle = if (config.screenWidthDp < 360) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium
+                        TextButton(onClick = { showJumpDialog = true }) {
+                            Text(
+                                text = "Page $currentPage of $pageCount",
+                                style = pageTitleStyle,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        // Theme Mode Toggle (Day / Night / Sepia)
+                        IconButton(
+                            onClick = {
+                                readingTheme = when (readingTheme) {
+                                    PdfReadingTheme.DAY -> PdfReadingTheme.NIGHT
+                                    PdfReadingTheme.NIGHT -> PdfReadingTheme.SEPIA
+                                    PdfReadingTheme.SEPIA -> PdfReadingTheme.DAY
                                 }
                             }
-                        },
-                        enabled = firstVisibleItem < pageCount - 1
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next Page")
+                        ) {
+                            val (themeIcon, themeDesc) = when (readingTheme) {
+                                PdfReadingTheme.DAY -> Icons.Filled.LightMode to "Day Mode (Switch to Night)"
+                                PdfReadingTheme.NIGHT -> Icons.Filled.DarkMode to "Night Mode (Switch to Sepia)"
+                                PdfReadingTheme.SEPIA -> Icons.Filled.Contrast to "Sepia Mode (Switch to Day)"
+                            }
+                            Icon(themeIcon, contentDescription = themeDesc)
+                        }
+
+                        // Next Page
+                        IconButton(
+                            onClick = {
+                                if (firstVisibleItem < pageCount - 1) {
+                                    coroutineScope.launch {
+                                        listState.animateScrollToItem(firstVisibleItem + 1)
+                                    }
+                                }
+                            },
+                            enabled = firstVisibleItem < pageCount - 1
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next Page")
+                        }
                     }
                 }
             }
@@ -1363,12 +1648,37 @@ fun PdfDocumentViewer(file: FileReference) {
                     onDismissRequest = { showJumpDialog = false },
                     title = { Text("Jump to Page") },
                     text = {
-                        OutlinedTextField(
-                            value = jumpInput,
-                            onValueChange = { jumpInput = it },
-                            label = { Text("Page number (1 to $pageCount)") },
-                            singleLine = true
-                        )
+                        Column {
+                            OutlinedTextField(
+                                value = jumpInput,
+                                onValueChange = { jumpInput = it },
+                                label = { Text("Page number (1 to $pageCount)") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                FilterChip(
+                                    selected = false,
+                                    onClick = {
+                                        coroutineScope.launch { listState.animateScrollToItem(0) }
+                                        showJumpDialog = false
+                                    },
+                                    label = { Text("First Page (1)") }
+                                )
+                                FilterChip(
+                                    selected = false,
+                                    onClick = {
+                                        coroutineScope.launch { listState.animateScrollToItem(pageCount - 1) }
+                                        showJumpDialog = false
+                                    },
+                                    label = { Text("Last Page ($pageCount)") }
+                                )
+                            }
+                        }
                     },
                     confirmButton = {
                         TextButton(onClick = {
@@ -1403,13 +1713,15 @@ fun PdfDocumentViewer(file: FileReference) {
 
 @Composable
 private fun PdfPageItem(
-    file: FileReference,
+    session: PdfDocumentSession,
     pageIndex: Int,
+    dimension: PdfPageDimension,
+    targetWidthPx: Int,
+    readingTheme: PdfReadingTheme,
     isCurrentPage: Boolean,
     onZoomChanged: (Boolean) -> Unit
 ) {
-    val context = LocalContext.current
-    val cacheKey = "${file.uriOrPath}::$pageIndex"
+    val cacheKey = "${session.sessionKey}::$pageIndex::$targetWidthPx"
 
     var scale by remember(pageIndex) { mutableFloatStateOf(1f) }
     var offsetX by remember(pageIndex) { mutableFloatStateOf(0f) }
@@ -1426,43 +1738,26 @@ private fun PdfPageItem(
 
     val pageBitmap by produceState<Bitmap?>(initialValue = PdfPageCache.get(cacheKey), key1 = cacheKey) {
         if (value != null) return@produceState
-        value = withContext(Dispatchers.IO) {
-            runCatching {
-                val localFile = resolveOrCacheLocalFile(file, context)
-                val pfd = if (localFile != null) {
-                    ParcelFileDescriptor.open(localFile, ParcelFileDescriptor.MODE_READ_ONLY)
-                } else {
-                    context.contentResolver.openFileDescriptor(Uri.parse(file.uriOrPath), "r")
-                } ?: return@runCatching null
-
-                pfd.use { descriptor ->
-                    PdfRenderer(descriptor).use { renderer ->
-                        if (pageIndex in 0 until renderer.pageCount) {
-                            renderer.openPage(pageIndex).use { page ->
-                                val targetW = (page.width * 2).coerceIn(400, 2048)
-                                val targetH = (page.height * 2).coerceIn(400, 2048)
-                                val bmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
-                                bmp.eraseColor(android.graphics.Color.WHITE)
-                                page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                                PdfPageCache.put(cacheKey, bmp)
-                                bmp
-                            }
-                        } else null
-                    }
-                }
-            }.getOrNull()
-        }
+        value = session.renderPage(pageIndex, targetWidthPx)
     }
 
-    val aspectRatio = pageBitmap?.let {
-        if (it.height > 0) it.width.toFloat() / it.height.toFloat() else (1f / 1.414f)
-    } ?: (1f / 1.414f)
+    val colorFilter = when (readingTheme) {
+        PdfReadingTheme.DAY -> null
+        PdfReadingTheme.NIGHT -> ColorFilter.colorMatrix(NightInvertColorMatrix)
+        PdfReadingTheme.SEPIA -> ColorFilter.colorMatrix(SepiaColorMatrix)
+    }
+
+    val cardBg = when (readingTheme) {
+        PdfReadingTheme.DAY -> Color.White
+        PdfReadingTheme.NIGHT -> Color(0xFF1E1E1E)
+        PdfReadingTheme.SEPIA -> Color(0xFFFAF4E8)
+    }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .widthIn(max = 840.dp)
-            .aspectRatio(aspectRatio)
+            .aspectRatio(dimension.aspectRatio)
             .pointerInput(pageIndex) {
                 detectTapGestures(
                     onDoubleTap = {
@@ -1472,7 +1767,7 @@ private fun PdfPageItem(
                             offsetY = 0f
                             onZoomChanged(false)
                         } else {
-                            scale = 2.5f
+                            scale = 2.2f
                             onZoomChanged(true)
                         }
                     }
@@ -1487,7 +1782,7 @@ private fun PdfPageItem(
                         if (scale > 1.05f) {
                             val zoomChange = event.calculateZoom()
                             val panChange = event.calculatePan()
-                            val newScale = (scale * zoomChange).coerceIn(1f, 5f)
+                            val newScale = (scale * zoomChange).coerceIn(1f, 4.5f)
                             scale = newScale
                             if (newScale > 1.05f) {
                                 val maxOffsetX = (size.width.toFloat() * (newScale - 1f) / 2f).coerceAtLeast(0f)
@@ -1507,7 +1802,7 @@ private fun PdfPageItem(
                         } else if (pointerCount >= 2) {
                             val zoomChange = event.calculateZoom()
                             val panChange = event.calculatePan()
-                            val newScale = (scale * zoomChange).coerceIn(1f, 5f)
+                            val newScale = (scale * zoomChange).coerceIn(1f, 4.5f)
                             if (newScale > 1.05f) {
                                 scale = newScale
                                 val maxOffsetX = (size.width.toFloat() * (newScale - 1f) / 2f).coerceAtLeast(0f)
@@ -1525,12 +1820,13 @@ private fun PdfPageItem(
             },
         shape = RoundedCornerShape(4.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
+        colors = CardDefaults.cardColors(containerColor = cardBg)
     ) {
         if (pageBitmap != null) {
             Image(
                 bitmap = pageBitmap!!.asImageBitmap(),
                 contentDescription = "PDF Page ${pageIndex + 1}",
+                colorFilter = colorFilter,
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {

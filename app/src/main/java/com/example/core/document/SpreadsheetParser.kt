@@ -6,6 +6,8 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.InputStream
 import java.io.InputStreamReader
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 
@@ -60,7 +62,7 @@ object SpreadsheetParser {
             is DetectedDocumentType.Csv -> parseDelimited(file, defaultDelimiter = ',')
             is DetectedDocumentType.Tsv -> parseDelimited(file, defaultDelimiter = '\t')
             is DetectedDocumentType.LegacyOle2 -> {
-                throw UnsupportedOperationException("Legacy binary format (.xls) is not supported. Please convert to .xlsx or .ods.")
+                parseLegacyXls(file)
             }
             is DetectedDocumentType.EncryptedPasswordProtected -> {
                 throw SecurityException("This spreadsheet is password protected and cannot be previewed.")
@@ -71,9 +73,262 @@ object SpreadsheetParser {
                     parseXlsx(file)
                 } else if (file.extension.equals("ods", ignoreCase = true)) {
                     parseOds(file)
+                } else if (file.extension.equals("xls", ignoreCase = true) || Ole2DocumentReader.isOle2File(file)) {
+                    parseLegacyXls(file)
                 } else {
                     parseDelimited(file, defaultDelimiter = ',')
                 }
+            }
+        }
+    }
+
+    // =============================================================================================
+    // Legacy Excel (.xls) BIFF8 Parser
+    // =============================================================================================
+
+    fun parseLegacyXls(file: File): SpreadsheetWorkbookModel {
+        val streamData = Ole2DocumentReader.extractStream(file, "Workbook")
+            ?: Ole2DocumentReader.extractStream(file, "Book")
+
+        if (streamData != null) {
+            val model = parseBiffWorkbook(file.name, streamData)
+            if (model != null && model.sheets.isNotEmpty() && model.sheets.any { it.rows.isNotEmpty() }) {
+                return model
+            }
+        }
+
+        // Fallback: extract readable strings into a single sheet
+        val lines = if (streamData != null) {
+            Ole2DocumentReader.extractReadableText(streamData)
+        } else {
+            Ole2DocumentReader.extractReadableText(file.readBytes())
+        }
+
+        val sparseRows = mutableMapOf<Int, MutableMap<Int, SpreadsheetCell>>()
+        var rowIdx = 0
+        for (line in lines) {
+            if (line.isNotBlank()) {
+                val parts = if (line.contains('\t')) line.split('\t') else listOf(line)
+                val rowMap = mutableMapOf<Int, SpreadsheetCell>()
+                for ((colIdx, part) in parts.withIndex()) {
+                    rowMap[colIdx] = SpreadsheetCell(
+                        rowIndex = rowIdx,
+                        colIndex = colIdx,
+                        displayValue = part.trim()
+                    )
+                }
+                sparseRows[rowIdx] = rowMap
+                rowIdx++
+                if (rowIdx >= 5000) break
+            }
+        }
+
+        val sheet = SpreadsheetSheetModel(
+            name = "Sheet 1",
+            rowCount = rowIdx.coerceAtLeast(1),
+            colCount = (sparseRows.values.maxOfOrNull { it.keys.maxOrNull() ?: 0 } ?: 0) + 1,
+            rows = sparseRows
+        )
+        return SpreadsheetWorkbookModel(title = file.name, sheets = listOf(sheet))
+    }
+
+    private fun parseBiffWorkbook(fileName: String, data: ByteArray): SpreadsheetWorkbookModel? {
+        return try {
+            val bb = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+            val sheetNames = mutableListOf<String>()
+            val sstStrings = mutableListOf<String>()
+
+            // First pass: extract BOUNDSHEET (sheet names) and SST (shared strings)
+            var pos = 0
+            while (pos + 4 <= data.size) {
+                val recType = bb.getShort(pos).toInt() and 0xFFFF
+                val recLen = bb.getShort(pos + 2).toInt() and 0xFFFF
+                pos += 4
+                if (pos + recLen > data.size) break
+
+                when (recType) {
+                    0x0085 -> { // BOUNDSHEET
+                        if (recLen >= 8) {
+                            val cch = data[pos + 6].toInt() and 0xFF
+                            val flags = data[pos + 7].toInt() and 0xFF
+                            val is16Bit = (flags and 1) != 0
+                            val nameBytesLen = if (is16Bit) cch * 2 else cch
+                            if (pos + 8 + nameBytesLen <= data.size) {
+                                val name = if (is16Bit) {
+                                    String(data, pos + 8, nameBytesLen, Charsets.UTF_16LE)
+                                } else {
+                                    String(data, pos + 8, nameBytesLen, Charsets.ISO_8859_1)
+                                }
+                                if (name.isNotBlank()) sheetNames.add(name.trim())
+                            }
+                        }
+                    }
+                    0x00FC -> { // SST (Shared String Table)
+                        parseBiffSst(data, pos, recLen, sstStrings)
+                    }
+                }
+                pos += recLen
+            }
+
+            // Second pass: extract cells (LABELSST, LABEL, NUMBER, RK, MULRK)
+            val sparseRows = mutableMapOf<Int, MutableMap<Int, SpreadsheetCell>>()
+            var maxRow = 0
+            var maxCol = 0
+            pos = 0
+
+            while (pos + 4 <= data.size) {
+                val recType = bb.getShort(pos).toInt() and 0xFFFF
+                val recLen = bb.getShort(pos + 2).toInt() and 0xFFFF
+                pos += 4
+                if (pos + recLen > data.size) break
+
+                when (recType) {
+                    0x00FD -> { // LABELSST
+                        if (recLen >= 10) {
+                            val r = bb.getShort(pos).toInt() and 0xFFFF
+                            val c = bb.getShort(pos + 2).toInt() and 0xFFFF
+                            val sstIdx = bb.getInt(pos + 6)
+                            if (sstIdx in sstStrings.indices && r < MAX_SHEET_ROWS && c < MAX_SHEET_COLS) {
+                                val str = sstStrings[sstIdx]
+                                val rowMap = sparseRows.getOrPut(r) { mutableMapOf() }
+                                rowMap[c] = SpreadsheetCell(r, c, displayValue = str, rawValue = str)
+                                if (r > maxRow) maxRow = r
+                                if (c > maxCol) maxCol = c
+                            }
+                        }
+                    }
+                    0x0204 -> { // LABEL
+                        if (recLen >= 8) {
+                            val r = bb.getShort(pos).toInt() and 0xFFFF
+                            val c = bb.getShort(pos + 2).toInt() and 0xFFFF
+                            val cch = bb.getShort(pos + 6).toInt() and 0xFFFF
+                            if (cch in 1..256 && pos + 8 + cch <= data.size && r < MAX_SHEET_ROWS && c < MAX_SHEET_COLS) {
+                                val str = String(data, pos + 8, cch, Charsets.ISO_8859_1).trim()
+                                val rowMap = sparseRows.getOrPut(r) { mutableMapOf() }
+                                rowMap[c] = SpreadsheetCell(r, c, displayValue = str, rawValue = str)
+                                if (r > maxRow) maxRow = r
+                                if (c > maxCol) maxCol = c
+                            }
+                        }
+                    }
+                    0x0203 -> { // NUMBER
+                        if (recLen >= 14) {
+                            val r = bb.getShort(pos).toInt() and 0xFFFF
+                            val c = bb.getShort(pos + 2).toInt() and 0xFFFF
+                            val num = bb.getDouble(pos + 6)
+                            if (r < MAX_SHEET_ROWS && c < MAX_SHEET_COLS) {
+                                val display = if (num % 1.0 == 0.0 && kotlin.math.abs(num) < 1e9) {
+                                    num.toLong().toString()
+                                } else {
+                                    String.format(java.util.Locale.US, "%.2f", num)
+                                }
+                                val rowMap = sparseRows.getOrPut(r) { mutableMapOf() }
+                                rowMap[c] = SpreadsheetCell(r, c, displayValue = display, rawValue = num.toString())
+                                if (r > maxRow) maxRow = r
+                                if (c > maxCol) maxCol = c
+                            }
+                        }
+                    }
+                    0x027E -> { // RK
+                        if (recLen >= 10) {
+                            val r = bb.getShort(pos).toInt() and 0xFFFF
+                            val c = bb.getShort(pos + 2).toInt() and 0xFFFF
+                            val rkVal = bb.getInt(pos + 6)
+                            val num = decodeRk(rkVal)
+                            if (r < MAX_SHEET_ROWS && c < MAX_SHEET_COLS) {
+                                val display = if (num % 1.0 == 0.0 && kotlin.math.abs(num) < 1e9) {
+                                    num.toLong().toString()
+                                } else {
+                                    String.format(java.util.Locale.US, "%.2f", num)
+                                }
+                                val rowMap = sparseRows.getOrPut(r) { mutableMapOf() }
+                                rowMap[c] = SpreadsheetCell(r, c, displayValue = display, rawValue = num.toString())
+                                if (r > maxRow) maxRow = r
+                                if (c > maxCol) maxCol = c
+                            }
+                        }
+                    }
+                    0x00BD -> { // MULRK
+                        if (recLen >= 6) {
+                            val r = bb.getShort(pos).toInt() and 0xFFFF
+                            val colFirst = bb.getShort(pos + 2).toInt() and 0xFFFF
+                            val colLast = bb.getShort(pos + recLen - 2).toInt() and 0xFFFF
+                            val numCols = colLast - colFirst + 1
+                            if (numCols in 1..256 && r < MAX_SHEET_ROWS) {
+                                for (k in 0 until numCols) {
+                                    val rkOffset = pos + 4 + (k * 6) + 2
+                                    if (rkOffset + 4 <= pos + recLen) {
+                                        val c = colFirst + k
+                                        val rkVal = bb.getInt(rkOffset)
+                                        val num = decodeRk(rkVal)
+                                        val display = if (num % 1.0 == 0.0 && kotlin.math.abs(num) < 1e9) {
+                                            num.toLong().toString()
+                                        } else {
+                                            String.format(java.util.Locale.US, "%.2f", num)
+                                        }
+                                        val rowMap = sparseRows.getOrPut(r) { mutableMapOf() }
+                                        rowMap[c] = SpreadsheetCell(r, c, displayValue = display, rawValue = num.toString())
+                                        if (r > maxRow) maxRow = r
+                                        if (c > maxCol) maxCol = c
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                pos += recLen
+            }
+
+            val sheetName = sheetNames.firstOrNull() ?: "Sheet 1"
+            val sheet = SpreadsheetSheetModel(
+                name = sheetName,
+                rowCount = maxRow + 1,
+                colCount = maxCol + 1,
+                rows = sparseRows
+            )
+            SpreadsheetWorkbookModel(title = fileName, sheets = listOf(sheet))
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun decodeRk(rk: Int): Double {
+        return if ((rk and 2) != 0) {
+            val v = (rk shr 2).toDouble()
+            if ((rk and 1) != 0) v / 100.0 else v
+        } else {
+            val raw = (rk.toLong() and 0xFFFF_FFFCL) shl 32
+            val v = java.lang.Double.longBitsToDouble(raw)
+            if ((rk and 1) != 0) v / 100.0 else v
+        }
+    }
+
+    private fun parseBiffSst(data: ByteArray, startPos: Int, len: Int, outStrings: MutableList<String>) {
+        if (len < 8) return
+        val bb = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        val cstUnique = bb.getInt(startPos + 4)
+        var p = startPos + 8
+        val end = startPos + len
+
+        var count = 0
+        while (p + 3 <= end && count < cstUnique && count < 50_000) {
+            val cch = bb.getShort(p).toInt() and 0xFFFF
+            val flags = data[p + 2].toInt() and 0xFF
+            p += 3
+            val is16Bit = (flags and 1) != 0
+            val byteLen = if (is16Bit) cch * 2 else cch
+
+            if (p + byteLen <= end) {
+                val str = if (is16Bit) {
+                    String(data, p, byteLen, Charsets.UTF_16LE)
+                } else {
+                    String(data, p, byteLen, Charsets.ISO_8859_1)
+                }
+                outStrings.add(str)
+                p += byteLen
+                count++
+            } else {
+                break
             }
         }
     }
@@ -658,7 +913,7 @@ object SpreadsheetParser {
         val sb = StringBuilder()
         while (num > 0) {
             val rem = (num - 1) % 26
-            sb.append(('A'.toInt() + rem).toChar())
+            sb.append(('A'.code + rem).toChar())
             num = (num - 1) / 26
         }
         return sb.reverse().toString()
@@ -694,6 +949,17 @@ object SpreadsheetParser {
         return SpreadsheetWorkbookModel(title = file.name, sheets = sheets)
     }
 
+    private fun getOdsAttribute(parser: XmlPullParser, localName: String): String? {
+        val count = parser.attributeCount
+        for (i in 0 until count) {
+            val attr = parser.getAttributeName(i)
+            if (attr == localName || attr.endsWith(":$localName")) {
+                return parser.getAttributeValue(i)
+            }
+        }
+        return parser.getAttributeValue(null, localName)
+    }
+
     private fun parseOdsContentXml(stream: InputStream): List<SpreadsheetSheetModel> {
         val parser = createXmlPullParser()
         parser.setInput(stream, "UTF-8")
@@ -712,6 +978,7 @@ object SpreadsheetParser {
         var formula: String? = null
         var colsSpanned = 1
         var rowsSpanned = 1
+        var repeatedCols = 1
         val cellText = StringBuilder()
 
         var eventType = parser.eventType
@@ -721,7 +988,7 @@ object SpreadsheetParser {
                 XmlPullParser.START_TAG -> {
                     when (name) {
                         "table" -> {
-                            currentSheetName = parser.getAttributeValue(null, "name") ?: "Sheet ${sheets.size + 1}"
+                            currentSheetName = getOdsAttribute(parser, "name") ?: "Sheet ${sheets.size + 1}"
                             sparseRows = mutableMapOf()
                             mergedRanges = mutableListOf()
                             currentRowIdx = 0
@@ -732,13 +999,15 @@ object SpreadsheetParser {
                         }
                         "table-cell", "covered-table-cell" -> {
                             inCell = true
-                            cellType = parser.getAttributeValue(null, "value-type")
-                            cellValue = parser.getAttributeValue(null, "value")
-                                ?: parser.getAttributeValue(null, "date-value")
-                                ?: parser.getAttributeValue(null, "time-value")
-                            formula = parser.getAttributeValue(null, "formula")
-                            colsSpanned = parser.getAttributeValue(null, "number-columns-spanned")?.toIntOrNull() ?: 1
-                            rowsSpanned = parser.getAttributeValue(null, "number-rows-spanned")?.toIntOrNull() ?: 1
+                            cellType = getOdsAttribute(parser, "value-type")
+                            cellValue = getOdsAttribute(parser, "value")
+                                ?: getOdsAttribute(parser, "date-value")
+                                ?: getOdsAttribute(parser, "time-value")
+                            formula = getOdsAttribute(parser, "formula")
+                            colsSpanned = getOdsAttribute(parser, "number-columns-spanned")?.toIntOrNull() ?: 1
+                            rowsSpanned = getOdsAttribute(parser, "number-rows-spanned")?.toIntOrNull() ?: 1
+                            repeatedCols = (getOdsAttribute(parser, "number-columns-repeated")?.toIntOrNull() ?: 1)
+                                .coerceIn(1, MAX_REPEATED_CELLS)
                             cellText.setLength(0)
                         }
                     }
@@ -752,9 +1021,6 @@ object SpreadsheetParser {
                     when (name) {
                         "table-cell", "covered-table-cell" -> {
                             inCell = false
-                            val repeatedCols = (parser.getAttributeValue(null, "number-columns-repeated")?.toIntOrNull() ?: 1)
-                                .coerceIn(1, MAX_REPEATED_CELLS)
-
                             val displayText = cellText.toString().trim().ifBlank { cellValue ?: "" }
 
                             if (displayText.isNotBlank() || formula != null) {

@@ -52,7 +52,7 @@ object DocxParser {
             is DetectedDocumentType.Docx -> parseDocx(file)
             is DetectedDocumentType.Odt -> parseOdt(file)
             is DetectedDocumentType.LegacyOle2 -> {
-                throw UnsupportedOperationException("Legacy binary document (.doc) is not supported. Please convert to .docx or .odt.")
+                parseLegacyDoc(file)
             }
             is DetectedDocumentType.EncryptedPasswordProtected -> {
                 throw SecurityException("This document is password protected and cannot be previewed.")
@@ -60,6 +60,8 @@ object DocxParser {
             else -> {
                 if (file.extension.equals("odt", ignoreCase = true)) {
                     parseOdt(file)
+                } else if (file.extension.equals("doc", ignoreCase = true) || Ole2DocumentReader.isOle2File(file)) {
+                    parseLegacyDoc(file)
                 } else {
                     parseDocx(file)
                 }
@@ -497,7 +499,54 @@ object DocxParser {
     }
 
     // =============================================================================================
-    // 2. OpenDocument Text (.odt) Parser
+    fun parseLegacyDoc(file: File): DocxDocumentModel {
+        val streamData = Ole2DocumentReader.extractStream(file, "WordDocument")
+        val lines = if (streamData != null) {
+            Ole2DocumentReader.extractReadableText(streamData)
+        } else {
+            Ole2DocumentReader.extractReadableText(file.readBytes())
+        }
+
+        val blocks = mutableListOf<DocxBlock>()
+        if (lines.isNotEmpty()) {
+            blocks.add(
+                DocxBlock.Paragraph(
+                    runs = listOf(DocxRun(file.nameWithoutExtension, fontSizePt = 20f, isBold = true)),
+                    headingLevel = 1,
+                    spaceAfterPt = 8f
+                )
+            )
+            for (line in lines) {
+                if (line.isNotBlank()) {
+                    val isHeading = line.length in 3..60 && !line.endsWith('.') &&
+                        (line.all { it.isUpperCase() || it.isWhitespace() } || line.startsWith("#"))
+                    blocks.add(
+                        DocxBlock.Paragraph(
+                            runs = listOf(
+                                DocxRun(
+                                    text = line,
+                                    fontSizePt = if (isHeading) 16f else 12f,
+                                    isBold = isHeading
+                                )
+                            ),
+                            headingLevel = if (isHeading) 2 else 0,
+                            spaceAfterPt = if (isHeading) 6f else 4f
+                        )
+                    )
+                }
+            }
+        } else {
+            blocks.add(
+                DocxBlock.Paragraph(
+                    runs = listOf(DocxRun("Document (${file.name}) contains no readable text.", fontSizePt = 12f))
+                )
+            )
+        }
+        return DocxDocumentModel(title = file.name, blocks = blocks)
+    }
+
+    // =============================================================================================
+    // 2. OpenDocument Text (.odt) Parser with Tables, Lists, and Spans
     // =============================================================================================
 
     fun parseOdt(file: File): DocxDocumentModel {
@@ -531,47 +580,159 @@ object DocxParser {
         var inParagraph = false
         var isHeading = false
         var headingLevel = 0
-        val currentText = StringBuilder()
+        var currentLinkUrl: String? = null
+        var inSpan = false
+        var spanIsBold = false
+        var spanIsItalic = false
+        var spanIsUnderline = false
+        var listDepth = 0
+
+        val currentRuns = mutableListOf<DocxRun>()
+        val runText = StringBuilder()
+
+        // Table tracking
+        var inTable = false
+        val currentTableRows = mutableListOf<DocxTableRow>()
+        val currentRowCells = mutableListOf<DocxTableCell>()
+        val currentCellBlocks = mutableListOf<DocxBlock>()
+        var isHeaderRow = false
+
+        fun flushRun() {
+            if (runText.isNotEmpty()) {
+                val baseFont = if (isHeading) (22f - (headingLevel * 2)).coerceAtLeast(14f) else 12f
+                currentRuns.add(
+                    DocxRun(
+                        text = runText.toString(),
+                        fontSizePt = baseFont,
+                        isBold = isHeading || spanIsBold,
+                        isItalic = spanIsItalic,
+                        isUnderline = spanIsUnderline || (currentLinkUrl != null),
+                        linkUrl = currentLinkUrl
+                    )
+                )
+                runText.setLength(0)
+            }
+        }
 
         var eventType = parser.eventType
         while (eventType != XmlPullParser.END_DOCUMENT) {
             val name = parser.name?.substringAfter(':') ?: ""
             when (eventType) {
                 XmlPullParser.START_TAG -> {
-                    if (name == "h") {
-                        inParagraph = true
-                        isHeading = true
-                        headingLevel = attr(parser, "outline-level")?.toIntOrNull() ?: 1
-                        currentText.setLength(0)
-                    } else if (name == "p") {
-                        inParagraph = true
-                        isHeading = false
-                        headingLevel = 0
-                        currentText.setLength(0)
+                    when (name) {
+                        "h" -> {
+                            inParagraph = true
+                            isHeading = true
+                            headingLevel = attr(parser, "outline-level")?.toIntOrNull() ?: 1
+                            currentRuns.clear()
+                            runText.setLength(0)
+                        }
+                        "p" -> {
+                            inParagraph = true
+                            isHeading = false
+                            headingLevel = 0
+                            currentRuns.clear()
+                            runText.setLength(0)
+                        }
+                        "span" -> {
+                            flushRun()
+                            inSpan = true
+                            val styleName = (attr(parser, "style-name") ?: "").lowercase()
+                            spanIsBold = styleName.contains("bold") || styleName.contains("strong")
+                            spanIsItalic = styleName.contains("italic") || styleName.contains("emphasis")
+                            spanIsUnderline = styleName.contains("underline")
+                        }
+                        "a" -> {
+                            flushRun()
+                            currentLinkUrl = attr(parser, "href")
+                        }
+                        "list" -> {
+                            listDepth++
+                        }
+                        "table" -> {
+                            inTable = true
+                            currentTableRows.clear()
+                        }
+                        "table-header-rows" -> {
+                            isHeaderRow = true
+                        }
+                        "table-row" -> {
+                            currentRowCells.clear()
+                        }
+                        "table-cell", "covered-table-cell" -> {
+                            currentCellBlocks.clear()
+                        }
                     }
                 }
                 XmlPullParser.TEXT -> {
                     if (inParagraph) {
-                        currentText.append(parser.text ?: "")
+                        runText.append(parser.text ?: "")
                     }
                 }
                 XmlPullParser.END_TAG -> {
-                    if (name == "h" || name == "p") {
-                        inParagraph = false
-                        val t = currentText.toString().trim()
-                        if (t.isNotBlank()) {
-                            blocks.add(
-                                DocxBlock.Paragraph(
-                                    runs = listOf(
-                                        DocxRun(
-                                            text = t,
-                                            fontSizePt = if (isHeading) (22f - (headingLevel * 2)).coerceAtLeast(14f) else 12f,
-                                            isBold = isHeading
-                                        )
-                                    ),
-                                    headingLevel = if (isHeading) headingLevel else 0
+                    when (name) {
+                        "span" -> {
+                            flushRun()
+                            inSpan = false
+                            spanIsBold = false
+                            spanIsItalic = false
+                            spanIsUnderline = false
+                        }
+                        "a" -> {
+                            flushRun()
+                            currentLinkUrl = null
+                        }
+                        "h", "p" -> {
+                            flushRun()
+                            inParagraph = false
+                            if (currentRuns.isNotEmpty()) {
+                                val bullet = if (listDepth > 0) "• " else null
+                                val paragraph = DocxBlock.Paragraph(
+                                    runs = currentRuns.toList(),
+                                    headingLevel = if (isHeading) headingLevel else 0,
+                                    indentLevel = listDepth,
+                                    bulletPrefix = bullet
+                                )
+                                if (inTable) {
+                                    currentCellBlocks.add(paragraph)
+                                } else {
+                                    blocks.add(paragraph)
+                                }
+                            }
+                            currentRuns.clear()
+                        }
+                        "table-cell", "covered-table-cell" -> {
+                            currentRowCells.add(
+                                DocxTableCell(
+                                    blocks = if (currentCellBlocks.isNotEmpty()) currentCellBlocks.toList()
+                                    else listOf(DocxBlock.Paragraph(listOf(DocxRun(""))))
                                 )
                             )
+                            currentCellBlocks.clear()
+                        }
+                        "table-row" -> {
+                            if (currentRowCells.isNotEmpty()) {
+                                currentTableRows.add(
+                                    DocxTableRow(
+                                        cells = currentRowCells.toList(),
+                                        isHeader = isHeaderRow
+                                    )
+                                )
+                            }
+                            currentRowCells.clear()
+                        }
+                        "table-header-rows" -> {
+                            isHeaderRow = false
+                        }
+                        "table" -> {
+                            inTable = false
+                            if (currentTableRows.isNotEmpty()) {
+                                blocks.add(DocxBlock.Table(rows = currentTableRows.toList()))
+                            }
+                            currentTableRows.clear()
+                        }
+                        "list" -> {
+                            listDepth = (listDepth - 1).coerceAtLeast(0)
                         }
                     }
                 }

@@ -36,7 +36,6 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -48,6 +47,11 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Contrast
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
@@ -90,6 +94,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -130,6 +135,48 @@ import java.io.File
  * - Dark-mode intelligent contrast adaptation
  * - Copy and selection support via SelectionContainer
  */
+
+enum class DocxReadingTheme(
+    val displayName: String,
+    val backgroundColor: Color,
+    val surfaceColor: Color,
+    val textColor: Color,
+    val headingColor: Color,
+    val secondaryTextColor: Color,
+    val borderColor: Color,
+    val isDark: Boolean
+) {
+    DAY(
+        displayName = "Day",
+        backgroundColor = Color(0xFFF1F3F4),
+        surfaceColor = Color.White,
+        textColor = Color(0xFF1F1F1F),
+        headingColor = Color(0xFF0B57D0),
+        secondaryTextColor = Color(0xFF5E5E5E),
+        borderColor = Color(0xFFE0E0E0),
+        isDark = false
+    ),
+    NIGHT(
+        displayName = "Night",
+        backgroundColor = Color(0xFF121212),
+        surfaceColor = Color(0xFF1E1E1E),
+        textColor = Color(0xFFE2E2E2),
+        headingColor = Color(0xFF90CAF9),
+        secondaryTextColor = Color(0xFFA0A0A0),
+        borderColor = Color(0xFF333333),
+        isDark = true
+    ),
+    SEPIA(
+        displayName = "Sepia",
+        backgroundColor = Color(0xFFF4ECD8),
+        surfaceColor = Color(0xFFFDF8EE),
+        textColor = Color(0xFF433422),
+        headingColor = Color(0xFF8D532D),
+        secondaryTextColor = Color(0xFF6E5D4B),
+        borderColor = Color(0xFFDCCDB7),
+        isDark = false
+    )
+}
 
 data class DocxPage(
     val pageIndex: Int,
@@ -200,6 +247,7 @@ fun DocxViewer(
 
     var localFileRef by remember { mutableStateOf<File?>(null) }
     var zoomScale by remember { mutableFloatStateOf(1.0f) }
+    var readingTheme by remember { mutableStateOf(DocxReadingTheme.DAY) }
     var showOutlineDialog by remember { mutableStateOf(false) }
     var fullImagePreview by remember { mutableStateOf<Bitmap?>(null) }
 
@@ -371,12 +419,35 @@ fun DocxViewer(
                         val wordCount = remember(doc) {
                             doc.plainTextSummary.split(Regex("\\s+")).count { it.isNotBlank() }
                         }
+                        val readTimeMin = remember(wordCount) { maxOf(1, (wordCount + 199) / 200) }
                         Text(
-                            text = "$wordCount words • ${(zoomScale * 100).toInt()}% scale",
+                            text = "$wordCount words • $readTimeMin min read • ${(zoomScale * 100).toInt()}% scale",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    // Reading Theme Switcher
+                    IconButton(
+                        onClick = {
+                            readingTheme = when (readingTheme) {
+                                DocxReadingTheme.DAY -> DocxReadingTheme.SEPIA
+                                DocxReadingTheme.SEPIA -> DocxReadingTheme.NIGHT
+                                DocxReadingTheme.NIGHT -> DocxReadingTheme.DAY
+                            }
+                        },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = when (readingTheme) {
+                                DocxReadingTheme.DAY -> Icons.Default.LightMode
+                                DocxReadingTheme.SEPIA -> Icons.Default.Contrast
+                                DocxReadingTheme.NIGHT -> Icons.Default.DarkMode
+                            },
+                            contentDescription = "Theme: ${readingTheme.displayName}",
+                            modifier = Modifier.size(20.dp)
                         )
                     }
 
@@ -527,7 +598,7 @@ fun DocxViewer(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceContainerLowest),
+                .background(readingTheme.backgroundColor),
             contentAlignment = Alignment.TopCenter
         ) {
             SelectionContainer {
@@ -536,7 +607,8 @@ fun DocxViewer(
                     modifier = Modifier
                         .fillMaxSize()
                         .widthIn(max = 840.dp) // Professional desktop reading margin
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                        .background(readingTheme.surfaceColor)
+                        .padding(horizontal = 24.dp, vertical = 20.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     itemsIndexed(
@@ -563,6 +635,7 @@ fun DocxViewer(
                                         paragraph = block,
                                         zoomScale = zoomScale,
                                         searchHighlight = if (isSearchActive) searchQuery else null,
+                                        readingTheme = readingTheme,
                                         context = context
                                     )
                                 }
@@ -570,7 +643,8 @@ fun DocxViewer(
                                     DocxTableView(
                                         table = block,
                                         zoomScale = zoomScale,
-                                        searchHighlight = if (isSearchActive) searchQuery else null
+                                        searchHighlight = if (isSearchActive) searchQuery else null,
+                                        readingTheme = readingTheme
                                     )
                                 }
                                 is DocxBlock.Image -> {
@@ -587,7 +661,7 @@ fun DocxViewer(
                                     Text(
                                         text = block.label,
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.outline
+                                        color = readingTheme.secondaryTextColor
                                     )
                                 }
                             }
@@ -598,20 +672,75 @@ fun DocxViewer(
                     if (doc.footnotes.isNotEmpty()) {
                         item {
                             Spacer(modifier = Modifier.height(24.dp))
-                            HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                            HorizontalDivider(thickness = 1.dp, color = readingTheme.borderColor)
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
                                 text = "Footnotes",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
+                                color = readingTheme.headingColor
                             )
                             doc.footnotes.forEachIndexed { fIdx, note ->
                                 Text(
                                     text = "[${fIdx + 1}] $note",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = readingTheme.secondaryTextColor,
                                     modifier = Modifier.padding(vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Floating Quick Jump Navigation Buttons
+            androidx.compose.animation.AnimatedVisibility(
+                visible = listState.firstVisibleItemIndex > 2 || listState.canScrollForward,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 20.dp, bottom = 20.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
+                    tonalElevation = 6.dp,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (listState.firstVisibleItemIndex > 2) {
+                            IconButton(
+                                onClick = {
+                                    coroutineScope.launch {
+                                        listState.animateScrollToItem(0)
+                                    }
+                                },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowUp,
+                                    contentDescription = "Jump to Top",
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                        if (listState.canScrollForward) {
+                            IconButton(
+                                onClick = {
+                                    coroutineScope.launch {
+                                        listState.animateScrollToItem(maxOf(0, doc.blocks.size - 1))
+                                    }
+                                },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Jump to Bottom",
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
                         }
@@ -726,9 +855,10 @@ private fun DocxParagraphView(
     paragraph: DocxBlock.Paragraph,
     zoomScale: Float,
     searchHighlight: String?,
+    readingTheme: DocxReadingTheme,
     context: Context
 ) {
-    val isDark = MaterialTheme.colorScheme.surface.isDark()
+    val isDark = readingTheme.isDark
 
     val baseFontSize = when (paragraph.headingLevel) {
         -1 -> 24f // Title
@@ -747,13 +877,13 @@ private fun DocxParagraphView(
         else -> TextAlign.Start
     }
 
-    val annotated = remember(paragraph, zoomScale, searchHighlight, isDark) {
+    val annotated = remember(paragraph, zoomScale, searchHighlight, readingTheme) {
         buildAnnotatedString {
             paragraph.runs.forEach { run ->
                 val runFontPt = if (paragraph.headingLevel != 0) baseFontSize else (run.fontSizePt * zoomScale)
                 var spanColor = if (run.colorRgb != null) Color(run.colorRgb) else Color.Unspecified
                 if (spanColor != Color.Unspecified && isDark && isColorTooDark(spanColor)) {
-                    spanColor = Color.White
+                    spanColor = readingTheme.textColor
                 }
 
                 val bg = if (run.highlightColorRgb != null) Color(run.highlightColorRgb) else Color.Transparent
@@ -783,12 +913,28 @@ private fun DocxParagraphView(
                 }
 
                 if (run.linkUrl != null) {
-                    addStringAnnotation(
-                        tag = "URL",
-                        annotation = run.linkUrl,
-                        start = startIdx,
-                        end = length
-                    )
+                    try {
+                        addLink(
+                            LinkAnnotation.Url(
+                                url = run.linkUrl,
+                                linkInteractionListener = { link ->
+                                    try {
+                                        val targetUrl = (link as? LinkAnnotation.Url)?.url ?: run.linkUrl
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)))
+                                    } catch (_: Exception) {}
+                                }
+                            ),
+                            start = startIdx,
+                            end = length
+                        )
+                    } catch (_: Throwable) {
+                        addStringAnnotation(
+                            tag = "URL",
+                            annotation = run.linkUrl,
+                            start = startIdx,
+                            end = length
+                        )
+                    }
                 }
             }
 
@@ -825,6 +971,11 @@ private fun DocxParagraphView(
         else -> 2.dp
     }
 
+    val textColor = when {
+        paragraph.headingLevel in 1..6 || paragraph.headingLevel == -1 -> readingTheme.headingColor
+        else -> readingTheme.textColor
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -842,47 +993,29 @@ private fun DocxParagraphView(
                     style = TextStyle(
                         fontSize = baseFontSize.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
+                        color = readingTheme.headingColor
                     ),
                     modifier = Modifier.padding(end = 6.dp)
                 )
-                ClickableText(
+                Text(
                     text = annotated,
                     style = TextStyle(
                         fontSize = baseFontSize.sp,
                         textAlign = textAlign,
                         lineHeight = (baseFontSize * 1.35f).sp,
-                        color = MaterialTheme.colorScheme.onSurface
-                    ),
-                    onClick = { offset ->
-                        annotated.getStringAnnotations(tag = "URL", start = offset, end = offset).firstOrNull()?.let { annotation ->
-                            try {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(annotation.item))
-                                context.startActivity(intent)
-                            } catch (_: Exception) {}
-                        }
-                    }
+                        color = textColor
+                    )
                 )
             }
         } else {
-            ClickableText(
+            Text(
                 text = annotated,
                 style = TextStyle(
                     fontSize = baseFontSize.sp,
                     textAlign = textAlign,
                     lineHeight = (baseFontSize * 1.35f).sp,
-                    color = if (paragraph.headingLevel in 1..6 || paragraph.headingLevel == -1) {
-                        MaterialTheme.colorScheme.primary
-                    } else MaterialTheme.colorScheme.onSurface
-                ),
-                onClick = { offset ->
-                    annotated.getStringAnnotations(tag = "URL", start = offset, end = offset).firstOrNull()?.let { annotation ->
-                        try {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(annotation.item))
-                            context.startActivity(intent)
-                        } catch (_: Exception) {}
-                    }
-                }
+                    color = textColor
+                )
             )
         }
     }
@@ -892,13 +1025,14 @@ private fun DocxParagraphView(
 private fun DocxTableView(
     table: DocxBlock.Table,
     zoomScale: Float,
-    searchHighlight: String?
+    searchHighlight: String?,
+    readingTheme: DocxReadingTheme
 ) {
     val scrollState = rememberScrollState()
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        colors = CardDefaults.cardColors(containerColor = readingTheme.surfaceColor),
+        border = BorderStroke(1.dp, readingTheme.borderColor),
         shape = RoundedCornerShape(8.dp),
         modifier = Modifier
             .fillMaxWidth()
@@ -912,22 +1046,22 @@ private fun DocxTableView(
             table.rows.forEachIndexed { rIdx, row ->
                 val isHeader = row.isHeader || rIdx == 0
                 val rowBg = if (isHeader) {
-                    MaterialTheme.colorScheme.surfaceContainerHigh
+                    if (readingTheme.isDark) Color(0xFF2C2C2C) else readingTheme.borderColor.copy(alpha = 0.4f)
                 } else if (rIdx % 2 == 1) {
-                    MaterialTheme.colorScheme.surfaceContainerLowest
+                    if (readingTheme.isDark) Color(0xFF242424) else readingTheme.backgroundColor.copy(alpha = 0.5f)
                 } else Color.Transparent
 
                 Row(
                     modifier = Modifier
                         .background(rowBg)
-                        .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                        .border(0.5.dp, readingTheme.borderColor)
                 ) {
                     row.cells.forEach { cell ->
                         val cellBg = if (cell.fillRgb != null) Color(cell.fillRgb) else Color.Transparent
 
                         Box(
                             modifier = Modifier
-                                .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                                .border(0.5.dp, readingTheme.borderColor)
                                 .background(cellBg)
                                 .padding(horizontal = 10.dp, vertical = 6.dp)
                                 .widthIn(min = (80 * zoomScale).dp, max = (280 * zoomScale).dp)
@@ -940,7 +1074,7 @@ private fun DocxTableView(
                                 style = TextStyle(
                                     fontSize = (12f * zoomScale).sp,
                                     fontWeight = if (isHeader) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (isHighlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                    color = if (isHighlighted) readingTheme.headingColor else readingTheme.textColor,
                                     background = if (isHighlighted) Color(0xFFFFEB3B) else Color.Transparent
                                 )
                             )

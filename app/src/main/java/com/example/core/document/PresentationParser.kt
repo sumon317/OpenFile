@@ -40,7 +40,7 @@ object PresentationParser {
             is DetectedDocumentType.Pptx -> parsePptx(file)
             is DetectedDocumentType.Odp -> parseOdp(file)
             is DetectedDocumentType.LegacyOle2 -> {
-                throw UnsupportedOperationException("Legacy binary presentation (.ppt) is not supported. Please convert to .pptx or .odp.")
+                parseLegacyPpt(file)
             }
             is DetectedDocumentType.EncryptedPasswordProtected -> {
                 throw SecurityException("This presentation is password protected and cannot be previewed.")
@@ -48,6 +48,8 @@ object PresentationParser {
             else -> {
                 if (file.extension.equals("odp", ignoreCase = true)) {
                     parseOdp(file)
+                } else if (file.extension.equals("ppt", ignoreCase = true) || Ole2DocumentReader.isOle2File(file)) {
+                    parseLegacyPpt(file)
                 } else {
                     parsePptx(file)
                 }
@@ -822,6 +824,21 @@ object PresentationParser {
                         pageTitle = null
                         elements.clear()
                     } else if (inPage && (name == "frame" || name == "text-box")) {
+                        var frameX: Long? = null
+                        var frameY: Long? = null
+                        var frameWidth: Long? = null
+                        var frameHeight: Long? = null
+                        for (i in 0 until parser.attributeCount) {
+                            val attrName = parser.getAttributeName(i).lowercase()
+                            val attrVal = parser.getAttributeValue(i)
+                            when {
+                                attrName == "x" || attrName.endsWith(":x") -> frameX = parseOdpDimension(attrVal, 914400L)
+                                attrName == "y" || attrName.endsWith(":y") -> frameY = parseOdpDimension(attrVal, 914400L)
+                                attrName == "width" || attrName.endsWith(":width") -> frameWidth = parseOdpDimension(attrVal, 7315200L)
+                                attrName == "height" || attrName.endsWith(":height") -> frameHeight = parseOdpDimension(attrVal, 1000000L)
+                            }
+                        }
+
                         val text = StringBuilder()
                         var innerDepth = 1
                         while (innerDepth > 0 && parser.next() != XmlPullParser.END_DOCUMENT) {
@@ -845,7 +862,12 @@ object PresentationParser {
                         if (str.isNotBlank()) {
                             elements.add(
                                 SlideElement.Shape(
-                                    bounds = ShapeBounds(914400L, 914400L + (elements.size * 1200000L), 7315200L, 1000000L),
+                                    bounds = ShapeBounds(
+                                        xEmu = frameX ?: 914400L,
+                                        yEmu = frameY ?: (914400L + (elements.size * 1200000L)),
+                                        widthEmu = frameWidth ?: 7315200L,
+                                        heightEmu = frameHeight ?: 1000000L
+                                    ),
                                     paragraphs = listOf(
                                         SlideParagraph(runs = listOf(SlideTextRun(str, fontSizePt = 20f)))
                                     )
@@ -870,5 +892,189 @@ object PresentationParser {
             eventType = parser.next()
         }
         return slides
+    }
+
+    fun parseOdpDimension(dimStr: String?, defaultEmu: Long): Long {
+        if (dimStr.isNullOrBlank()) return defaultEmu
+        val clean = dimStr.trim().lowercase()
+        return try {
+            when {
+                clean.endsWith("cm") -> {
+                    val v = clean.removeSuffix("cm").trim().toDouble()
+                    (v * 360000.0).toLong()
+                }
+                clean.endsWith("mm") -> {
+                    val v = clean.removeSuffix("mm").trim().toDouble()
+                    (v * 36000.0).toLong()
+                }
+                clean.endsWith("in") || clean.endsWith("inch") -> {
+                    val v = clean.removeSuffix("inch").removeSuffix("in").trim().toDouble()
+                    (v * 914400.0).toLong()
+                }
+                clean.endsWith("pt") -> {
+                    val v = clean.removeSuffix("pt").trim().toDouble()
+                    (v * 12700.0).toLong()
+                }
+                clean.endsWith("px") -> {
+                    val v = clean.removeSuffix("px").trim().toDouble()
+                    (v * 9525.0).toLong()
+                }
+                else -> {
+                    val v = clean.filter { it.isDigit() || it == '.' }.toDoubleOrNull()
+                    if (v != null) (v * 9525.0).toLong() else defaultEmu
+                }
+            }
+        } catch (_: Exception) {
+            defaultEmu
+        }
+    }
+
+    // =============================================================================================
+    // 3. Legacy PowerPoint (.ppt / OLE2) Parser
+    // =============================================================================================
+
+    fun parseLegacyPpt(file: File): PresentationDocumentModel {
+        val pptBytes = Ole2DocumentReader.extractStream(file, "PowerPoint Document")
+            ?: (if (file.length() < 30 * 1024 * 1024) file.readBytes() else null)
+            ?: throw IllegalArgumentException("No PowerPoint stream found in legacy presentation.")
+
+        val slides = mutableListOf<PresentationSlideModel>()
+        var currentSlideIndex = 0
+        var currentSlideTexts = mutableListOf<String>()
+
+        fun finalizeSlide() {
+            if (currentSlideTexts.isNotEmpty()) {
+                currentSlideIndex++
+                val title = currentSlideTexts.firstOrNull()?.take(60) ?: "Slide $currentSlideIndex"
+                val elements = currentSlideTexts.mapIndexed { idx, text ->
+                    SlideElement.Shape(
+                        bounds = ShapeBounds(
+                            xEmu = 914400L,
+                            yEmu = 914400L + (idx * 900000L),
+                            widthEmu = 7315200L,
+                            heightEmu = 800000L
+                        ),
+                        paragraphs = listOf(
+                            SlideParagraph(runs = listOf(SlideTextRun(text = text, fontSizePt = if (idx == 0) 24f else 16f)))
+                        )
+                    )
+                }
+                slides.add(
+                    PresentationSlideModel(
+                        slideNumber = currentSlideIndex,
+                        title = title,
+                        elements = elements
+                    )
+                )
+                currentSlideTexts = mutableListOf()
+            }
+        }
+
+        // Parse PPT records from stream
+        var offset = 0
+        while (offset + 8 <= pptBytes.size) {
+            val verAndInst = (pptBytes[offset].toInt() and 0xFF) or ((pptBytes[offset + 1].toInt() and 0xFF) shl 8)
+            val recVer = verAndInst and 0x0F
+            val recType = (pptBytes[offset + 2].toInt() and 0xFF) or ((pptBytes[offset + 3].toInt() and 0xFF) shl 8)
+            val recLen = ((pptBytes[offset + 4].toLong() and 0xFF)) or
+                    ((pptBytes[offset + 5].toLong() and 0xFF) shl 8) or
+                    ((pptBytes[offset + 6].toLong() and 0xFF) shl 16) or
+                    ((pptBytes[offset + 7].toLong() and 0xFF) shl 24)
+
+            val isContainer = (recVer == 0x0F)
+            val nextOffset = (offset + 8 + recLen).toInt()
+
+            if (recType == 0x03EE) { // SlideContainer
+                finalizeSlide()
+            } else if (recType == 0x0FA0 && recLen > 0 && recLen < 500000) { // TextCharsAtom (UTF-16LE)
+                val len = minOf(recLen.toInt(), pptBytes.size - (offset + 8))
+                if (len > 0) {
+                    val text = String(pptBytes, offset + 8, len, Charsets.UTF_16LE).trim()
+                    if (text.isNotBlank() && text.length > 1) {
+                        currentSlideTexts.add(text)
+                    }
+                }
+            } else if (recType == 0x0FA8 && recLen > 0 && recLen < 500000) { // TextBytesAtom (ASCII/ISO-8859-1)
+                val len = minOf(recLen.toInt(), pptBytes.size - (offset + 8))
+                if (len > 0) {
+                    val text = String(pptBytes, offset + 8, len, Charsets.ISO_8859_1).trim()
+                    if (text.isNotBlank() && text.length > 1) {
+                        currentSlideTexts.add(text)
+                    }
+                }
+            }
+
+            if (isContainer) {
+                // Step inside container
+                offset += 8
+            } else {
+                if (nextOffset <= offset || nextOffset > pptBytes.size) {
+                    offset += 8
+                } else {
+                    offset = nextOffset
+                }
+            }
+        }
+        finalizeSlide()
+
+        // Fallback if no records found
+        if (slides.isEmpty()) {
+            val extractedStrings = Ole2DocumentReader.extractReadableText(pptBytes)
+            val cleanStrings = extractedStrings
+                .filter { it.isNotBlank() && it.length > 2 && !it.startsWith("__") && !it.startsWith("Arial") && !it.startsWith("Times") }
+                .distinct()
+
+            if (cleanStrings.isNotEmpty()) {
+                val chunks = cleanStrings.chunked(5)
+                chunks.forEachIndexed { sIdx, lines ->
+                    slides.add(
+                        PresentationSlideModel(
+                            slideNumber = sIdx + 1,
+                            title = lines.firstOrNull()?.take(50) ?: "Slide ${sIdx + 1}",
+                            elements = lines.mapIndexed { lIdx, line ->
+                                SlideElement.Shape(
+                                    bounds = ShapeBounds(
+                                        xEmu = 914400L,
+                                        yEmu = 914400L + (lIdx * 900000L),
+                                        widthEmu = 7315200L,
+                                        heightEmu = 800000L
+                                    ),
+                                    paragraphs = listOf(
+                                        SlideParagraph(runs = listOf(SlideTextRun(text = line, fontSizePt = if (lIdx == 0) 24f else 16f)))
+                                    )
+                                )
+                            }
+                        )
+                    )
+                }
+            }
+        }
+
+        if (slides.isEmpty()) {
+            slides.add(
+                PresentationSlideModel(
+                    slideNumber = 1,
+                    title = file.nameWithoutExtension,
+                    elements = listOf(
+                        SlideElement.Shape(
+                            bounds = ShapeBounds(
+                                xEmu = 914400L,
+                                yEmu = 914400L,
+                                widthEmu = 7315200L,
+                                heightEmu = 2000000L
+                            ),
+                            paragraphs = listOf(
+                                SlideParagraph(runs = listOf(SlideTextRun("No slide content could be decoded from this legacy presentation.", fontSizePt = 20f)))
+                            )
+                        )
+                    )
+                )
+            )
+        }
+
+        return PresentationDocumentModel(
+            title = file.name,
+            slides = slides
+        )
     }
 }

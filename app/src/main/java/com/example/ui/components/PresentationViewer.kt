@@ -48,6 +48,8 @@ import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Slideshow
@@ -97,6 +99,7 @@ import com.example.core.document.PresentationParser
 import com.example.core.document.PresentationSlideModel
 import com.example.core.model.FileReference
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -578,7 +581,7 @@ fun PresentationViewer(
 }
 
 /**
- * Fullscreen Immersive Slideshow Mode
+ * Fullscreen Immersive Slideshow Mode with Auto-Advance Timer
  */
 @Composable
 private fun FullscreenSlideshowMode(
@@ -589,7 +592,17 @@ private fun FullscreenSlideshowMode(
     onExit: () -> Unit
 ) {
     var showControls by remember { mutableStateOf(false) }
+    var isAutoAdvancing by remember { mutableStateOf(false) }
+    var slideDurationSec by remember { mutableIntStateOf(5) }
     val total = presentation.slides.size
+
+    LaunchedEffect(isAutoAdvancing, currentPage, slideDurationSec) {
+        if (isAutoAdvancing) {
+            delay(slideDurationSec * 1000L)
+            val next = if (currentPage < total - 1) currentPage + 1 else 0
+            onPageChange(next)
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -601,10 +614,10 @@ private fun FullscreenSlideshowMode(
                         val w = size.width
                         if (offset.x < w * 0.25f) {
                             // Left edge tap: Previous
-                            onPageChange(currentPage - 1)
+                            onPageChange(if (currentPage > 0) currentPage - 1 else total - 1)
                         } else if (offset.x > w * 0.75f) {
                             // Right edge tap: Next
-                            onPageChange(currentPage + 1)
+                            onPageChange(if (currentPage < total - 1) currentPage + 1 else 0)
                         } else {
                             // Center tap: Toggle controls
                             showControls = !showControls
@@ -632,23 +645,60 @@ private fun FullscreenSlideshowMode(
             modifier = Modifier.align(Alignment.TopCenter)
         ) {
             Surface(
-                color = Color.Black.copy(alpha = 0.75f),
+                color = Color.Black.copy(alpha = 0.85f),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = onExit) {
                         Icon(Icons.Default.Close, contentDescription = "Exit Slideshow", tint = Color.White)
                     }
-                    Text(
-                        text = "Slide ${currentPage + 1} of $total",
-                        color = Color.White,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        // Play / Pause auto-advance
+                        IconButton(onClick = { isAutoAdvancing = !isAutoAdvancing }) {
+                            Icon(
+                                imageVector = if (isAutoAdvancing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                contentDescription = if (isAutoAdvancing) "Pause Slideshow" else "Auto-advance Slideshow",
+                                tint = if (isAutoAdvancing) MaterialTheme.colorScheme.primary else Color.White
+                            )
+                        }
+
+                        // Cycle auto-advance interval (3s, 5s, 10s)
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isAutoAdvancing) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.2f),
+                            modifier = Modifier.clickable {
+                                slideDurationSec = when (slideDurationSec) {
+                                    3 -> 5
+                                    5 -> 10
+                                    else -> 3
+                                }
+                            }
+                        ) {
+                            Text(
+                                text = "${slideDurationSec}s",
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+
+                        Text(
+                            text = "Slide ${currentPage + 1} of $total",
+                            color = Color.White,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
                     IconButton(onClick = onExit) {
                         Icon(Icons.Default.FullscreenExit, contentDescription = "Exit", tint = Color.White)
                     }
