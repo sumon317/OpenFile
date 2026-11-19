@@ -278,6 +278,17 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                                 "Archive: ${browserState.inspectArchiveFile!!.displayName}"
                             currentDest == OpenFileDestination.INTERNAL_STORAGE && browserState.activeRemoteProfile != null ->
                                 browserState.activeRemoteProfile!!.displayName
+                            currentDest == OpenFileDestination.INTERNAL_STORAGE && browserState.currentDirectory != null -> {
+                                val curPath = browserState.currentDirectory!!.uriOrPath.replace('\\', '/').trimEnd('/')
+                                val matchingVol = viewModel.storageVolumes.value.firstOrNull { vol ->
+                                    val volRoot = vol.rootReference.uriOrPath.replace('\\', '/').trimEnd('/')
+                                    vol.isRemovable && (curPath == volRoot || curPath.startsWith("$volRoot/"))
+                                }
+                                matchingVol?.title ?: if (curPath.startsWith("/storage/") && !curPath.contains("emulated")) {
+                                    val seg = curPath.removePrefix("/storage/").substringBefore('/')
+                                    "SD Card ($seg)"
+                                } else null
+                            }
                             else -> null
                         },
                         currentThemeMode = settings.themeMode,
@@ -416,6 +427,17 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
                             "Archive: ${browserState.inspectArchiveFile!!.displayName}"
                         currentDest == OpenFileDestination.INTERNAL_STORAGE && browserState.activeRemoteProfile != null ->
                             browserState.activeRemoteProfile!!.displayName
+                        currentDest == OpenFileDestination.INTERNAL_STORAGE && browserState.currentDirectory != null -> {
+                            val curPath = browserState.currentDirectory!!.uriOrPath.replace('\\', '/').trimEnd('/')
+                            val matchingVol = viewModel.storageVolumes.value.firstOrNull { vol ->
+                                val volRoot = vol.rootReference.uriOrPath.replace('\\', '/').trimEnd('/')
+                                vol.isRemovable && (curPath == volRoot || curPath.startsWith("$volRoot/"))
+                            }
+                            matchingVol?.title ?: if (curPath.startsWith("/storage/") && !curPath.contains("emulated")) {
+                                val seg = curPath.removePrefix("/storage/").substringBefore('/')
+                                "SD Card ($seg)"
+                            } else null
+                        }
                         else -> null
                     },
                     currentThemeMode = settings.themeMode,

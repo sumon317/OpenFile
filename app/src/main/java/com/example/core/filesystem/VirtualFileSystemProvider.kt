@@ -754,7 +754,7 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
                 id = "internal_primary",
                 title = "Internal Shared Storage",
                 subtitle = primaryRoot.absolutePath,
-                rootReference = toFileReference(primaryRoot),
+                rootReference = toFileReference(primaryRoot).copy(displayName = "Internal Storage"),
                 totalBytes = total,
                 usedBytes = used,
                 availableBytes = avail,
@@ -770,12 +770,13 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
                 val stat = runCatching { StatFs(rootFile.absolutePath) }.getOrNull()
                 val extTotal = stat?.totalBytes ?: 0L
                 val extAvail = stat?.availableBytes ?: 0L
+                val volDisplayName = if (desc.contains(rootFile.name, ignoreCase = true)) desc else "$desc (${rootFile.name})"
                 volumes.add(
                     StorageVolumeInfo(
                         id = "storage_vol_${rootFile.name}",
                         title = desc,
                         subtitle = rootFile.absolutePath,
-                        rootReference = toFileReference(rootFile),
+                        rootReference = toFileReference(rootFile).copy(displayName = volDisplayName),
                         totalBytes = extTotal,
                         usedBytes = (extTotal - extAvail).coerceAtLeast(0L),
                         availableBytes = extAvail,

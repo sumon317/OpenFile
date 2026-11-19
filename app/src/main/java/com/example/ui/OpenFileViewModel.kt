@@ -566,6 +566,13 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 return
             }
         }
+        if (directory.providerType == ProviderType.LOCAL) {
+            val norm = directory.uriOrPath.replace('\\', '/').trimEnd('/')
+            if (isRestrictedSystemPath(norm)) {
+                openPrimaryStorageRoot()
+                return
+            }
+        }
 
         browseDirectoryJob?.cancel()
         val isRemoteOrEmpty = directory.providerType.isRemote || _browserState.value.items.isEmpty()
@@ -709,6 +716,93 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun isRestrictedSystemPath(path: String?): Boolean {
+        if (path.isNullOrBlank()) return true
+        val norm = path.replace('\\', '/').trimEnd('/')
+        val withoutDrive = if (norm.length >= 2 && norm[1] == ':') norm.substring(2) else norm
+        return withoutDrive.isEmpty() ||
+            withoutDrive == "/" ||
+            withoutDrive == "/storage" ||
+            withoutDrive == "/storage/emulated" ||
+            withoutDrive == "/storage/self" ||
+            withoutDrive == "/mnt" ||
+            withoutDrive == "/mnt/media_rw"
+    }
+
+    fun findVolumeRoot(path: String): String {
+        val norm = path.replace('\\', '/').trimEnd('/')
+        val primaryRoot = localProvider.getPrimaryRootDirectory().absolutePath.replace('\\', '/').trimEnd('/')
+        if (isRestrictedSystemPath(norm)) {
+            return primaryRoot
+        }
+
+        val drivePrefix = if (norm.length >= 2 && norm[1] == ':') norm.substring(0, 2) else ""
+        val withoutDrive = if (norm.length >= 2 && norm[1] == ':') norm.substring(2) else norm
+
+        val workspacePath = localProvider.getAppWorkspaceDirectory().absolutePath.replace('\\', '/').trimEnd('/')
+        if (norm == workspacePath || norm.startsWith("$workspacePath/")) {
+            return workspacePath
+        }
+
+        if (norm == primaryRoot || norm.startsWith("$primaryRoot/")) {
+            return primaryRoot
+        }
+
+        // Check active / discovered volumes in storageVolumes StateFlow
+        for (vol in storageVolumes.value) {
+            val volRoot = vol.rootReference.uriOrPath.replace('\\', '/').trimEnd('/')
+            if (volRoot.isNotEmpty() && (norm == volRoot || norm.startsWith("$volRoot/"))) {
+                return volRoot
+            }
+        }
+
+        // Check discovered physical removable storage roots (SD card, USB OTG)
+        val removableDirs = runCatching { localProvider.discoverRemovableStorageDirectories() }.getOrDefault(emptyList())
+        for ((_, file) in removableDirs) {
+            val remRoot = file.absolutePath.replace('\\', '/').trimEnd('/')
+            if (remRoot.isNotEmpty() && (norm == remRoot || norm.startsWith("$remRoot/"))) {
+                return remRoot
+            }
+        }
+
+        // Pattern check for Android mount locations: /storage/<uuid>
+        if (withoutDrive.startsWith("/storage/")) {
+            val sub = withoutDrive.removePrefix("/storage/")
+            return if (sub.startsWith("emulated/")) {
+                val userId = sub.removePrefix("emulated/").substringBefore('/')
+                "$drivePrefix/storage/emulated/$userId"
+            } else if (sub.startsWith("self/")) {
+                primaryRoot
+            } else {
+                val volumeId = sub.substringBefore('/')
+                "$drivePrefix/storage/$volumeId"
+            }
+        }
+        if (withoutDrive.startsWith("/mnt/media_rw/")) {
+            val volumeId = withoutDrive.removePrefix("/mnt/media_rw/").substringBefore('/')
+            return "$drivePrefix/mnt/media_rw/$volumeId"
+        }
+
+        // For host test environments or app private data directories
+        val app = getApplication<android.app.Application>()
+        val appDataRoot = runCatching { app.filesDir.parentFile?.absolutePath?.replace('\\', '/')?.trimEnd('/') }.getOrNull()
+        if (appDataRoot != null && (norm == appDataRoot || norm.startsWith("$appDataRoot/"))) {
+            return appDataRoot
+        }
+
+        return primaryRoot
+    }
+
+    fun isVolumeRoot(path: String): Boolean {
+        val norm = path.replace('\\', '/').trimEnd('/')
+        if (isRestrictedSystemPath(norm)) return true
+        val volRoot = findVolumeRoot(norm)
+        val volRootNorm = volRoot.replace('\\', '/').trimEnd('/')
+        val normWithoutDrive = if (norm.length >= 2 && norm[1] == ':') norm.substring(2) else norm
+        val volWithoutDrive = if (volRootNorm.length >= 2 && volRootNorm[1] == ':') volRootNorm.substring(2) else volRootNorm
+        return norm == volRootNorm || normWithoutDrive == volWithoutDrive
+    }
+
     fun navigateUpInBrowser(): Boolean {
         val state = _browserState.value
         if (state.isMultiSelectActive) {
@@ -740,23 +834,40 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         if (parentPath == null) return false
 
         if (current.providerType == ProviderType.LOCAL) {
-            val parentCrumbs = state.breadcrumbs.dropLast(1)
-            if (parentCrumbs.isNotEmpty()) {
-                openDirectory(parentCrumbs.last())
-                return true
-            }
-            val primaryRoot = localProvider.getPrimaryRootDirectory().absolutePath
-            val workspaceRoot = localProvider.getAppWorkspaceDirectory().absolutePath
-            if (current.uriOrPath == primaryRoot || current.uriOrPath == workspaceRoot) {
+            val currentNorm = current.uriOrPath.replace('\\', '/').trimEnd('/')
+            val currentWithoutDrive = if (currentNorm.length >= 2 && currentNorm[1] == ':') currentNorm.substring(2) else currentNorm
+            val volumeRoot = findVolumeRoot(current.uriOrPath)
+            val volumeRootNorm = volumeRoot.replace('\\', '/').trimEnd('/')
+            val volumeRootWithoutDrive = if (volumeRootNorm.length >= 2 && volumeRootNorm[1] == ':') volumeRootNorm.substring(2) else volumeRootNorm
+
+            // If already at the volume root, cannot navigate up within local volume - let back handler return to Home
+            if (isVolumeRoot(currentNorm) || currentWithoutDrive == volumeRootWithoutDrive) {
                 return false
             }
-            viewModelScope.launch(Dispatchers.IO) {
-                val parentFile = File(parentPath)
-                if (parentFile.exists() && parentFile.canRead()) {
-                    openDirectory(localProvider.toFileReference(parentFile))
+
+            val parentCrumbs = state.breadcrumbs.dropLast(1)
+            if (parentCrumbs.isNotEmpty()) {
+                val target = parentCrumbs.last()
+                val targetNorm = target.uriOrPath.replace('\\', '/').trimEnd('/')
+                if (!isRestrictedSystemPath(targetNorm)) {
+                    openDirectory(target)
+                    return true
                 }
             }
-            return true
+
+            val parentFile = File(parentPath)
+            val parentNorm = parentFile.absolutePath.replace('\\', '/').trimEnd('/')
+            val parentWithoutDrive = if (parentNorm.length >= 2 && parentNorm[1] == ':') parentNorm.substring(2) else parentNorm
+            if (isRestrictedSystemPath(parentWithoutDrive) || parentWithoutDrive.length < volumeRootWithoutDrive.length) {
+                return false
+            }
+            if (parentFile.exists() && parentFile.canRead()) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    openDirectory(localProvider.toFileReference(parentFile))
+                }
+                return true
+            }
+            return false
         } else if (current.providerType == ProviderType.SAF) {
             val parentCrumbs = state.breadcrumbs.dropLast(1)
             if (parentCrumbs.isNotEmpty()) {
@@ -773,18 +884,66 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             val idx = existing.indexOfFirst { it.uriOrPath == current.uriOrPath }
             return if (idx >= 0) existing.take(idx + 1) else existing + current
         }
-        val rootPath = localProvider.getPrimaryRootDirectory().absolutePath
-        val workspacePath = localProvider.getAppWorkspaceDirectory().absolutePath
-        val baseRoot = if (current.uriOrPath.startsWith(workspacePath)) workspacePath else rootPath
+        val currentNorm = current.uriOrPath.replace('\\', '/').trimEnd('/')
+        if (isRestrictedSystemPath(currentNorm)) {
+            val primaryRoot = localProvider.getPrimaryRootDirectory()
+            return listOf(
+                localProvider.toFileReference(primaryRoot).copy(displayName = "Internal Storage")
+            )
+        }
+
+        val baseRoot = findVolumeRoot(current.uriOrPath)
+        val baseRootNorm = baseRoot.replace('\\', '/').trimEnd('/')
+        val baseRootWithoutDrive = if (baseRootNorm.length >= 2 && baseRootNorm[1] == ':') baseRootNorm.substring(2) else baseRootNorm
+
+        val hasDriveInInput = currentNorm.length >= 2 && currentNorm[1] == ':'
 
         val crumbs = mutableListOf<FileReference>()
         var pointer: File? = File(current.uriOrPath)
         while (pointer != null) {
-            crumbs.add(0, localProvider.toFileReference(pointer))
-            if (pointer.absolutePath == baseRoot || pointer.parentFile == null) break
+            val pointerNorm = pointer.absolutePath.replace('\\', '/').trimEnd('/')
+            val pointerWithoutDrive = if (pointerNorm.length >= 2 && pointerNorm[1] == ':') pointerNorm.substring(2) else pointerNorm
+            if (isRestrictedSystemPath(pointerWithoutDrive)) break
+
+            val isAtBaseRoot = pointerWithoutDrive == baseRootWithoutDrive || pointerNorm == baseRootNorm
+
+            val rawRef = localProvider.toFileReference(pointer)
+            val adjustedRef = if (!hasDriveInInput && rawRef.uriOrPath.length >= 2 && rawRef.uriOrPath[1] == ':') {
+                rawRef.copy(
+                    uriOrPath = pointerWithoutDrive,
+                    parentUriOrPath = rawRef.parentUriOrPath?.let { p ->
+                        val pNorm = p.replace('\\', '/').trimEnd('/')
+                        if (pNorm.length >= 2 && pNorm[1] == ':') pNorm.substring(2) else pNorm
+                    }
+                )
+            } else {
+                rawRef
+            }
+
+            val pointerRef = if (isAtBaseRoot) {
+                val matchingVol = storageVolumes.value.firstOrNull {
+                    val volNorm = it.rootReference.uriOrPath.replace('\\', '/').trimEnd('/')
+                    val volWithoutDrive = if (volNorm.length >= 2 && volNorm[1] == ':') volNorm.substring(2) else volNorm
+                    volWithoutDrive == baseRootWithoutDrive
+                }
+                if (matchingVol != null) {
+                    adjustedRef.copy(displayName = matchingVol.title)
+                } else if (baseRootWithoutDrive.startsWith("/storage/") && !baseRootWithoutDrive.contains("emulated")) {
+                    val volId = baseRootWithoutDrive.removePrefix("/storage/").substringBefore('/')
+                    adjustedRef.copy(displayName = "SD Card ($volId)")
+                } else if (baseRootWithoutDrive.contains("emulated")) {
+                    adjustedRef.copy(displayName = "Internal Storage")
+                } else {
+                    adjustedRef
+                }
+            } else {
+                adjustedRef
+            }
+            crumbs.add(0, pointerRef)
+            if (isAtBaseRoot || pointer.parentFile == null) break
             pointer = pointer.parentFile
         }
-        return crumbs
+        return if (crumbs.isNotEmpty()) crumbs else listOf(current)
     }
 
     fun defaultSortForCategory(category: FileCategory?, currentSettings: AppSettingsState): Pair<SortField, SortOrder> {
@@ -1411,7 +1570,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     fun openContainingFolder(item: FileReference) {
         val parentPath = item.parentUriOrPath ?: File(item.uriOrPath).parent
-        if (parentPath.isNullOrBlank()) {
+        if (parentPath.isNullOrBlank() || isRestrictedSystemPath(parentPath)) {
             showStatus("Cannot resolve containing folder for '${item.displayName}'")
             return
         }

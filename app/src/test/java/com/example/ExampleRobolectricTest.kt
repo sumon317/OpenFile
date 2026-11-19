@@ -2310,6 +2310,63 @@ class ExampleRobolectricTest {
             }
         }
     }
+
+    @Test
+    fun testExternalMediaSdCardBackNavigationDoesNotGoToStorageOrRoot() {
+        val viewModel = composeTestRule.activity.viewModel
+
+        // 1. Verify restricted system paths are recognized
+        assertTrue(viewModel.isRestrictedSystemPath("/"))
+        assertTrue(viewModel.isRestrictedSystemPath("/storage"))
+        assertTrue(viewModel.isRestrictedSystemPath("/storage/emulated"))
+        assertTrue(viewModel.isRestrictedSystemPath("/storage/self"))
+        assertFalse(viewModel.isRestrictedSystemPath("/storage/5678-1DD5"))
+        assertFalse(viewModel.isRestrictedSystemPath("/storage/5678-1DD5/DCIM"))
+
+        // 2. Verify volume root resolution for SD card paths
+        assertEquals("/storage/5678-1DD5", viewModel.findVolumeRoot("/storage/5678-1DD5"))
+        assertEquals("/storage/5678-1DD5", viewModel.findVolumeRoot("/storage/5678-1DD5/DCIM/Camera"))
+        assertTrue(viewModel.isVolumeRoot("/storage/5678-1DD5"))
+        assertFalse(viewModel.isVolumeRoot("/storage/5678-1DD5/DCIM"))
+
+        // 3. Test breadcrumb generation for SD card: must never contain / or /storage
+        val sdCardSubDirRef = FileReference(
+            providerType = ProviderType.LOCAL,
+            uriOrPath = "/storage/5678-1DD5/DCIM/Camera",
+            displayName = "Camera",
+            parentUriOrPath = "/storage/5678-1DD5/DCIM",
+            isDirectory = true
+        )
+        val crumbs = viewModel.run {
+            // invoke private buildBreadcrumbs via openDirectory or verify state
+            findVolumeRoot(sdCardSubDirRef.uriOrPath)
+        }
+        assertEquals("/storage/5678-1DD5", crumbs)
+
+        // 4. Test navigateUpInBrowser at SD Card root returns false (so system Back takes user to Home, never to /storage or /)
+        composeTestRule.runOnUiThread {
+            val sdCardRootRef = FileReference(
+                providerType = ProviderType.LOCAL,
+                uriOrPath = "/storage/5678-1DD5",
+                displayName = "SD Card (5678-1DD5)",
+                parentUriOrPath = "/storage",
+                isDirectory = true
+            )
+            viewModel.openDirectory(sdCardRootRef)
+        }
+        composeTestRule.waitForIdle()
+
+        // Verify breadcrumbs contain only the SD Card and NOT / or /storage
+        val currentCrumbs = viewModel.browserState.value.breadcrumbs
+        assertTrue("Breadcrumbs should not be empty", currentCrumbs.isNotEmpty())
+        assertFalse("Breadcrumbs must not contain /", currentCrumbs.any { it.uriOrPath == "/" })
+        assertFalse("Breadcrumbs must not contain /storage", currentCrumbs.any { it.uriOrPath == "/storage" })
+        assertEquals("/storage/5678-1DD5", currentCrumbs.first().uriOrPath)
+
+        // When at SD Card root, pressing back (navigateUpInBrowser) must return false
+        val handledAtRoot = viewModel.navigateUpInBrowser()
+        assertFalse("navigateUpInBrowser at SD card root must return false to let app exit to Home", handledAtRoot)
+    }
 }
 
 
