@@ -369,7 +369,8 @@ fun isPathInsideHiddenDirectory(path: String?): Boolean {
     } else {
         runCatching { java.net.URLDecoder.decode(path, "UTF-8") }.getOrDefault(path)
     }
-    val parent = if (clean.contains('/')) clean.substringBeforeLast('/') else return false
+    val normalized = clean.replace('\\', '/')
+    val parent = if (normalized.contains('/')) normalized.substringBeforeLast('/') else return false
     return parent.split('/', ':').any { segment ->
         segment.startsWith('.') && segment != "." && segment != ".."
     }
