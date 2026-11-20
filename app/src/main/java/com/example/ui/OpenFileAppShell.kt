@@ -504,7 +504,12 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
             },
             onPreviousMedia = { viewModel.previewPreviousMedia() },
             onNextMedia = { viewModel.previewNextMedia() },
-            onSelectMedia = { viewModel.previewMediaAt(it) }
+            onSelectMedia = { viewModel.previewMediaAt(it) },
+            onMusicPlayerSettingsChange = { transform -> viewModel.updateMusicPlayerSettings(transform) },
+            onNavigateToSettings = {
+                viewModel.closePreviewDialog()
+                viewModel.navigateToDestination(OpenFileDestination.SETTINGS)
+            }
         )
     }
 

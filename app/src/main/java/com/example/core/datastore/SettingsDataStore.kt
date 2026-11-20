@@ -98,6 +98,7 @@ data class MusicPlayerCustomSettings(
     val albumArtCornerRadiusDp: Int = 24,
     val isAlbumArtCircle: Boolean = false,
     val rotateIfCircle: Boolean = false,
+    val isVinylMode: Boolean = false,
     val songTitleMarquee: Boolean = true,
     val progressBarStyle: ProgressBarPreset = ProgressBarPreset.STANDARD,
     val playButtonShape: PlayButtonShape = PlayButtonShape.CIRCLE,
@@ -158,6 +159,7 @@ class SettingsDataStore(private val context: Context) {
         val MUSIC_ART_RADIUS = intPreferencesKey("music_art_radius")
         val MUSIC_ART_IS_CIRCLE = booleanPreferencesKey("music_art_is_circle")
         val MUSIC_ART_ROTATE_CIRCLE = booleanPreferencesKey("music_art_rotate_circle")
+        val MUSIC_VINYL_MODE = booleanPreferencesKey("music_vinyl_mode")
         val MUSIC_TITLE_MARQUEE = booleanPreferencesKey("music_title_marquee")
         val MUSIC_PROGRESS_STYLE = stringPreferencesKey("music_progress_style")
         val MUSIC_PLAY_BUTTON_SHAPE = stringPreferencesKey("music_play_button_shape")
@@ -181,6 +183,7 @@ class SettingsDataStore(private val context: Context) {
             albumArtCornerRadiusDp = prefs[Keys.MUSIC_ART_RADIUS] ?: 24,
             isAlbumArtCircle = prefs[Keys.MUSIC_ART_IS_CIRCLE] ?: false,
             rotateIfCircle = prefs[Keys.MUSIC_ART_ROTATE_CIRCLE] ?: false,
+            isVinylMode = prefs[Keys.MUSIC_VINYL_MODE] ?: false,
             songTitleMarquee = prefs[Keys.MUSIC_TITLE_MARQUEE] ?: true,
             progressBarStyle = runCatching {
                 ProgressBarPreset.valueOf(prefs[Keys.MUSIC_PROGRESS_STYLE] ?: ProgressBarPreset.STANDARD.name)
@@ -333,6 +336,7 @@ class SettingsDataStore(private val context: Context) {
                 albumArtCornerRadiusDp = prefs[Keys.MUSIC_ART_RADIUS] ?: 24,
                 isAlbumArtCircle = prefs[Keys.MUSIC_ART_IS_CIRCLE] ?: false,
                 rotateIfCircle = prefs[Keys.MUSIC_ART_ROTATE_CIRCLE] ?: false,
+                isVinylMode = prefs[Keys.MUSIC_VINYL_MODE] ?: false,
                 songTitleMarquee = prefs[Keys.MUSIC_TITLE_MARQUEE] ?: true,
                 progressBarStyle = runCatching {
                     ProgressBarPreset.valueOf(prefs[Keys.MUSIC_PROGRESS_STYLE] ?: ProgressBarPreset.STANDARD.name)
@@ -355,6 +359,7 @@ class SettingsDataStore(private val context: Context) {
             prefs[Keys.MUSIC_ART_RADIUS] = updated.albumArtCornerRadiusDp.coerceIn(0, 48)
             prefs[Keys.MUSIC_ART_IS_CIRCLE] = updated.isAlbumArtCircle
             prefs[Keys.MUSIC_ART_ROTATE_CIRCLE] = if (updated.isAlbumArtCircle) updated.rotateIfCircle else false
+            prefs[Keys.MUSIC_VINYL_MODE] = updated.isVinylMode
             prefs[Keys.MUSIC_TITLE_MARQUEE] = updated.songTitleMarquee
             prefs[Keys.MUSIC_PROGRESS_STYLE] = updated.progressBarStyle.name
             prefs[Keys.MUSIC_PLAY_BUTTON_SHAPE] = updated.playButtonShape.name

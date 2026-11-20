@@ -1542,31 +1542,32 @@ fun SettingsScreen(
                                 ),
                                 label = "preview_art_angle"
                             )
-                            val artRotationModifier = if (music.isAlbumArtCircle && music.rotateIfCircle) {
+                            val shouldRotate = (music.isVinylMode) || (music.isAlbumArtCircle && music.rotateIfCircle)
+                            val artRotationModifier = if (shouldRotate) {
                                 Modifier.graphicsLayer(rotationZ = previewAngle)
                             } else Modifier
 
-                            val previewShape = if (music.isAlbumArtCircle) CircleShape else RoundedCornerShape(music.albumArtCornerRadiusDp.dp)
+                            val previewShape = if (music.isVinylMode || music.isAlbumArtCircle) CircleShape else RoundedCornerShape(music.albumArtCornerRadiusDp.dp)
 
                             Box(
                                 modifier = Modifier
                                     .size(110.dp)
                                     .then(artRotationModifier)
                                     .clip(previewShape)
-                                    .background(themeSurface)
+                                    .background(if (music.isVinylMode) Color(0xFF14151B) else themeSurface)
                                     .border(2.dp, accentColor.copy(alpha = 0.5f), previewShape),
                                 contentAlignment = Alignment.Center
                             ) {
-                                if (music.isAlbumArtCircle) {
+                                if (music.isVinylMode) {
                                     // Circular Vinyl Disc Stylings
-                                    Box(modifier = Modifier.fillMaxSize(0.85f).border(1.dp, Color(0xFF282A36), CircleShape))
-                                    Box(modifier = Modifier.fillMaxSize(0.65f).border(1.dp, Color(0xFF282A36), CircleShape))
-                                    Surface(shape = CircleShape, color = accentColor, modifier = Modifier.size(36.dp)) {
+                                    Box(modifier = Modifier.fillMaxSize(0.88f).border(1.dp, Color(0xFF282A36), CircleShape))
+                                    Box(modifier = Modifier.fillMaxSize(0.70f).border(1.dp, Color(0xFF22242E), CircleShape))
+                                    Surface(shape = CircleShape, color = accentColor, modifier = Modifier.size(44.dp)) {
                                         Box(contentAlignment = Alignment.Center) {
-                                            Icon(Icons.Filled.Album, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                                            Icon(Icons.Filled.Album, contentDescription = null, tint = Color.White, modifier = Modifier.size(24.dp))
                                         }
                                     }
-                                    Surface(shape = CircleShape, color = Color.Black, modifier = Modifier.size(8.dp)) {}
+                                    Surface(shape = CircleShape, color = Color.Black, modifier = Modifier.size(10.dp)) {}
                                 } else {
                                     Icon(
                                         imageVector = Icons.Filled.Audiotrack,
@@ -1762,6 +1763,30 @@ fun SettingsScreen(
                                 }
                             }
                         }
+                    }
+
+                    // --- 1. In-Player View Mode (Artwork Card vs Spinning Vinyl) ---
+                    Text("In-Player View Mode", style = MaterialTheme.typography.titleSmall)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = !music.isVinylMode,
+                            onClick = {
+                                onMusicPlayerSettingsChange { it.copy(isVinylMode = false) }
+                            },
+                            label = { Text("Artwork Card View") },
+                            modifier = Modifier.testTag("view_mode_card_chip")
+                        )
+                        FilterChip(
+                            selected = music.isVinylMode,
+                            onClick = {
+                                onMusicPlayerSettingsChange { it.copy(isVinylMode = true) }
+                            },
+                            label = { Text("Spinning Vinyl Mode") },
+                            modifier = Modifier.testTag("view_mode_vinyl_chip")
+                        )
                     }
 
                     // --- 2. Album Art Shape & Border Radius Controls ---

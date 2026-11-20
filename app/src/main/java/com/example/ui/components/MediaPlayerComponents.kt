@@ -42,6 +42,7 @@ import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -121,6 +122,7 @@ import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Replay5
 import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.ShuffleOn
 import androidx.compose.material.icons.filled.SkipNext
@@ -141,6 +143,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -464,6 +467,8 @@ fun AudioPlayerPreview(
     onNext: (() -> Unit)? = null,
     hasPrevious: Boolean = false,
     hasNext: Boolean = false,
+    onMusicPlayerSettingsChange: (((MusicPlayerCustomSettings) -> MusicPlayerCustomSettings) -> Unit)? = null,
+    onNavigateToSettings: (() -> Unit)? = null,
     onDismiss: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -585,7 +590,8 @@ fun AudioPlayerPreview(
     var isAbLoopActive by rememberSaveable(file.uriOrPath) { mutableStateOf(false) }
     var abPointA by rememberSaveable(file.uriOrPath) { mutableStateOf<Long?>(null) }
     var abPointB by rememberSaveable(file.uriOrPath) { mutableStateOf<Long?>(null) }
-    var isVinylMode by rememberSaveable { mutableStateOf(false) }
+    var isVinylMode by rememberSaveable(musicSettings.isVinylMode) { mutableStateOf(musicSettings.isVinylMode) }
+    var showPlayerSettingsSheet by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         EqualizerEngine.initialize(context)
@@ -1011,11 +1017,22 @@ fun AudioPlayerPreview(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text(if (isVinylMode) "Artwork Card View" else "Spinning Vinyl Mode", color = Color.White) },
-                            leadingIcon = { Icon(Icons.Filled.Album, contentDescription = null, tint = Color(0xFFB0B0B0)) },
+                            text = { Text(if (isVinylMode) "Switch to Artwork Card" else "Switch to Spinning Vinyl", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Filled.Album, contentDescription = null, tint = themeAccent) },
                             onClick = {
                                 showMoreMenu = false
-                                isVinylMode = !isVinylMode
+                                val nextMode = !isVinylMode
+                                isVinylMode = nextMode
+                                onMusicPlayerSettingsChange?.invoke { it.copy(isVinylMode = nextMode) }
+                                toastMessage = if (nextMode) "Spinning Vinyl Mode" else "Artwork Card View"
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Player Settings", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null, tint = themeAccent) },
+                            onClick = {
+                                showMoreMenu = false
+                                showPlayerSettingsSheet = true
                             }
                         )
                         if (onOpenExternal != null) {
@@ -1555,78 +1572,85 @@ fun AudioPlayerPreview(
                                 )
                             }
                             .testTag("audio_album_card"),
-                        shape = effectiveArtShape,
+                        shape = if (isVinylMode) CircleShape else effectiveArtShape,
                         elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
                         border = androidx.compose.foundation.BorderStroke(
-                            if (isCircleShape) 2.dp else 1.dp,
-                            if (isCircleShape) themeAccent.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.08f)
+                            if (isVinylMode || isCircleShape) 2.dp else 1.dp,
+                            if (isVinylMode || isCircleShape) themeAccent.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.08f)
                         ),
-                        colors = CardDefaults.cardColors(containerColor = themeSurface)
+                        colors = CardDefaults.cardColors(containerColor = if (isVinylMode) Color(0xFF14151B) else themeSurface)
                     ) {
-                        val rotationModifier = if (shouldRotateDisc) Modifier.graphicsLayer(rotationZ = vinylAngle) else Modifier
-                        Box(modifier = Modifier.fillMaxSize().then(rotationModifier), contentAlignment = Alignment.Center) {
-                            if (isCircleShape) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = Color(0xFF15161C),
-                                    border = androidx.compose.foundation.BorderStroke(3.dp, Color(0xFF282A36)),
-                                    modifier = Modifier.fillMaxSize().padding(8.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Box(modifier = Modifier.size(175.dp).border(1.dp, Color(0xFF22242E), CircleShape))
-                                        Box(modifier = Modifier.size(135.dp).border(1.dp, Color(0xFF22242E), CircleShape))
-                                        Box(modifier = Modifier.size(95.dp).border(1.dp, Color(0xFF22242E), CircleShape))
-                                        Surface(
-                                            shape = CircleShape,
-                                            color = themeAccent,
-                                            modifier = Modifier.size(68.dp)
-                                        ) {
-                                            val art = trackInfo?.artwork
-                                            if (art != null) {
-                                                Image(
-                                                    bitmap = art,
-                                                    contentDescription = null,
-                                                    modifier = Modifier.fillMaxSize(),
-                                                    contentScale = ContentScale.Crop
-                                                )
-                                            } else {
-                                                Box(contentAlignment = Alignment.Center) {
-                                                    Icon(Icons.Filled.Album, contentDescription = null, tint = Color.White, modifier = Modifier.size(32.dp))
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            val shouldSpin = isPlaying && (isVinylMode || (isCircleShape && musicSettings.rotateIfCircle))
+                            val rotationModifier = if (shouldSpin) Modifier.graphicsLayer(rotationZ = vinylAngle) else Modifier
+
+                            // Rotating Disc / Artwork Container (Only this rotates)
+                            Box(modifier = Modifier.fillMaxSize().then(rotationModifier), contentAlignment = Alignment.Center) {
+                                if (isVinylMode) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color(0xFF14151B),
+                                        border = androidx.compose.foundation.BorderStroke(3.dp, Color(0xFF282A36)),
+                                        modifier = Modifier.fillMaxSize().padding(8.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Box(modifier = Modifier.fillMaxSize(0.88f).border(1.dp, Color(0xFF22242E), CircleShape))
+                                            Box(modifier = Modifier.fillMaxSize(0.72f).border(1.dp, Color(0xFF262834), CircleShape))
+                                            Box(modifier = Modifier.fillMaxSize(0.56f).border(1.dp, Color(0xFF22242E), CircleShape))
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = themeAccent,
+                                                modifier = Modifier.fillMaxSize(0.42f)
+                                            ) {
+                                                val art = trackInfo?.artwork
+                                                if (art != null) {
+                                                    Image(
+                                                        bitmap = art,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.fillMaxSize(),
+                                                        contentScale = ContentScale.Crop
+                                                    )
+                                                } else {
+                                                    Box(contentAlignment = Alignment.Center) {
+                                                        Icon(Icons.Filled.Album, contentDescription = null, tint = Color.White, modifier = Modifier.size(32.dp))
+                                                    }
                                                 }
                                             }
+                                            Surface(shape = CircleShape, color = Color.Black, modifier = Modifier.size(12.dp)) {}
                                         }
-                                        Surface(shape = CircleShape, color = Color.Black, modifier = Modifier.size(12.dp)) {}
                                     }
-                                }
-                            } else {
-                                val art = trackInfo?.artwork
-                                if (art != null) {
-                                    Image(
-                                        bitmap = art,
-                                        contentDescription = "Album Art",
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentScale = ContentScale.Crop
-                                    )
                                 } else {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .background(
-                                                Brush.verticalGradient(
-                                                    listOf(themeAccent.copy(alpha = 0.5f), themeSurface)
-                                                )
-                                            ),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Audiotrack,
-                                            contentDescription = null,
-                                            tint = Color.White.copy(alpha = 0.6f),
-                                            modifier = Modifier.size(72.dp)
+                                    val art = trackInfo?.artwork
+                                    if (art != null) {
+                                        Image(
+                                            bitmap = art,
+                                            contentDescription = "Album Art",
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
                                         )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(
+                                                    Brush.verticalGradient(
+                                                        listOf(themeAccent.copy(alpha = 0.5f), themeSurface)
+                                                    )
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Audiotrack,
+                                                contentDescription = null,
+                                                tint = Color.White.copy(alpha = 0.6f),
+                                                modifier = Modifier.size(72.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
+
+                            // Non-rotating Waveform Indicator stays level at the bottom
                             if (isPlaying) {
                                 AudioWaveformIndicator(
                                     modifier = Modifier
@@ -1737,8 +1761,8 @@ fun AudioPlayerPreview(
                 ) {
                     HorizontalPager(
                         state = pagerState,
-                        contentPadding = PaddingValues(horizontal = 32.dp),
-                        pageSpacing = 16.dp,
+                        contentPadding = PaddingValues(0.dp),
+                        pageSpacing = 0.dp,
                         modifier = Modifier.fillMaxSize()
                     ) { page ->
                         val pageFile = effectivePlaylist[page]
@@ -1767,81 +1791,87 @@ fun AudioPlayerPreview(
                                     )
                                 }
                                 .testTag(if (isCurrent) "audio_album_card" else "audio_album_card_$page"),
-                            shape = effectiveArtShape,
+                            shape = if (isVinylMode) CircleShape else effectiveArtShape,
                             elevation = CardDefaults.cardElevation(defaultElevation = if (isCurrent) 10.dp else 2.dp),
                             border = androidx.compose.foundation.BorderStroke(
-                                if (isCircleShape) 2.dp else 1.dp,
-                                if (isCircleShape) themeAccent.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.08f)
+                                if (isVinylMode || isCircleShape) 2.dp else 1.dp,
+                                if (isVinylMode || isCircleShape) themeAccent.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.08f)
                             ),
                             colors = CardDefaults.cardColors(
-                                containerColor = themeSurface
+                                containerColor = if (isVinylMode) Color(0xFF14151B) else themeSurface
                             )
                         ) {
-                            val rotationModifier = if (isCurrent && shouldRotateDisc) {
-                                Modifier.graphicsLayer(rotationZ = vinylAngle)
-                            } else Modifier
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                val shouldSpin = isCurrent && isPlaying && (isVinylMode || (isCircleShape && musicSettings.rotateIfCircle))
+                                val rotationModifier = if (shouldSpin) {
+                                    Modifier.graphicsLayer(rotationZ = vinylAngle)
+                                } else Modifier
 
-                            Box(modifier = Modifier.fillMaxSize().then(rotationModifier), contentAlignment = Alignment.Center) {
-                                if (isCircleShape) {
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = Color(0xFF15161C),
-                                        border = androidx.compose.foundation.BorderStroke(3.dp, Color(0xFF282A36)),
-                                        modifier = Modifier.fillMaxSize().padding(10.dp)
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Box(modifier = Modifier.fillMaxSize(0.85f).border(1.dp, Color(0xFF22242E), CircleShape))
-                                            Box(modifier = Modifier.fillMaxSize(0.65f).border(1.dp, Color(0xFF22242E), CircleShape))
-                                            Box(modifier = Modifier.fillMaxSize(0.45f).border(1.dp, Color(0xFF22242E), CircleShape))
-                                            Surface(
-                                                shape = CircleShape,
-                                                color = themeAccent,
-                                                modifier = Modifier.fillMaxSize(0.35f)
-                                            ) {
-                                                if (pageArtwork != null) {
-                                                    Image(
-                                                        bitmap = pageArtwork!!,
-                                                        contentDescription = null,
-                                                        modifier = Modifier.fillMaxSize(),
-                                                        contentScale = ContentScale.Crop
-                                                    )
-                                                } else {
-                                                    Box(contentAlignment = Alignment.Center) {
-                                                        Icon(Icons.Filled.Album, contentDescription = null, tint = Color.White, modifier = Modifier.size(36.dp))
+                                // Rotating Disc / Artwork Container (Only this rotates)
+                                Box(modifier = Modifier.fillMaxSize().then(rotationModifier), contentAlignment = Alignment.Center) {
+                                    if (isVinylMode) {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = Color(0xFF14151B),
+                                            border = androidx.compose.foundation.BorderStroke(3.dp, Color(0xFF282A36)),
+                                            modifier = Modifier.fillMaxSize().padding(8.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Box(modifier = Modifier.fillMaxSize(0.88f).border(1.dp, Color(0xFF22242E), CircleShape))
+                                                Box(modifier = Modifier.fillMaxSize(0.72f).border(1.dp, Color(0xFF262834), CircleShape))
+                                                Box(modifier = Modifier.fillMaxSize(0.56f).border(1.dp, Color(0xFF22242E), CircleShape))
+                                                Surface(
+                                                    shape = CircleShape,
+                                                    color = themeAccent,
+                                                    modifier = Modifier.fillMaxSize(0.42f)
+                                                ) {
+                                                    if (pageArtwork != null) {
+                                                        Image(
+                                                            bitmap = pageArtwork!!,
+                                                            contentDescription = null,
+                                                            modifier = Modifier.fillMaxSize(),
+                                                            contentScale = ContentScale.Crop
+                                                        )
+                                                    } else {
+                                                        Box(contentAlignment = Alignment.Center) {
+                                                            Icon(Icons.Filled.Album, contentDescription = null, tint = Color.White, modifier = Modifier.size(36.dp))
+                                                        }
                                                     }
                                                 }
+                                                Surface(shape = CircleShape, color = Color.Black, modifier = Modifier.size(16.dp)) {}
                                             }
-                                            Surface(shape = CircleShape, color = Color.Black, modifier = Modifier.size(16.dp)) {}
                                         }
-                                    }
-                                } else {
-                                    if (pageArtwork != null) {
-                                        Image(
-                                            bitmap = pageArtwork!!,
-                                            contentDescription = "Album Art",
-                                            modifier = Modifier.fillMaxSize(),
-                                            contentScale = ContentScale.Crop
-                                        )
                                     } else {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .background(
-                                                    Brush.verticalGradient(
-                                                        listOf(themeAccent.copy(alpha = 0.5f), themeSurface)
-                                                    )
-                                                ),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Filled.Audiotrack,
-                                                contentDescription = null,
-                                                tint = Color.White.copy(alpha = 0.6f),
-                                                modifier = Modifier.size(72.dp)
+                                        if (pageArtwork != null) {
+                                            Image(
+                                                bitmap = pageArtwork!!,
+                                                contentDescription = "Album Art",
+                                                modifier = Modifier.fillMaxSize(),
+                                                contentScale = ContentScale.Crop
                                             )
+                                        } else {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(
+                                                        Brush.verticalGradient(
+                                                            listOf(themeAccent.copy(alpha = 0.5f), themeSurface)
+                                                        )
+                                                    ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.Audiotrack,
+                                                    contentDescription = null,
+                                                    tint = Color.White.copy(alpha = 0.6f),
+                                                    modifier = Modifier.size(72.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }
+
+                                // Non-rotating Waveform Indicator stays level at the bottom
                                 if (isCurrent && isPlaying) {
                                     AudioWaveformIndicator(
                                         modifier = Modifier
@@ -2311,6 +2341,270 @@ fun AudioPlayerPreview(
             },
             onDismiss = { showLyricsSheet = false }
         )
+    }
+
+    // In-Player Music Customization Bottom Sheet
+    if (showPlayerSettingsSheet) {
+        InPlayerMusicSettingsSheet(
+            musicSettings = musicSettings.copy(isVinylMode = isVinylMode),
+            onSettingsChange = { transform ->
+                val updated = transform(musicSettings.copy(isVinylMode = isVinylMode))
+                isVinylMode = updated.isVinylMode
+                onMusicPlayerSettingsChange?.invoke(transform)
+            },
+            onNavigateToSettings = onNavigateToSettings,
+            onDismiss = { showPlayerSettingsSheet = false }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun InPlayerMusicSettingsSheet(
+    musicSettings: MusicPlayerCustomSettings,
+    onSettingsChange: ((MusicPlayerCustomSettings) -> MusicPlayerCustomSettings) -> Unit,
+    onNavigateToSettings: (() -> Unit)? = null,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = Color(0xFF181A22)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Settings, contentDescription = null, tint = Color(musicSettings.playerTheme.accentColor))
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        "Music Player Settings",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Filled.Close, contentDescription = "Close", tint = Color.LightGray)
+                }
+            }
+
+            // 1. View Mode (Artwork Card vs Spinning Vinyl)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("In-Player View Mode", style = MaterialTheme.typography.titleSmall, color = Color.White)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = !musicSettings.isVinylMode,
+                        onClick = { onSettingsChange { it.copy(isVinylMode = false) } },
+                        label = { Text("Artwork Card View") },
+                        leadingIcon = if (!musicSettings.isVinylMode) { { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(16.dp)) } } else null
+                    )
+                    FilterChip(
+                        selected = musicSettings.isVinylMode,
+                        onClick = { onSettingsChange { it.copy(isVinylMode = true) } },
+                        label = { Text("Spinning Vinyl Mode") },
+                        leadingIcon = if (musicSettings.isVinylMode) { { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(16.dp)) } } else null
+                    )
+                }
+            }
+
+            // 2. Album Artwork Shape & Radius
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Album Artwork Shape", style = MaterialTheme.typography.titleSmall, color = Color.White)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = !musicSettings.isAlbumArtCircle,
+                        onClick = { onSettingsChange { it.copy(isAlbumArtCircle = false) } },
+                        label = { Text("Rounded Card") }
+                    )
+                    FilterChip(
+                        selected = musicSettings.isAlbumArtCircle,
+                        onClick = { onSettingsChange { it.copy(isAlbumArtCircle = true) } },
+                        label = { Text("Circle") }
+                    )
+                }
+
+                if (!musicSettings.isAlbumArtCircle) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Corner Radius", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
+                        Text("${musicSettings.albumArtCornerRadiusDp} dp", style = MaterialTheme.typography.labelSmall, color = Color(musicSettings.playerTheme.accentColor))
+                    }
+                    Slider(
+                        value = musicSettings.albumArtCornerRadiusDp.toFloat(),
+                        onValueChange = { onSettingsChange { s -> s.copy(albumArtCornerRadiusDp = it.toInt()) } },
+                        valueRange = 0f..48f,
+                        steps = 47,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Rotate Disc When Playing", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                            Text("Artwork disc spins like a record while playing", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        }
+                        Switch(
+                            checked = musicSettings.rotateIfCircle,
+                            onCheckedChange = { rot -> onSettingsChange { it.copy(rotateIfCircle = rot) } }
+                        )
+                    }
+                }
+            }
+
+            // 3. Marquee Title
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Moving Song Title", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                    Text("Auto-scroll long titles horizontally", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                }
+                Switch(
+                    checked = musicSettings.songTitleMarquee,
+                    onCheckedChange = { marquee -> onSettingsChange { it.copy(songTitleMarquee = marquee) } }
+                )
+            }
+
+            // 4. Progress Bar Style
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Progress Bar Style", style = MaterialTheme.typography.titleSmall, color = Color.White)
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ProgressBarPreset.entries.forEach { preset ->
+                        FilterChip(
+                            selected = musicSettings.progressBarStyle == preset,
+                            onClick = { onSettingsChange { it.copy(progressBarStyle = preset) } },
+                            label = { Text(preset.label) }
+                        )
+                    }
+                }
+            }
+
+            // 5. Play Button Shape
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Play Button Shape", style = MaterialTheme.typography.titleSmall, color = Color.White)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = musicSettings.playButtonShape == PlayButtonShape.CIRCLE,
+                        onClick = { onSettingsChange { it.copy(playButtonShape = PlayButtonShape.CIRCLE) } },
+                        label = { Text("Circle") }
+                    )
+                    FilterChip(
+                        selected = musicSettings.playButtonShape == PlayButtonShape.ROUNDED,
+                        onClick = { onSettingsChange { it.copy(playButtonShape = PlayButtonShape.ROUNDED) } },
+                        label = { Text("Square / Rounded") }
+                    )
+                }
+                if (musicSettings.playButtonShape == PlayButtonShape.ROUNDED) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Button Corner Radius", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
+                        Text("${musicSettings.playButtonCornerRadiusDp} dp", style = MaterialTheme.typography.labelSmall, color = Color(musicSettings.playerTheme.accentColor))
+                    }
+                    Slider(
+                        value = musicSettings.playButtonCornerRadiusDp.toFloat(),
+                        onValueChange = { onSettingsChange { s -> s.copy(playButtonCornerRadiusDp = it.toInt()) } },
+                        valueRange = 0f..36f,
+                        steps = 35,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+
+            // 6. In-Player Theme
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("In-Player Theme", style = MaterialTheme.typography.titleSmall, color = Color.White)
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    PlayerThemePreset.entries.forEach { theme ->
+                        FilterChip(
+                            selected = musicSettings.playerTheme == theme,
+                            onClick = { onSettingsChange { it.copy(playerTheme = theme) } },
+                            leadingIcon = {
+                                Box(
+                                    modifier = Modifier
+                                        .size(12.dp)
+                                        .background(Color(theme.accentColor), CircleShape)
+                                )
+                            },
+                            label = { Text(theme.label) }
+                        )
+                    }
+                }
+            }
+
+            // 7. Typography (Font Style & Size)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Font Style & Size", style = MaterialTheme.typography.titleSmall, color = Color.White)
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    PlayerFontStyle.entries.forEach { style ->
+                        FilterChip(
+                            selected = musicSettings.fontStyle == style,
+                            onClick = { onSettingsChange { it.copy(fontStyle = style) } },
+                            label = { Text(style.label) }
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    PlayerFontSize.entries.forEach { size ->
+                        FilterChip(
+                            selected = musicSettings.fontSize == size,
+                            onClick = { onSettingsChange { it.copy(fontSize = size) } },
+                            label = { Text(size.label) }
+                        )
+                    }
+                }
+            }
+
+            // Full Settings Link
+            if (onNavigateToSettings != null) {
+                HorizontalDivider(color = Color(0xFF282A36))
+                OutlinedButton(
+                    onClick = {
+                        onDismiss()
+                        onNavigateToSettings()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(musicSettings.playerTheme.accentColor))
+                ) {
+                    Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Open Full App Settings")
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+        }
     }
 }
 

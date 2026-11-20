@@ -1112,7 +1112,9 @@ fun FilePreviewScreen(
     onLoadArchiveImage: (suspend (ArchiveEntryItem) -> File?)? = null,
     onPreviousMedia: (() -> Unit)? = null,
     onNextMedia: (() -> Unit)? = null,
-    onSelectMedia: ((FileReference) -> Unit)? = null
+    onSelectMedia: ((FileReference) -> Unit)? = null,
+    onMusicPlayerSettingsChange: (((MusicPlayerCustomSettings) -> MusicPlayerCustomSettings) -> Unit)? = null,
+    onNavigateToSettings: (() -> Unit)? = null
 ) {
     val file = state.currentFile
     val ext = file.extension.lowercase()
@@ -1269,6 +1271,8 @@ fun FilePreviewScreen(
                             onNext = onNextMedia,
                             hasPrevious = hasPreviousMedia,
                             hasNext = hasNextMedia,
+                            onMusicPlayerSettingsChange = onMusicPlayerSettingsChange,
+                            onNavigateToSettings = onNavigateToSettings,
                             onDismiss = onDismiss
                         )
                     }
