@@ -16,8 +16,8 @@ android {
     applicationId = "com.openfile.manager"
     minSdk = 24
     targetSdk = 36
-    versionCode = 24
-    versionName = "2.2.9"
+    versionCode = 25
+    versionName = "2.2.10"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
