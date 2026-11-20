@@ -1115,16 +1115,15 @@ fun AudioPlayerPreview(
         }
     }
 
-    // Main Playback Controls: Generously spaced 5-button transport layout
+    // Main Playback Controls: Generously spaced transport layout with centered triad and wide-spaced Shuffle/Repeat anchors
     val controlsRow = @Composable {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .padding(horizontal = 20.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Shuffle Toggle
+            // Shuffle Toggle (Far Left)
             IconButton(
                 onClick = {
                     isShuffleEnabled = !isShuffleEnabled
@@ -1140,6 +1139,8 @@ fun AudioPlayerPreview(
                 )
             }
 
+            Spacer(modifier = Modifier.weight(1f))
+
             // Previous Button
             IconButton(
                 onClick = handleSkipPrevious,
@@ -1154,7 +1155,9 @@ fun AudioPlayerPreview(
                 )
             }
 
-            // Center Hero Play / Pause Button
+            Spacer(modifier = Modifier.width(16.dp))
+
+            // Center Hero Play / Pause Button (72.dp)
             Surface(
                 shape = CircleShape,
                 color = Color.White,
@@ -1192,6 +1195,8 @@ fun AudioPlayerPreview(
                 }
             }
 
+            Spacer(modifier = Modifier.width(16.dp))
+
             // Next Button
             IconButton(
                 onClick = handleSkipNext,
@@ -1206,7 +1211,9 @@ fun AudioPlayerPreview(
                 )
             }
 
-            // Repeat Mode Toggle
+            Spacer(modifier = Modifier.weight(1f))
+
+            // Repeat Mode Toggle (Far Right)
             IconButton(
                 onClick = {
                     audioRepeatMode = when (audioRepeatMode) {
@@ -1544,12 +1551,13 @@ fun AudioPlayerPreview(
             ) {
                 playerTopBar()
 
-                // Album Art Carousel / Turntable (flexible weight so it NEVER cramps controls)
+                // Album Art Carousel / Turntable (restricted to max 240.dp with weight(0.8f) to leave ample vertical space)
                 Box(
                     modifier = Modifier
-                        .weight(1f)
+                        .weight(0.8f)
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 6.dp),
+                        .heightIn(max = 240.dp)
+                        .padding(horizontal = 20.dp, vertical = 4.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     HorizontalPager(
@@ -1573,7 +1581,7 @@ fun AudioPlayerPreview(
                             modifier = Modifier
                                 .fillMaxHeight()
                                 .aspectRatio(1f)
-                                .sizeIn(maxWidth = 340.dp, maxHeight = 340.dp)
+                                .sizeIn(maxWidth = 240.dp, maxHeight = 240.dp)
                                 .pointerInput(Unit) {
                                     detectTapGestures(
                                         onTap = { isVinylMode = !isVinylMode },
@@ -1689,15 +1697,17 @@ fun AudioPlayerPreview(
                     }
                 }
 
-                // Controls & Details Column
+                // Controls & Details Column (generous vertical pacing)
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     metadataSection()
 
                     if (isAbLoopActive || abPointA != null || abPointB != null) {
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
                         ABRepeatBar(
                             pointA = abPointA,
                             pointB = abPointB,
@@ -1724,15 +1734,15 @@ fun AudioPlayerPreview(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(20.dp))
 
                     scrubberRow()
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                    Spacer(modifier = Modifier.height(24.dp))
 
                     controlsRow()
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(20.dp))
 
                     // Next Song Preview Indicator
                     if (nextTrackTitle != null) {
@@ -1747,9 +1757,10 @@ fun AudioPlayerPreview(
                                 .clickable { handleSkipNext() }
                                 .padding(horizontal = 24.dp, vertical = 2.dp)
                         )
+                        Spacer(modifier = Modifier.height(16.dp))
+                    } else {
+                        Spacer(modifier = Modifier.height(16.dp))
                     }
-
-                    Spacer(modifier = Modifier.height(8.dp))
 
                     bottomActionBar()
                 }
