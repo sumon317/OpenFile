@@ -66,6 +66,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
@@ -221,27 +222,29 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     private val _volumeRefreshTrigger = MutableStateFlow(0L)
     fun refreshStorageVolumes(force: Boolean = false) {
-        val now = System.currentTimeMillis()
-        val prevAccess = _hasAllFilesAccess.value
-        val currentAccess = localProvider.hasAllFilesAccess()
-        val accessChanged = prevAccess != currentAccess
-        if (!force && !accessChanged && now - _volumeRefreshTrigger.value < 5_000L) {
-            return
-        }
-        _hasAllFilesAccess.value = currentAccess
-        if (accessChanged || force) {
-            localProvider.invalidateRootCache()
-        }
-        _volumeRefreshTrigger.value = now
+        runCatching {
+            val now = System.currentTimeMillis()
+            val prevAccess = _hasAllFilesAccess.value
+            val currentAccess = localProvider.hasAllFilesAccess()
+            val accessChanged = prevAccess != currentAccess
+            if (!force && !accessChanged && now - _volumeRefreshTrigger.value < 5_000L) {
+                return
+            }
+            _hasAllFilesAccess.value = currentAccess
+            if (accessChanged || force) {
+                localProvider.invalidateRootCache()
+            }
+            _volumeRefreshTrigger.value = now
 
-        val currentDirPath = _browserState.value.currentDirectory?.uriOrPath
-        val wasInFallbackSandbox = currentDirPath != null && currentDirPath.contains("/files/InternalStorage")
-        if ((!prevAccess && currentAccess) || (currentAccess && wasInFallbackSandbox)) {
-            refreshCategoryCountsAndPrewarm(force = true)
-            if (wasInFallbackSandbox || _currentDestination.value == OpenFileDestination.INTERNAL_STORAGE) {
-                openPrimaryStorageRoot()
-            } else {
-                refreshCurrentDirectory()
+            val currentDirPath = _browserState.value.currentDirectory?.uriOrPath
+            val wasInFallbackSandbox = currentDirPath != null && currentDirPath.contains("/files/InternalStorage")
+            if ((!prevAccess && currentAccess) || (currentAccess && wasInFallbackSandbox)) {
+                refreshCategoryCountsAndPrewarm(force = true)
+                if (wasInFallbackSandbox || _currentDestination.value == OpenFileDestination.INTERNAL_STORAGE) {
+                    openPrimaryStorageRoot()
+                } else {
+                    refreshCurrentDirectory()
+                }
             }
         }
     }
@@ -417,46 +420,58 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     init {
         viewModelScope.launch {
-            settingsStore.settingsFlow.collect { persisted ->
-                _settings.value = persisted
-            }
+            settingsStore.settingsFlow
+                .catch { /* Fallback on IO read error */ }
+                .collect { persisted ->
+                    _settings.value = persisted
+                }
         }
         viewModelScope.launch(Dispatchers.IO) {
             // Crash recovery: mark any stale RUNNING transfer jobs from a previous process death as INTERRUPTED
-            dao.markRunningJobsAsInterrupted()
+            runCatching {
+                dao.markRunningJobsAsInterrupted()
+            }
         }
         // Defer MediaStore category prewarm so it does not compete with the first frame
         viewModelScope.launch(Dispatchers.IO) {
             kotlinx.coroutines.delay(1200L)
-            refreshCategoryCountsAndPrewarm()
+            runCatching {
+                refreshCategoryCountsAndPrewarm()
+            }
         }
         // Clean up any old downloaded update APKs from previous updates so app cache & storage stays minimal
         viewModelScope.launch(Dispatchers.IO) {
-            appUpdateEngine.cleanDownloadedUpdateApks()
+            runCatching {
+                appUpdateEngine.cleanDownloadedUpdateApks()
+            }
         }
         // Automatically check GitHub Releases for app updates in the background on real devices
         if (!Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) {
             viewModelScope.launch(Dispatchers.IO) {
                 kotlinx.coroutines.delay(2500L)
                 if (_settings.value.autoCheckUpdates) {
-                    checkForAppUpdates(manualUserTrigger = false)
+                    runCatching {
+                        checkForAppUpdates(manualUserTrigger = false)
+                    }
                 }
             }
         }
         // Observe media playback controller to keep preview dialog in sync on autoplay or background track advances
         viewModelScope.launch {
             mediaPlaybackController.currentFileState.collect { playingFile ->
-                if (playingFile != null) {
-                    val currentPreview = _previewState.value
-                    if (currentPreview != null && (currentPreview.currentFile.extension.lowercase() in FileCategory.AUDIO.extensions || currentPreview.currentFile.mimeType.startsWith("audio/"))) {
-                        if (!currentPreview.currentFile.matchesMedia(playingFile)) {
-                            val list = currentPreview.siblingMedia
-                            val idx = list.indexOfFirst { it.matchesMedia(playingFile) }
-                            _previewState.value = currentPreview.copy(
-                                currentFile = playingFile,
-                                initialMediaIndex = if (idx >= 0) idx else currentPreview.initialMediaIndex
-                            )
-                            _previewFile.value = playingFile
+                runCatching {
+                    if (playingFile != null) {
+                        val currentPreview = _previewState.value
+                        if (currentPreview != null && (currentPreview.currentFile.extension.lowercase() in FileCategory.AUDIO.extensions || currentPreview.currentFile.mimeType.startsWith("audio/"))) {
+                            if (!currentPreview.currentFile.matchesMedia(playingFile)) {
+                                val list = currentPreview.siblingMedia
+                                val idx = list.indexOfFirst { it.matchesMedia(playingFile) }
+                                _previewState.value = currentPreview.copy(
+                                    currentFile = playingFile,
+                                    initialMediaIndex = if (idx >= 0) idx else currentPreview.initialMediaIndex
+                                )
+                                _previewFile.value = playingFile
+                            }
                         }
                     }
                 }
@@ -474,28 +489,32 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         }
         lastCategoryPrewarmEpochMs = now
         viewModelScope.launch(Dispatchers.IO) {
-            val showHidden = _settings.value.showHiddenFiles
-            val thresholdBytes = _settings.value.largeFileThresholdMb * 1024L * 1024L
-            _categoryCounts.value = mediaStoreProvider.queryCategoryCounts(thresholdBytes)
-            // Pre-warm common categories in the background with cooperative yields so UI scrolling stays silky smooth
-            listOf(
-                FileCategory.IMAGES,
-                FileCategory.VIDEOS,
-                FileCategory.AUDIO,
-                FileCategory.DOCUMENTS,
-                FileCategory.ARCHIVES,
-                FileCategory.APPLICATIONS,
-                FileCategory.LARGE_FILES,
-                FileCategory.RECENT_FILES
-            ).forEach { cat ->
-                kotlinx.coroutines.yield()
-                runCatching {
-                    val items = mediaStoreProvider.queryByCategory(cat, thresholdBytes)
-                    categoryCache[cat] = items
-                    categoryCacheAt[cat] = System.currentTimeMillis()
-                    if (cat != FileCategory.APPLICATIONS) {
-                        val count = if (showHidden) items.size else items.count { !it.isHidden }
-                        _categoryCounts.value = _categoryCounts.value + (cat to count)
+            runCatching {
+                val showHidden = _settings.value.showHiddenFiles
+                val thresholdBytes = _settings.value.largeFileThresholdMb * 1024L * 1024L
+                _categoryCounts.value = runCatching {
+                    mediaStoreProvider.queryCategoryCounts(thresholdBytes)
+                }.getOrDefault(emptyMap())
+                // Pre-warm common categories in the background with cooperative yields so UI scrolling stays silky smooth
+                listOf(
+                    FileCategory.IMAGES,
+                    FileCategory.VIDEOS,
+                    FileCategory.AUDIO,
+                    FileCategory.DOCUMENTS,
+                    FileCategory.ARCHIVES,
+                    FileCategory.APPLICATIONS,
+                    FileCategory.LARGE_FILES,
+                    FileCategory.RECENT_FILES
+                ).forEach { cat ->
+                    kotlinx.coroutines.yield()
+                    runCatching {
+                        val items = mediaStoreProvider.queryByCategory(cat, thresholdBytes)
+                        categoryCache[cat] = items
+                        categoryCacheAt[cat] = System.currentTimeMillis()
+                        if (cat != FileCategory.APPLICATIONS) {
+                            val count = if (showHidden) items.size else items.count { !it.isHidden && !isPathInsideHiddenFolder(it.uriOrPath) }
+                            _categoryCounts.value = _categoryCounts.value + (cat to count)
+                        }
                     }
                 }
             }
@@ -520,6 +539,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     // ---------------------------------------------------------------------------------------------
 
     fun navigateToDestination(destination: OpenFileDestination) {
+        clearSelection()
         _currentDestination.value = destination
         when (destination) {
             OpenFileDestination.HOME -> refreshCategoryCountsAndPrewarm()
@@ -544,17 +564,18 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun openVolumeInBrowser(rootReference: FileReference) {
+        clearSelection()
         _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
         openDirectory(rootReference)
     }
 
     fun openPrimaryStorageRoot() {
-        viewModelScope.launch {
-            val ref = withContext(Dispatchers.IO) {
-                val rootDir = localProvider.getPrimaryRootDirectory()
-                localProvider.toFileReference(rootDir)
-            }
+        runCatching {
+            val rootDir = localProvider.getPrimaryRootDirectory()
+            val ref = localProvider.toFileReference(rootDir)
             openDirectory(ref)
+        }.onFailure { err ->
+            showStatus("Unable to open storage root: ${err.message}")
         }
     }
 
@@ -578,8 +599,10 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         browseDirectoryJob?.cancel()
         val isRemoteOrEmpty = directory.providerType.isRemote || _browserState.value.items.isEmpty()
         val currentSettings = settings.value
+        val immediateCrumbs = runCatching { buildBreadcrumbs(directory) }.getOrDefault(listOf(directory))
         _browserState.value = _browserState.value.copy(
             currentDirectory = directory,
+            breadcrumbs = immediateCrumbs,
             selectedUris = emptySet(),
             searchQuery = "",
             isLoading = isRemoteOrEmpty,
@@ -592,107 +615,122 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             currentSortOrder = currentSettings.defaultSortOrder
         )
         browseDirectoryJob = viewModelScope.launch {
-            // Run breadcrumbs + listing + sort + childCount all on IO/Default — one single pass
-            val (crumbs, sortedItems) = withContext(Dispatchers.IO) {
-                val crumbs = buildBreadcrumbs(directory)
-                val primaryRootPath = localProvider.getPrimaryRootDirectory().absolutePath
-                val isRestrictedLocal = directory.providerType == ProviderType.LOCAL &&
-                    localProvider.isRestrictedAndroidDirectory(File(directory.uriOrPath))
-                val grantedSafRef = if (isRestrictedLocal) {
-                    safProvider.findGrantedSafReferenceForLocalPath(directory.uriOrPath, primaryRootPath)
-                } else null
+            try {
+                // Run breadcrumbs + listing + sort + childCount all on IO/Default — one single pass
+                val (crumbs, sortedItems) = withContext(Dispatchers.IO) {
+                    val crumbs = buildBreadcrumbs(directory)
+                    val primaryRootPath = localProvider.getPrimaryRootDirectory().absolutePath
+                    val isRestrictedLocal = directory.providerType == ProviderType.LOCAL &&
+                        localProvider.isRestrictedAndroidDirectory(File(directory.uriOrPath))
+                    val grantedSafRef = if (isRestrictedLocal) {
+                        safProvider.findGrantedSafReferenceForLocalPath(directory.uriOrPath, primaryRootPath)
+                    } else null
 
-                val listResult = when {
-                    directory.providerType == ProviderType.SAF ->
-                        safProvider.listChildren(directory, currentSettings.showHiddenFiles)
-                    grantedSafRef != null ->
-                        safProvider.listChildren(grantedSafRef, currentSettings.showHiddenFiles)
-                    else -> {
-                        val rawRes = localProvider.listChildren(directory, currentSettings.showHiddenFiles)
-                        if (isRestrictedLocal && localProvider.isTopRestrictedContainer(File(directory.uriOrPath))) {
-                            val childSafGrants = safProvider.findChildSafGrantsForParentLocalPath(directory.uriOrPath, primaryRootPath)
-                            rawRes.map { items ->
-                                items.map { item ->
-                                    if (item.displayName in childSafGrants || "*" in childSafGrants) {
-                                        item.copy(
-                                            metadata = (item.metadata - "restrictedAppFolder") + ("safMounted" to "true")
-                                        )
-                                    } else item
+                    val listResult = when {
+                        directory.providerType == ProviderType.SAF ->
+                            safProvider.listChildren(directory, currentSettings.showHiddenFiles)
+                        grantedSafRef != null ->
+                            safProvider.listChildren(grantedSafRef, currentSettings.showHiddenFiles)
+                        else -> {
+                            val rawRes = localProvider.listChildren(directory, currentSettings.showHiddenFiles)
+                            if (isRestrictedLocal && localProvider.isTopRestrictedContainer(File(directory.uriOrPath))) {
+                                val childSafGrants = safProvider.findChildSafGrantsForParentLocalPath(directory.uriOrPath, primaryRootPath)
+                                rawRes.map { items ->
+                                    items.map { item ->
+                                        if (item.displayName in childSafGrants || "*" in childSafGrants) {
+                                            item.copy(
+                                                metadata = (item.metadata - "restrictedAppFolder") + ("safMounted" to "true")
+                                            )
+                                        } else item
+                                    }
                                 }
+                            } else {
+                                rawRes
+                            }
+                        }
+                    }
+                    val sorted = listResult.getOrNull()?.let { rawItems ->
+                        val sortedList = runCatching {
+                            FileSortAndFilterEngine.sortFiles(
+                                files = rawItems,
+                                field = currentSettings.defaultSortField,
+                                order = currentSettings.defaultSortOrder
+                            )
+                        }.getOrDefault(rawItems)
+                        val folderCount = sortedList.count { it.isDirectory }
+                        if (directory.providerType == ProviderType.LOCAL && grantedSafRef == null && folderCount in 1..40) {
+                            sortedList.map { item ->
+                                if (item.isDirectory && item.metadata["childCount"] == null && item.metadata["restrictedAppFolder"] == null) {
+                                    val count = runCatching {
+                                        val list = File(item.uriOrPath).list()
+                                        if (currentSettings.showHiddenFiles) list?.size else list?.count { !it.startsWith(".") }
+                                    }.getOrNull()
+                                    if (count != null) {
+                                        item.copy(metadata = item.metadata + ("childCount" to count.toString()))
+                                    } else item
+                                } else item
                             }
                         } else {
-                            rawRes
+                            sortedList
                         }
                     }
+                    Pair(crumbs, sorted to listResult.exceptionOrNull())
                 }
-                val sorted = listResult.getOrNull()?.let { rawItems ->
-                    val sortedList = FileSortAndFilterEngine.sortFiles(
-                        files = rawItems,
-                        field = currentSettings.defaultSortField,
-                        order = currentSettings.defaultSortOrder
-                    )
-                    val folderCount = sortedList.count { it.isDirectory }
-                    if (directory.providerType == ProviderType.LOCAL && grantedSafRef == null && folderCount in 1..40) {
-                        sortedList.map { item ->
-                            if (item.isDirectory && item.metadata["childCount"] == null && item.metadata["restrictedAppFolder"] == null) {
-                                val count = runCatching {
-                                    val list = File(item.uriOrPath).list()
-                                    if (currentSettings.showHiddenFiles) list?.size else list?.count { !it.startsWith(".") }
-                                }.getOrNull()
-                                if (count != null) {
-                                    item.copy(metadata = item.metadata + ("childCount" to count.toString()))
-                                } else item
-                            } else item
-                        }
-                    } else {
-                        sortedList
-                    }
-                }
-                Pair(crumbs, sorted to listResult.exceptionOrNull())
-            }
-            val (itemsForInitialRender, listError) = sortedItems
+                val (itemsForInitialRender, listError) = sortedItems
 
-            if (listError != null || itemsForInitialRender == null) {
+                if (listError != null || itemsForInitialRender == null) {
+                    _browserState.value = _browserState.value.copy(
+                        currentDirectory = directory,
+                        breadcrumbs = crumbs,
+                        isLoading = false,
+                        errorMessage = listError?.message ?: "Unable to read directory"
+                    )
+                    return@launch
+                }
+
                 _browserState.value = _browserState.value.copy(
                     currentDirectory = directory,
                     breadcrumbs = crumbs,
+                    items = itemsForInitialRender,
                     isLoading = false,
-                    errorMessage = listError?.message ?: "Unable to read directory"
+                    errorMessage = null
                 )
-                return@launch
-            }
 
-            _browserState.value = _browserState.value.copy(
-                currentDirectory = directory,
-                breadcrumbs = crumbs,
-                items = itemsForInitialRender,
-                isLoading = false,
-                errorMessage = null
-            )
-
-            // For huge directories (>40 folders), enrich child counts in the background
-            val folderCount = itemsForInitialRender.count { it.isDirectory }
-            if (directory.providerType == ProviderType.LOCAL && folderCount > 40) {
-                val enriched = withContext(Dispatchers.IO) {
-                    itemsForInitialRender.map { item ->
-                        if (item.isDirectory && item.metadata["childCount"] == null) {
-                            val count = runCatching {
-                                val list = File(item.uriOrPath).list()
-                                if (currentSettings.showHiddenFiles) list?.size else list?.count { !it.startsWith(".") }
-                            }.getOrNull()
-                            if (count != null) {
-                                item.copy(metadata = item.metadata + ("childCount" to count.toString()))
-                            } else {
-                                item
+                // For huge directories (>40 folders), enrich child counts in the background
+                val folderCount = itemsForInitialRender.count { it.isDirectory }
+                if (directory.providerType == ProviderType.LOCAL && folderCount > 40) {
+                    val enriched = withContext(Dispatchers.IO) {
+                        runCatching {
+                            itemsForInitialRender.map { item ->
+                                if (item.isDirectory && item.metadata["childCount"] == null) {
+                                    val count = runCatching {
+                                        val list = File(item.uriOrPath).list()
+                                        if (currentSettings.showHiddenFiles) list?.size else list?.count { !it.startsWith(".") }
+                                    }.getOrNull()
+                                    if (count != null) {
+                                        item.copy(metadata = item.metadata + ("childCount" to count.toString()))
+                                    } else {
+                                        item
+                                    }
+                                } else {
+                                    item
+                                }
                             }
-                        } else {
-                            item
-                        }
+                        }.getOrDefault(itemsForInitialRender)
+                    }
+                    if (_browserState.value.currentDirectory?.uriOrPath == directory.uriOrPath) {
+                        _browserState.value = _browserState.value.copy(items = enriched)
                     }
                 }
-                if (_browserState.value.currentDirectory?.uriOrPath == directory.uriOrPath) {
-                    _browserState.value = _browserState.value.copy(items = enriched)
-                }
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                throw ce
+            } catch (err: Throwable) {
+                _browserState.value = _browserState.value.copy(
+                    currentDirectory = directory,
+                    breadcrumbs = immediateCrumbs,
+                    isLoading = false,
+                    errorMessage = err.message ?: "Unable to read directory"
+                )
             }
         }
     }
@@ -806,6 +844,10 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
 
     fun navigateUpInBrowser(): Boolean {
         val state = _browserState.value
+        if (state.searchQuery.isNotEmpty()) {
+            _browserState.value = state.copy(searchQuery = "")
+            return true
+        }
         if (state.isMultiSelectActive) {
             clearSelection()
             return true
@@ -863,9 +905,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 return false
             }
             if (parentFile.exists() && parentFile.canRead()) {
-                viewModelScope.launch(Dispatchers.IO) {
-                    openDirectory(localProvider.toFileReference(parentFile))
-                }
+                openDirectory(localProvider.toFileReference(parentFile))
                 return true
             }
             return false
@@ -947,6 +987,13 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         return if (crumbs.isNotEmpty()) crumbs else listOf(current)
     }
 
+    fun isPathInsideHiddenFolder(path: String?): Boolean {
+        if (path.isNullOrBlank()) return false
+        val norm = path.replace('\\', '/')
+        val parent = if (norm.contains('/')) norm.substringBeforeLast('/') else return false
+        return parent.split('/').any { segment -> segment.startsWith('.') && segment != "." && segment != ".." }
+    }
+
     fun defaultSortForCategory(category: FileCategory?, currentSettings: AppSettingsState): Pair<SortField, SortOrder> {
         return when (category) {
             FileCategory.IMAGES -> SortField.DATE to SortOrder.DESCENDING
@@ -967,9 +1014,13 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         if (category == FileCategory.DOWNLOADS) {
             _currentDestination.value = OpenFileDestination.DOWNLOADS
             viewModelScope.launch(Dispatchers.IO) {
-                val root = localProvider.getPrimaryRootDirectory()
-                val dl = File(root, "Download").apply { if (!exists()) mkdirs() }
-                openDirectory(localProvider.toFileReference(dl))
+                runCatching {
+                    val root = localProvider.getPrimaryRootDirectory()
+                    val dl = File(root, "Download").apply { if (!exists()) mkdirs() }
+                    openDirectory(localProvider.toFileReference(dl))
+                }.onFailure { err ->
+                    showStatus("Unable to open Downloads: ${err.message}")
+                }
             }
             return
         }
@@ -984,10 +1035,10 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         val cachedAt = categoryCacheAt[category] ?: 0L
         val cached = categoryCache[category]?.takeIf { nowMs - cachedAt < 30_000L }
             ?.let { list ->
-                if (currentSettings.showHiddenFiles) list else list.filter { !it.isHidden }
+                if (currentSettings.showHiddenFiles) list else list.filter { !it.isHidden && !isPathInsideHiddenFolder(it.uriOrPath) }
             }
         val initialItems = if (cached != null) {
-            FileSortAndFilterEngine.sortFiles(cached, sortField, sortOrder)
+            runCatching { FileSortAndFilterEngine.sortFiles(cached, sortField, sortOrder) }.getOrDefault(cached)
         } else {
             emptyList()
         }
@@ -1006,37 +1057,52 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             currentSortOrder = sortOrder
         )
         browseDirectoryJob = viewModelScope.launch {
-            val thresholdBytes = currentSettings.largeFileThresholdMb * 1024L * 1024L
-            val indexedItems = mediaStoreProvider.queryByCategory(category, thresholdBytes)
-            categoryCache[category] = indexedItems
-            categoryCacheAt[category] = System.currentTimeMillis()
-            val combinedItems = if (category == FileCategory.RECENT_FILES) {
-                withContext(Dispatchers.IO) {
-                    val openedRefs = recentFiles.value.mapNotNull { rec ->
-                        val f = File(rec.uriOrPath)
-                        if (f.exists() && f.canRead() && !f.isDirectory) localProvider.toFileReference(f) else null
-                    }
-                    (openedRefs + indexedItems).distinctBy { it.uriOrPath }
+            try {
+                val thresholdBytes = currentSettings.largeFileThresholdMb * 1024L * 1024L
+                val indexedItems = withContext(Dispatchers.IO) {
+                    runCatching { mediaStoreProvider.queryByCategory(category, thresholdBytes) }.getOrDefault(emptyList())
                 }
-            } else {
-                indexedItems
-            }
-            val visibleItems = if (currentSettings.showHiddenFiles) combinedItems else combinedItems.filter { !it.isHidden }
-            val sorted = withContext(Dispatchers.Default) {
-                FileSortAndFilterEngine.sortFiles(
-                    visibleItems,
-                    sortField,
-                    sortOrder
+                categoryCache[category] = indexedItems
+                categoryCacheAt[category] = System.currentTimeMillis()
+                val combinedItems = if (category == FileCategory.RECENT_FILES) {
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            val openedRefs = recentFiles.value.mapNotNull { rec ->
+                                val f = File(rec.uriOrPath)
+                                if (f.exists() && f.canRead() && !f.isDirectory) localProvider.toFileReference(f) else null
+                            }
+                            (openedRefs + indexedItems).distinctBy { it.uriOrPath }
+                        }.getOrDefault(indexedItems)
+                    }
+                } else {
+                    indexedItems
+                }
+                val visibleItems = if (currentSettings.showHiddenFiles) combinedItems else combinedItems.filter { !it.isHidden && !isPathInsideHiddenFolder(it.uriOrPath) }
+                val sorted = withContext(Dispatchers.Default) {
+                    runCatching {
+                        FileSortAndFilterEngine.sortFiles(
+                            visibleItems,
+                            sortField,
+                            sortOrder
+                        )
+                    }.getOrDefault(visibleItems)
+                }
+                _browserState.value = _browserState.value.copy(
+                    currentDirectory = null,
+                    breadcrumbs = emptyList(),
+                    items = sorted,
+                    isLoading = false,
+                    currentSortField = sortField,
+                    currentSortOrder = sortOrder
+                )
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                throw ce
+            } catch (err: Throwable) {
+                _browserState.value = _browserState.value.copy(
+                    isLoading = false,
+                    errorMessage = err.message ?: "Failed to query category"
                 )
             }
-            _browserState.value = _browserState.value.copy(
-                currentDirectory = null,
-                breadcrumbs = emptyList(),
-                items = sorted,
-                isLoading = false,
-                currentSortField = sortField,
-                currentSortOrder = sortOrder
-            )
         }
     }
 
@@ -1463,8 +1529,15 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         _browserState.value = _browserState.value.copy(selectedUris = current)
     }
 
-    fun selectAllItems() {
-        val all = _browserState.value.items.map { it.uriOrPath }.toSet()
+    fun selectAllItems(explicitUris: Set<String>? = null) {
+        val query = _browserState.value.searchQuery.trim()
+        val all = explicitUris ?: if (query.isNotEmpty()) {
+            _browserState.value.items.filter {
+                it.displayName.contains(query, ignoreCase = true) || it.uriOrPath.contains(query, ignoreCase = true)
+            }.map { it.uriOrPath }.toSet()
+        } else {
+            _browserState.value.items.map { it.uriOrPath }.toSet()
+        }
         _browserState.value = _browserState.value.copy(selectedUris = all)
     }
 
@@ -1483,8 +1556,10 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         val trimmed = query.trim()
         if (trimmed.length >= 2) {
             searchDebounceJob = viewModelScope.launch(Dispatchers.IO) {
-                delay(350L)
-                dao.insertSearchQuery(SearchQueryEntity(query = trimmed))
+                runCatching {
+                    delay(350L)
+                    dao.insertSearchQuery(SearchQueryEntity(query = trimmed))
+                }
             }
         }
     }
@@ -1494,78 +1569,109 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     // ---------------------------------------------------------------------------------------------
 
     fun createNewFolder(folderName: String) {
+        val cleanName = folderName.trim()
+        if (cleanName.isBlank()) {
+            showStatus("Folder name cannot be empty")
+            return
+        }
         val currentDir = _browserState.value.currentDirectory ?: return
         val remoteProfile = _browserState.value.activeRemoteProfile
 
         viewModelScope.launch {
-            if (remoteProfile != null) {
-                val secret = credentialVault.retrieveSecret(remoteProfile.secretAlias).orEmpty()
-                val newPath = "${currentDir.uriOrPath.trimEnd('/')}/$folderName"
-                RemoteNetworkClients.createRemoteDirectory(remoteProfile, secret, newPath)
+            runCatching {
+                if (remoteProfile != null) {
+                    val secret = credentialVault.retrieveSecret(remoteProfile.secretAlias).orEmpty()
+                    val newPath = "${currentDir.uriOrPath.trimEnd('/')}/$cleanName"
+                    RemoteNetworkClients.createRemoteDirectory(remoteProfile, secret, newPath)
+                        .onSuccess {
+                            showStatus("Created remote folder '$cleanName'")
+                            refreshCurrentDirectory()
+                        }
+                        .onFailure { showStatus("Remote mkdir failed: ${it.message}") }
+                    return@launch
+                }
+
+                val provider = if (currentDir.providerType == ProviderType.SAF) safProvider else localProvider
+                provider.createDirectory(currentDir, cleanName)
                     .onSuccess {
-                        showStatus("Created remote folder '$folderName'")
+                        showStatus("Created folder '${it.displayName}'")
                         refreshCurrentDirectory()
                     }
-                    .onFailure { showStatus("Remote mkdir failed: ${it.message}") }
-                return@launch
+                    .onFailure { showStatus(it.message ?: "Failed to create folder") }
+            }.onFailure { err ->
+                showStatus("Create folder failed: ${err.message}")
             }
-
-            val provider = if (currentDir.providerType == ProviderType.SAF) safProvider else localProvider
-            provider.createDirectory(currentDir, folderName)
-                .onSuccess {
-                    showStatus("Created folder '${it.displayName}'")
-                    refreshCurrentDirectory()
-                }
-                .onFailure { showStatus(it.message ?: "Failed to create folder") }
         }
     }
 
     fun createNewTextFile(fileName: String, content: String) {
+        val cleanName = fileName.trim()
+        if (cleanName.isBlank()) {
+            showStatus("File name cannot be empty")
+            return
+        }
         val currentDir = _browserState.value.currentDirectory ?: return
         viewModelScope.launch {
-            val provider = if (currentDir.providerType == ProviderType.SAF) safProvider else localProvider
-            provider.createTextFile(currentDir, fileName, content)
-                .onSuccess {
-                    showStatus("Created file '${it.displayName}'")
-                    refreshCurrentDirectory()
-                }
-                .onFailure { showStatus(it.message ?: "Failed to create file") }
+            runCatching {
+                val provider = if (currentDir.providerType == ProviderType.SAF) safProvider else localProvider
+                provider.createTextFile(currentDir, cleanName, content)
+                    .onSuccess {
+                        showStatus("Created file '${it.displayName}'")
+                        refreshCurrentDirectory()
+                    }
+                    .onFailure { showStatus(it.message ?: "Failed to create file") }
+            }.onFailure { err ->
+                showStatus("Create file failed: ${err.message}")
+            }
         }
     }
 
     fun renameItem(target: FileReference, newName: String) {
+        val cleanName = newName.trim()
+        if (cleanName.isBlank() || cleanName == target.displayName) {
+            return
+        }
         val remoteProfile = _browserState.value.activeRemoteProfile
         viewModelScope.launch {
-            if (remoteProfile != null) {
-                val secret = credentialVault.retrieveSecret(remoteProfile.secretAlias).orEmpty()
-                RemoteNetworkClients.renameRemoteItem(remoteProfile, secret, target, newName)
-                    .onSuccess {
-                        showStatus("Renamed to '$newName'")
+            runCatching {
+                if (remoteProfile != null) {
+                    val secret = credentialVault.retrieveSecret(remoteProfile.secretAlias).orEmpty()
+                    RemoteNetworkClients.renameRemoteItem(remoteProfile, secret, target, cleanName)
+                        .onSuccess {
+                            showStatus("Renamed to '$cleanName'")
+                            clearSelection()
+                            refreshCurrentDirectory()
+                        }
+                        .onFailure { showStatus("Remote rename failed: ${it.message}") }
+                    return@launch
+                }
+
+                val provider = if (target.providerType == ProviderType.SAF) safProvider else localProvider
+                provider.rename(target, cleanName)
+                    .onSuccess { renamedRef ->
+                        categoryCache.clear()
+                        mediaStoreProvider.invalidateSupplementalCache()
+                        _browserState.value = _browserState.value.copy(
+                            items = _browserState.value.items.map { item ->
+                                if (item.uriOrPath == target.uriOrPath) renamedRef else item
+                            }
+                        )
+                        runCatching { updateAnalysisReportOnRename(target, renamedRef) }
+                        if (_propertiesFile.value?.uriOrPath == target.uriOrPath) {
+                            _propertiesFile.value = renamedRef
+                        }
+                        if (_previewFile.value?.uriOrPath == target.uriOrPath) {
+                            _previewFile.value = renamedRef
+                            _previewState.value = _previewState.value?.copy(currentFile = renamedRef)
+                        }
+                        showStatus("Renamed to '${renamedRef.displayName}'")
                         clearSelection()
                         refreshCurrentDirectory()
                     }
-                    .onFailure { showStatus("Remote rename failed: ${it.message}") }
-                return@launch
+                    .onFailure { showStatus(it.message ?: "Rename failed") }
+            }.onFailure { err ->
+                showStatus("Rename failed: ${err.message}")
             }
-
-            val provider = if (target.providerType == ProviderType.SAF) safProvider else localProvider
-            provider.rename(target, newName)
-                .onSuccess { renamedRef ->
-                    categoryCache.clear()
-                    mediaStoreProvider.invalidateSupplementalCache()
-                    _browserState.value = _browserState.value.copy(
-                        items = _browserState.value.items.map { item ->
-                            if (item.uriOrPath == target.uriOrPath) renamedRef else item
-                        }
-                    )
-                    updateAnalysisReportOnRename(target, renamedRef)
-                    showStatus("Renamed to '${renamedRef.displayName}'")
-                    clearSelection()
-                    if (_browserState.value.currentDirectory != null) {
-                        refreshCurrentDirectory()
-                    }
-                }
-                .onFailure { showStatus(it.message ?: "Rename failed") }
         }
     }
 
@@ -1576,17 +1682,21 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             return
         }
         viewModelScope.launch {
-            val parentRef = withContext(Dispatchers.IO) {
-                val parentFile = File(parentPath)
-                if (parentFile.exists() && parentFile.isDirectory) {
-                    localProvider.toFileReference(parentFile)
-                } else null
-            }
-            if (parentRef != null) {
-                _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
-                openDirectory(parentRef)
-            } else {
-                showStatus("Containing folder not found: $parentPath")
+            runCatching {
+                val parentRef = withContext(Dispatchers.IO) {
+                    val parentFile = File(parentPath)
+                    if (parentFile.exists() && parentFile.isDirectory) {
+                        localProvider.toFileReference(parentFile)
+                    } else null
+                }
+                if (parentRef != null) {
+                    _currentDestination.value = OpenFileDestination.INTERNAL_STORAGE
+                    openDirectory(parentRef)
+                } else {
+                    showStatus("Containing folder not found: $parentPath")
+                }
+            }.onFailure { err ->
+                showStatus("Error resolving folder: ${err.message}")
             }
         }
     }
@@ -1620,40 +1730,50 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun deleteItems(items: List<FileReference>, moveToTrash: Boolean) {
+        if (items.isEmpty()) return
         val remoteProfile = _browserState.value.activeRemoteProfile
         viewModelScope.launch {
-            if (remoteProfile != null) {
-                val secret = credentialVault.retrieveSecret(remoteProfile.secretAlias).orEmpty()
-                var deleted = 0
-                for (item in items) {
-                    RemoteNetworkClients.deleteRemoteItem(remoteProfile, secret, item)
-                        .onSuccess { deleted++ }
-                        .onFailure { showStatus("Delete failed: ${it.message}") }
-                }
-                clearSelection()
-                showStatus("Deleted $deleted remote item(s)")
-                refreshCurrentDirectory()
-                return@launch
-            }
-
-            transferEngine.deleteItems(items, moveToTrash)
-                .onSuccess { msg ->
-                    val deletedPaths = items.map { it.uriOrPath }.toHashSet()
-                    categoryCache.clear()
-                    mediaStoreProvider.invalidateSupplementalCache()
-                    _browserState.value = _browserState.value.copy(
-                        items = _browserState.value.items.filterNot { it.uriOrPath in deletedPaths }
-                    )
-                    updateAnalysisReportOnDelete(items)
-                    clearSelection()
-                    showStatus(msg)
-                    if (_browserState.value.currentDirectory != null) {
-                        refreshCurrentDirectory()
+            runCatching {
+                if (remoteProfile != null) {
+                    val secret = credentialVault.retrieveSecret(remoteProfile.secretAlias).orEmpty()
+                    var deleted = 0
+                    for (item in items) {
+                        RemoteNetworkClients.deleteRemoteItem(remoteProfile, secret, item)
+                            .onSuccess { deleted++ }
+                            .onFailure { showStatus("Delete failed: ${it.message}") }
                     }
+                    clearSelection()
+                    showStatus("Deleted $deleted of ${items.size} remote item(s)")
+                    refreshCurrentDirectory()
+                    return@launch
                 }
-                .onFailure { err ->
-                    showStatus(err.message ?: "Delete failed")
-                }
+
+                transferEngine.deleteItems(items, moveToTrash)
+                    .onSuccess { msg ->
+                        val deletedPaths = items.map { it.uriOrPath }.toHashSet()
+                        categoryCache.clear()
+                        mediaStoreProvider.invalidateSupplementalCache()
+                        _browserState.value = _browserState.value.copy(
+                            items = _browserState.value.items.filterNot { it.uriOrPath in deletedPaths }
+                        )
+                        runCatching { updateAnalysisReportOnDelete(items) }
+                        if (_propertiesFile.value?.uriOrPath in deletedPaths) {
+                            closePropertiesSheet()
+                        }
+                        if (_previewFile.value?.uriOrPath in deletedPaths) {
+                            closePreviewDialog()
+                        }
+                        clearSelection()
+                        showStatus(msg)
+                        refreshCurrentDirectory()
+                        refreshCategoryCountsAndPrewarm(force = true)
+                    }
+                    .onFailure { err ->
+                        showStatus(err.message ?: "Delete failed")
+                    }
+            }.onFailure { err ->
+                showStatus("Delete error: ${err.message}")
+            }
         }
     }
 
@@ -2661,13 +2781,17 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         val isCategory = _browserState.value.activeCategoryFilter != null
         if (!isCategory) {
             _settings.value = _settings.value.copy(defaultSortField = field, defaultSortOrder = order)
-            viewModelScope.launch { settingsStore.setSorting(field, order) }
+            viewModelScope.launch {
+                runCatching { settingsStore.setSorting(field, order) }
+            }
         }
         viewModelScope.launch {
             val currentItems = _browserState.value.items
             if (currentItems.isNotEmpty()) {
                 val resorted = withContext(Dispatchers.Default) {
-                    FileSortAndFilterEngine.sortFiles(currentItems, field, order)
+                    runCatching {
+                        FileSortAndFilterEngine.sortFiles(currentItems, field, order)
+                    }.getOrDefault(currentItems)
                 }
                 _browserState.value = _browserState.value.copy(
                     items = resorted,
@@ -2869,5 +2993,19 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 )
             }
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        runCatching { browseDirectoryJob?.cancel() }
+        runCatching { propertiesJob?.cancel() }
+        runCatching { searchDebounceJob?.cancel() }
+        runCatching { analysisJob?.cancel() }
+        runCatching { updateDownloadJob?.cancel() }
+        runCatching { mediaPlaybackController.release() }
+        categoryCache.clear()
+        categoryCacheAt.clear()
+        _extractedArchiveImageCache.clear()
+        scrollPositions.clear()
     }
 }

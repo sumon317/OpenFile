@@ -1868,15 +1868,12 @@ fun FileBrowserScreen(
                             }
                         }
                     )
-                    val shareableFiles = selectedItemsList.filter { !it.isDirectory }
-                    if (shareableFiles.isNotEmpty()) {
-                        BottomActionBarItem(
-                            icon = Icons.Filled.Share,
-                            label = "Share",
-                            testTag = "multiselect_share",
-                            onClick = { onShareItems(shareableFiles) }
-                        )
-                    }
+                    BottomActionBarItem(
+                        icon = Icons.Filled.Share,
+                        label = "Share",
+                        testTag = "multiselect_share",
+                        onClick = { onShareItems(selectedItemsList) }
+                    )
                     BottomActionBarItem(
                         icon = Icons.Filled.FolderZip,
                         label = "Compress",
