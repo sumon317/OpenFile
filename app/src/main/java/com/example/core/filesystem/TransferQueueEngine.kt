@@ -184,9 +184,7 @@ class TransferQueueEngine(
         }
         val isMove = clip.mode == ClipboardMode.CUT
         val jobId = UUID.randomUUID().toString()
-        if (isMove) {
-            clearClipboard()
-        }
+        clearClipboard()
         val reservedTargetNames = ConcurrentHashMap.newKeySet<String>()
 
         val job = appScope.launch(Dispatchers.IO) {
