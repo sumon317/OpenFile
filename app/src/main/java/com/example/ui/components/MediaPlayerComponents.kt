@@ -272,13 +272,37 @@ enum class AudioRepeatMode {
 }
 
 private fun resolveMediaUri(file: FileReference): Uri {
-    val localBacking = file.metadata["localBackingPath"]?.let { File(it) }
-        ?: if (file.providerType == ProviderType.LOCAL) File(file.uriOrPath) else null
+    val rawPath = file.metadata["localBackingPath"] ?: file.uriOrPath
+    val cleanPath = rawPath.removePrefix("file://")
+    val localBacking = File(cleanPath)
 
-    return if (localBacking != null && localBacking.exists()) {
+    return if (localBacking.exists()) {
         Uri.fromFile(localBacking)
     } else {
         Uri.parse(file.uriOrPath)
+    }
+}
+
+private fun decodeSampledBitmap(data: ByteArray, reqWidth: Int, reqHeight: Int): android.graphics.Bitmap? {
+    return try {
+        val options = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        BitmapFactory.decodeByteArray(data, 0, data.size, options)
+        var inSampleSize = 1
+        if (options.outHeight > reqHeight || options.outWidth > reqWidth) {
+            val halfHeight = options.outHeight / 2
+            val halfWidth = options.outWidth / 2
+            while ((halfHeight / inSampleSize) >= reqHeight && (halfWidth / inSampleSize) >= reqWidth) {
+                inSampleSize *= 2
+            }
+        }
+        options.inSampleSize = inSampleSize
+        options.inJustDecodeBounds = false
+        options.inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+        BitmapFactory.decodeByteArray(data, 0, data.size, options)
+    } catch (_: Throwable) {
+        null
     }
 }
 
@@ -296,11 +320,13 @@ private fun extractAudioTrackInfo(context: Context, file: FileReference): AudioT
     var genre = ""
     var composer = ""
 
+    var retriever: MediaMetadataRetriever? = null
     try {
-        val retriever = MediaMetadataRetriever()
-        val localBacking = file.metadata["localBackingPath"]?.let { File(it) }
-            ?: if (file.providerType == ProviderType.LOCAL) File(file.uriOrPath) else null
-        if ((localBacking != null) && localBacking.exists()) {
+        retriever = MediaMetadataRetriever()
+        val rawPath = file.metadata["localBackingPath"] ?: file.uriOrPath
+        val cleanPath = rawPath.removePrefix("file://")
+        val localBacking = File(cleanPath)
+        if (localBacking.exists()) {
             retriever.setDataSource(localBacking.absolutePath)
         } else {
             retriever.setDataSource(context, Uri.parse(file.uriOrPath))
@@ -320,13 +346,17 @@ private fun extractAudioTrackInfo(context: Context, file: FileReference): AudioT
 
         val picture = retriever.embeddedPicture
         if (picture != null) {
-            val bmp = BitmapFactory.decodeByteArray(picture, 0, picture.size)
+            val bmp = decodeSampledBitmap(picture, 512, 512)
             if (bmp != null) {
                 artwork = bmp.asImageBitmap()
             }
         }
-        retriever.release()
-    } catch (_: Exception) {}
+    } catch (_: Exception) {
+    } finally {
+        try {
+            retriever?.release()
+        } catch (_: Exception) {}
+    }
     return AudioTrackInfo(
         title = title,
         artist = artist,
@@ -573,6 +603,9 @@ fun AudioPlayerPreview(
             isPlaying = true
             wasPlaying = true
             isPrepared = true
+            com.example.core.media.MediaPlaybackStateHolder.updateCurrentFile(file)
+            com.example.core.media.MediaPlaybackStateHolder.updateIsPlaying(true)
+            com.example.core.media.MediaPlaybackStateHolder.updateCurrentPosition(0L)
         } else {
             isPrepared = true
             isPlaying = exoPlayer.isPlaying
@@ -696,6 +729,7 @@ fun AudioPlayerPreview(
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
                 wasPlaying = playing
+                com.example.core.media.MediaPlaybackStateHolder.updateIsPlaying(playing)
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -1081,16 +1115,15 @@ fun AudioPlayerPreview(
         }
     }
 
-    // Main Playback Controls: Generously spaced 5-button transport layout
+    // Main Playback Controls: Generously spaced transport layout with centered triad and wide-spaced Shuffle/Repeat anchors
     val controlsRow = @Composable {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .padding(horizontal = 20.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Shuffle Toggle
+            // Shuffle Toggle (Far Left)
             IconButton(
                 onClick = {
                     isShuffleEnabled = !isShuffleEnabled
@@ -1106,6 +1139,8 @@ fun AudioPlayerPreview(
                 )
             }
 
+            Spacer(modifier = Modifier.weight(1f))
+
             // Previous Button
             IconButton(
                 onClick = handleSkipPrevious,
@@ -1120,7 +1155,9 @@ fun AudioPlayerPreview(
                 )
             }
 
-            // Center Hero Play / Pause Button
+            Spacer(modifier = Modifier.width(16.dp))
+
+            // Center Hero Play / Pause Button (72.dp)
             Surface(
                 shape = CircleShape,
                 color = Color.White,
@@ -1158,6 +1195,8 @@ fun AudioPlayerPreview(
                 }
             }
 
+            Spacer(modifier = Modifier.width(16.dp))
+
             // Next Button
             IconButton(
                 onClick = handleSkipNext,
@@ -1172,7 +1211,9 @@ fun AudioPlayerPreview(
                 )
             }
 
-            // Repeat Mode Toggle
+            Spacer(modifier = Modifier.weight(1f))
+
+            // Repeat Mode Toggle (Far Right)
             IconButton(
                 onClick = {
                     audioRepeatMode = when (audioRepeatMode) {
@@ -1510,12 +1551,13 @@ fun AudioPlayerPreview(
             ) {
                 playerTopBar()
 
-                // Album Art Carousel / Turntable (flexible weight so it NEVER cramps controls)
+                // Album Art Carousel / Turntable (restricted to max 240.dp with weight(0.8f) to leave ample vertical space)
                 Box(
                     modifier = Modifier
-                        .weight(1f)
+                        .weight(0.8f)
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 6.dp),
+                        .heightIn(max = 240.dp)
+                        .padding(horizontal = 20.dp, vertical = 4.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     HorizontalPager(
@@ -1539,7 +1581,7 @@ fun AudioPlayerPreview(
                             modifier = Modifier
                                 .fillMaxHeight()
                                 .aspectRatio(1f)
-                                .sizeIn(maxWidth = 340.dp, maxHeight = 340.dp)
+                                .sizeIn(maxWidth = 240.dp, maxHeight = 240.dp)
                                 .pointerInput(Unit) {
                                     detectTapGestures(
                                         onTap = { isVinylMode = !isVinylMode },
@@ -1655,15 +1697,17 @@ fun AudioPlayerPreview(
                     }
                 }
 
-                // Controls & Details Column
+                // Controls & Details Column (generous vertical pacing)
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     metadataSection()
 
                     if (isAbLoopActive || abPointA != null || abPointB != null) {
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
                         ABRepeatBar(
                             pointA = abPointA,
                             pointB = abPointB,
@@ -1690,15 +1734,15 @@ fun AudioPlayerPreview(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(20.dp))
 
                     scrubberRow()
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                    Spacer(modifier = Modifier.height(24.dp))
 
                     controlsRow()
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(20.dp))
 
                     // Next Song Preview Indicator
                     if (nextTrackTitle != null) {
@@ -1713,9 +1757,10 @@ fun AudioPlayerPreview(
                                 .clickable { handleSkipNext() }
                                 .padding(horizontal = 24.dp, vertical = 2.dp)
                         )
+                        Spacer(modifier = Modifier.height(16.dp))
+                    } else {
+                        Spacer(modifier = Modifier.height(16.dp))
                     }
-
-                    Spacer(modifier = Modifier.height(8.dp))
 
                     bottomActionBar()
                 }
@@ -2272,17 +2317,20 @@ object SubtitleManager {
     }
 
     fun findMatchingLocalSubtitles(file: FileReference): List<File> {
-        val backingPath = file.metadata["localBackingPath"] ?: file.uriOrPath
-        val videoFile = File(backingPath)
+        val rawPath = file.metadata["localBackingPath"] ?: file.uriOrPath
+        val cleanPath = rawPath.removePrefix("file://")
+        val videoFile = File(cleanPath)
         if (!videoFile.exists() || !videoFile.isFile) return emptyList()
         val parent = videoFile.parentFile ?: return emptyList()
         val baseName = videoFile.nameWithoutExtension.lowercase()
 
         val subExtensions = setOf("srt", "vtt", "ass", "sub")
-        return parent.listFiles { f ->
-            f.isFile && f.extension.lowercase() in subExtensions &&
-                (f.nameWithoutExtension.lowercase() == baseName || f.nameWithoutExtension.lowercase().startsWith(baseName))
-        }?.toList() ?: emptyList()
+        return runCatching {
+            parent.listFiles { f ->
+                f.isFile && f.extension.lowercase() in subExtensions &&
+                    (f.nameWithoutExtension.lowercase() == baseName || f.nameWithoutExtension.lowercase().startsWith(baseName))
+            }?.toList()
+        }.getOrNull() ?: emptyList()
     }
 
     @androidx.annotation.OptIn(UnstableApi::class)
@@ -2308,6 +2356,11 @@ object SubtitleManager {
         val pos = exoPlayer.currentPosition
         val isPlaying = exoPlayer.isPlaying
         exoPlayer.setMediaItem(updatedItem)
+        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .setPreferredTextLanguage(subLanguage)
+            .build()
         exoPlayer.seekTo(pos)
         exoPlayer.prepare()
         exoPlayer.playWhenReady = isPlaying
@@ -2634,6 +2687,9 @@ fun VideoPlayerPreview(
                 if (window != null) {
                     val controller = WindowCompat.getInsetsController(window, window.decorView)
                     controller.show(WindowInsetsCompat.Type.systemBars())
+                    window.attributes = window.attributes.apply {
+                        screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                    }
                 }
                 if (activity != null && !activity.isInMultiWindowMode) {
                     activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -3575,7 +3631,15 @@ fun VideoPlayerPreview(
                             onClick = {
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activity != null) {
                                     runCatching {
+                                        showControls = false
                                         val pipBuilder = PictureInPictureParams.Builder()
+                                        val videoSize = exoPlayer.videoSize
+                                        if (videoSize.width > 0 && videoSize.height > 0) {
+                                            val rational = android.util.Rational(videoSize.width, videoSize.height)
+                                            if (rational.toFloat() in 0.41841f..2.39f) {
+                                                pipBuilder.setAspectRatio(rational)
+                                            }
+                                        }
                                         activity.enterPictureInPictureMode(pipBuilder.build())
                                     }
                                 }
