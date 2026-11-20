@@ -79,9 +79,11 @@ object DocxParser {
             val rels = mutableMapOf<String, String>()
             val relsEntry = zip.getEntry("word/_rels/document.xml.rels")
             if (relsEntry != null) {
-                zip.getInputStream(relsEntry).use { stream ->
-                    val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                    rels.putAll(parseRelationshipsXml(bounded))
+                runCatching {
+                    zip.getInputStream(relsEntry).use { stream ->
+                        val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                        rels.putAll(parseRelationshipsXml(bounded))
+                    }
                 }
             }
 
@@ -89,9 +91,11 @@ object DocxParser {
             val styleMap = mutableMapOf<String, Int>() // Style ID -> Heading level
             val stylesEntry = zip.getEntry("word/styles.xml")
             if (stylesEntry != null) {
-                zip.getInputStream(stylesEntry).use { stream ->
-                    val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                    styleMap.putAll(parseStylesXml(bounded))
+                runCatching {
+                    zip.getInputStream(stylesEntry).use { stream ->
+                        val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                        styleMap.putAll(parseStylesXml(bounded))
+                    }
                 }
             }
 
@@ -102,9 +106,19 @@ object DocxParser {
             val blocks = mutableListOf<DocxBlock>()
             val footnotes = mutableListOf<String>()
 
-            zip.getInputStream(docEntry).use { stream ->
-                val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                parseDocumentXml(bounded, rels, styleMap, blocks, footnotes)
+            runCatching {
+                zip.getInputStream(docEntry).use { stream ->
+                    val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                    parseDocumentXml(bounded, rels, styleMap, blocks, footnotes)
+                }
+            }.onFailure { err ->
+                if (blocks.isEmpty()) {
+                    blocks.add(
+                        DocxBlock.Paragraph(
+                            runs = listOf(DocxRun("Document content could not be fully parsed: ${err.message ?: "Corrupt XML"}", fontSizePt = 12f))
+                        )
+                    )
+                }
             }
 
             if (blocks.isEmpty()) {
@@ -500,47 +514,48 @@ object DocxParser {
 
     // =============================================================================================
     fun parseLegacyDoc(file: File): DocxDocumentModel {
+        if (file.length() < 512) {
+            throw UnsupportedOperationException("Legacy binary document (${file.name}) format is not supported or contains no readable text.")
+        }
         val streamData = Ole2DocumentReader.extractStream(file, "WordDocument")
         val lines = if (streamData != null) {
             Ole2DocumentReader.extractReadableText(streamData)
-        } else {
+        } else if (file.length() <= 30L * 1024 * 1024) {
             Ole2DocumentReader.extractReadableText(file.readBytes())
+        } else {
+            emptyList()
+        }
+
+        if (lines.isEmpty()) {
+            throw UnsupportedOperationException("Legacy binary document (${file.name}) format is not supported or contains no readable text.")
         }
 
         val blocks = mutableListOf<DocxBlock>()
-        if (lines.isNotEmpty()) {
-            blocks.add(
-                DocxBlock.Paragraph(
-                    runs = listOf(DocxRun(file.nameWithoutExtension, fontSizePt = 20f, isBold = true)),
-                    headingLevel = 1,
-                    spaceAfterPt = 8f
-                )
+        blocks.add(
+            DocxBlock.Paragraph(
+                runs = listOf(DocxRun(file.nameWithoutExtension, fontSizePt = 20f, isBold = true)),
+                headingLevel = 1,
+                spaceAfterPt = 8f
             )
-            for (line in lines) {
-                if (line.isNotBlank()) {
-                    val isHeading = line.length in 3..60 && !line.endsWith('.') &&
-                        (line.all { it.isUpperCase() || it.isWhitespace() } || line.startsWith("#"))
-                    blocks.add(
-                        DocxBlock.Paragraph(
-                            runs = listOf(
-                                DocxRun(
-                                    text = line,
-                                    fontSizePt = if (isHeading) 16f else 12f,
-                                    isBold = isHeading
-                                )
-                            ),
-                            headingLevel = if (isHeading) 2 else 0,
-                            spaceAfterPt = if (isHeading) 6f else 4f
-                        )
+        )
+        for (line in lines) {
+            if (line.isNotBlank()) {
+                val isHeading = line.length in 3..60 && !line.endsWith('.') &&
+                    (line.all { it.isUpperCase() || it.isWhitespace() } || line.startsWith("#"))
+                blocks.add(
+                    DocxBlock.Paragraph(
+                        runs = listOf(
+                            DocxRun(
+                                text = line,
+                                fontSizePt = if (isHeading) 16f else 12f,
+                                isBold = isHeading
+                            )
+                        ),
+                        headingLevel = if (isHeading) 2 else 0,
+                        spaceAfterPt = if (isHeading) 6f else 4f
                     )
-                }
-            }
-        } else {
-            blocks.add(
-                DocxBlock.Paragraph(
-                    runs = listOf(DocxRun("Document (${file.name}) contains no readable text.", fontSizePt = 12f))
                 )
-            )
+            }
         }
         return DocxDocumentModel(title = file.name, blocks = blocks)
     }
@@ -554,9 +569,11 @@ object DocxParser {
         ZipFile(file).use { zip ->
             val entry = zip.getEntry("content.xml")
             if (entry != null) {
-                zip.getInputStream(entry).use { stream ->
-                    val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                    blocks.addAll(parseOdtContentXml(bounded))
+                runCatching {
+                    zip.getInputStream(entry).use { stream ->
+                        val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                        blocks.addAll(parseOdtContentXml(bounded))
+                    }
                 }
             }
         }

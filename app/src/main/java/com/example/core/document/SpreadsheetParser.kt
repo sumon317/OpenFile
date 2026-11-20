@@ -87,6 +87,9 @@ object SpreadsheetParser {
     // =============================================================================================
 
     fun parseLegacyXls(file: File): SpreadsheetWorkbookModel {
+        if (file.length() < 512) {
+            throw UnsupportedOperationException("Legacy binary spreadsheet (${file.name}) format is not supported or contains no readable sheets.")
+        }
         val streamData = Ole2DocumentReader.extractStream(file, "Workbook")
             ?: Ole2DocumentReader.extractStream(file, "Book")
 
@@ -100,8 +103,14 @@ object SpreadsheetParser {
         // Fallback: extract readable strings into a single sheet
         val lines = if (streamData != null) {
             Ole2DocumentReader.extractReadableText(streamData)
-        } else {
+        } else if (file.length() <= 30L * 1024 * 1024) {
             Ole2DocumentReader.extractReadableText(file.readBytes())
+        } else {
+            emptyList()
+        }
+
+        if (lines.isEmpty()) {
+            throw UnsupportedOperationException("Legacy binary spreadsheet (${file.name}) contains no readable sheets.")
         }
 
         val sparseRows = mutableMapOf<Int, MutableMap<Int, SpreadsheetCell>>()
@@ -346,11 +355,13 @@ object SpreadsheetParser {
             val sheetInfoList = mutableListOf<Triple<String, String, Boolean>>() // Name, RelId/Path, isHidden
             val wbEntry = zip.getEntry("xl/workbook.xml")
             if (wbEntry != null) {
-                zip.getInputStream(wbEntry).use { stream ->
-                    val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                    val (info, is1904) = parseWorkbookXml(bounded)
-                    sheetInfoList.addAll(info)
-                    date1904 = is1904
+                runCatching {
+                    zip.getInputStream(wbEntry).use { stream ->
+                        val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                        val (info, is1904) = parseWorkbookXml(bounded)
+                        sheetInfoList.addAll(info)
+                        date1904 = is1904
+                    }
                 }
             }
 
@@ -358,9 +369,11 @@ object SpreadsheetParser {
             val sharedStrings = mutableListOf<String>()
             val sstEntry = zip.getEntry("xl/sharedStrings.xml")
             if (sstEntry != null) {
-                zip.getInputStream(sstEntry).use { stream ->
-                    val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                    parseSharedStrings(bounded, sharedStrings)
+                runCatching {
+                    zip.getInputStream(sstEntry).use { stream ->
+                        val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                        parseSharedStrings(bounded, sharedStrings)
+                    }
                 }
             }
 
@@ -368,9 +381,11 @@ object SpreadsheetParser {
             val styles = mutableListOf<CellStyle>()
             val stylesEntry = zip.getEntry("xl/styles.xml")
             if (stylesEntry != null) {
-                zip.getInputStream(stylesEntry).use { stream ->
-                    val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                    parseStyles(bounded, styles)
+                runCatching {
+                    zip.getInputStream(stylesEntry).use { stream ->
+                        val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                        parseStyles(bounded, styles)
+                    }
                 }
             }
 
@@ -385,17 +400,28 @@ object SpreadsheetParser {
                 val sheetName = meta?.first ?: "Sheet ${index + 1}"
                 val isHidden = meta?.third ?: false
 
-                zip.getInputStream(entry).use { stream ->
-                    val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                    val sheetModel = parseWorksheetXml(
-                        stream = bounded,
-                        sheetName = sheetName,
-                        isHidden = isHidden,
-                        sharedStrings = sharedStrings,
-                        styles = styles,
-                        date1904 = date1904
+                runCatching {
+                    zip.getInputStream(entry).use { stream ->
+                        val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                        val sheetModel = parseWorksheetXml(
+                            stream = bounded,
+                            sheetName = sheetName,
+                            isHidden = isHidden,
+                            sharedStrings = sharedStrings,
+                            styles = styles,
+                            date1904 = date1904
+                        )
+                        sheets.add(sheetModel)
+                    }
+                }.onFailure {
+                    sheets.add(
+                        SpreadsheetSheetModel(
+                            name = sheetName,
+                            rowCount = 1,
+                            colCount = 1,
+                            rows = mapOf(0 to mapOf(0 to SpreadsheetCell(0, 0, displayValue = "Error displaying sheet")))
+                        )
                     )
-                    sheets.add(sheetModel)
                 }
             }
         }
@@ -928,9 +954,11 @@ object SpreadsheetParser {
         ZipFile(file).use { zip ->
             val entry = zip.getEntry("content.xml")
             if (entry != null) {
-                zip.getInputStream(entry).use { stream ->
-                    val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                    sheets.addAll(parseOdsContentXml(bounded))
+                runCatching {
+                    zip.getInputStream(entry).use { stream ->
+                        val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                        sheets.addAll(parseOdsContentXml(bounded))
+                    }
                 }
             }
         }
@@ -1086,13 +1114,12 @@ object SpreadsheetParser {
     // =============================================================================================
 
     fun parseDelimited(file: File, defaultDelimiter: Char = ','): SpreadsheetWorkbookModel {
-        val reader = detectEncodingAndCreateReader(file)
         val delimiter = autoDetectDelimiter(file, defaultDelimiter)
         val sparseRows = mutableMapOf<Int, MutableMap<Int, SpreadsheetCell>>()
         var rowCount = 0
         var maxCols = 0
 
-        reader.use { br ->
+        detectEncodingAndCreateReader(file).use { br ->
             val rows = parseCsvRows(br, delimiter)
             for ((rIdx, row) in rows.withIndex()) {
                 if (rIdx >= MAX_SHEET_ROWS) break

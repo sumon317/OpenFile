@@ -66,14 +66,24 @@ object ArchiveEngine {
      * Throws [SecurityException] if path traversal is detected.
      */
     fun validateSafeTargetFile(destinationRoot: File, entryName: String): File {
-        val cleanedEntry = entryName.replace('\\', '/').trimStart('/')
-        if (cleanedEntry.isEmpty() || cleanedEntry.contains("../") || cleanedEntry == "..") {
+        val normalized = entryName.replace('\\', '/')
+        val cleanedEntry = normalized.trimStart('/')
+        if (entryName.startsWith('/') ||
+            entryName.startsWith('\\') ||
+            cleanedEntry.isEmpty() ||
+            cleanedEntry == "." ||
+            cleanedEntry == ".." ||
+            cleanedEntry.contains("../") ||
+            cleanedEntry.contains("/..") ||
+            cleanedEntry.endsWith("/..") ||
+            (cleanedEntry.length >= 2 && cleanedEntry[1] == ':')
+        ) {
             throw SecurityException("Blocked Zip-Slip path traversal attempt in archive entry: '$entryName'")
         }
         val canonicalRoot = destinationRoot.canonicalFile
         val targetFile = File(canonicalRoot, cleanedEntry).canonicalFile
-        val rootPrefix = canonicalRoot.path + File.separator
-        if (targetFile != canonicalRoot && !targetFile.path.startsWith(rootPrefix)) {
+        val rootPrefix = canonicalRoot.path.trimEnd(File.separatorChar) + File.separator
+        if (!targetFile.path.startsWith(rootPrefix)) {
             throw SecurityException("Blocked Zip-Slip escape outside destination directory: '$entryName'")
         }
         return targetFile
@@ -81,10 +91,14 @@ object ArchiveEngine {
 
     fun isSuspiciousEntryName(entryName: String): Boolean {
         val normalized = entryName.replace('\\', '/')
-        return normalized.startsWith("/") ||
+        return normalized.isEmpty() ||
+            normalized.startsWith("/") ||
             normalized.contains("../") ||
+            normalized.contains("/..") ||
             normalized.endsWith("/..") ||
-            normalized == ".."
+            normalized == ".." ||
+            normalized == "." ||
+            (normalized.length >= 2 && normalized[1] == ':')
     }
 
     /**
@@ -205,9 +219,12 @@ object ArchiveEngine {
             if (lowerName.endsWith(".gz") && !lowerName.endsWith(".tar.gz") && !lowerName.endsWith(".tgz")) {
                 val targetName = archiveFile.name.removeSuffix(".gz").removeSuffix(".GZ")
                 val safeTarget = validateSafeTargetFile(destinationDir, targetName)
-                GzipCompressorInputStream(BufferedInputStream(FileInputStream(archiveFile))).use { gis ->
-                    safeTarget.outputStream().use { out ->
-                        copyLimited(gis, out, maxAllowedBytes)
+                safeTarget.parentFile?.mkdirs()
+                FileInputStream(archiveFile).buffered().use { bis ->
+                    GzipCompressorInputStream(bis).use { gis ->
+                        BufferedOutputStream(FileOutputStream(safeTarget)).use { out ->
+                            copyLimited(gis, out, maxAllowedBytes)
+                        }
                     }
                 }
                 onProgress(1, safeTarget.length(), targetName)
@@ -216,9 +233,12 @@ object ArchiveEngine {
             if (lowerName.endsWith(".xz") && !lowerName.endsWith(".tar.xz") && !lowerName.endsWith(".txz")) {
                 val targetName = archiveFile.name.removeSuffix(".xz").removeSuffix(".XZ")
                 val safeTarget = validateSafeTargetFile(destinationDir, targetName)
-                XZCompressorInputStream(BufferedInputStream(FileInputStream(archiveFile))).use { xis ->
-                    safeTarget.outputStream().use { out ->
-                        copyLimited(xis, out, maxAllowedBytes)
+                safeTarget.parentFile?.mkdirs()
+                FileInputStream(archiveFile).buffered().use { bis ->
+                    XZCompressorInputStream(bis).use { xis ->
+                        BufferedOutputStream(FileOutputStream(safeTarget)).use { out ->
+                            copyLimited(xis, out, maxAllowedBytes)
+                        }
                     }
                 }
                 onProgress(1, safeTarget.length(), targetName)
@@ -301,18 +321,22 @@ object ArchiveEngine {
             }
 
             if (lowerName.endsWith(".gz") && !lowerName.endsWith(".tar.gz") && !lowerName.endsWith(".tgz")) {
-                GzipCompressorInputStream(BufferedInputStream(FileInputStream(archiveFile))).use { gis ->
-                    targetFile.outputStream().use { out ->
-                        gis.copyTo(out, BUFFER_SIZE)
+                FileInputStream(archiveFile).buffered().use { bis ->
+                    GzipCompressorInputStream(bis).use { gis ->
+                        targetFile.outputStream().use { out ->
+                            gis.copyTo(out, BUFFER_SIZE)
+                        }
                     }
                 }
                 return@runCatching targetFile
             }
 
             if (lowerName.endsWith(".xz") && !lowerName.endsWith(".tar.xz") && !lowerName.endsWith(".txz")) {
-                XZCompressorInputStream(BufferedInputStream(FileInputStream(archiveFile))).use { xis ->
-                    targetFile.outputStream().use { out ->
-                        xis.copyTo(out, BUFFER_SIZE)
+                FileInputStream(archiveFile).buffered().use { bis ->
+                    XZCompressorInputStream(bis).use { xis ->
+                        targetFile.outputStream().use { out ->
+                            xis.copyTo(out, BUFFER_SIZE)
+                        }
                     }
                 }
                 return@runCatching targetFile
@@ -436,10 +460,13 @@ object ArchiveEngine {
             val bitmap = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOpts)
                 ?: return@runCatching null
 
-            thumbFile.outputStream().use { out ->
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
+            try {
+                thumbFile.outputStream().use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
+                }
+            } finally {
+                bitmap.recycle()
             }
-            bitmap.recycle()
             thumbFile
         }.getOrNull()
     }
@@ -502,41 +529,49 @@ object ArchiveEngine {
             var count = 0
             when (format) {
                 ArchiveCreationFormat.ZIP -> {
-                    ZipArchiveOutputStream(BufferedOutputStream(FileOutputStream(outputArchiveFile))).use { zos ->
-                        for (src in sourceFiles) {
-                            count = addFileToZipRecursive(zos, src, parentPath = "", currentCount = count, onProgress = onProgress)
+                    FileOutputStream(outputArchiveFile).buffered().use { fos ->
+                        ZipArchiveOutputStream(fos).use { zos ->
+                            for (src in sourceFiles) {
+                                count = addFileToZipRecursive(zos, src, parentPath = "", currentCount = count, onProgress = onProgress)
+                            }
+                            zos.finish()
                         }
-                        zos.finish()
                     }
                 }
                 ArchiveCreationFormat.TAR -> {
-                    TarArchiveOutputStream(BufferedOutputStream(FileOutputStream(outputArchiveFile))).use { tos ->
-                        tos.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX)
-                        for (src in sourceFiles) {
-                            count = addFileToTarRecursive(tos, src, parentPath = "", currentCount = count, onProgress = onProgress)
-                        }
-                        tos.finish()
-                    }
-                }
-                ArchiveCreationFormat.TAR_GZ -> {
-                    GzipCompressorOutputStream(BufferedOutputStream(FileOutputStream(outputArchiveFile))).use { gzos ->
-                        TarArchiveOutputStream(gzos).use { tos ->
+                    FileOutputStream(outputArchiveFile).buffered().use { fos ->
+                        TarArchiveOutputStream(fos).use { tos ->
                             tos.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX)
                             for (src in sourceFiles) {
                                 count = addFileToTarRecursive(tos, src, parentPath = "", currentCount = count, onProgress = onProgress)
                             }
                             tos.finish()
+                        }
+                    }
+                }
+                ArchiveCreationFormat.TAR_GZ -> {
+                    FileOutputStream(outputArchiveFile).buffered().use { fos ->
+                        GzipCompressorOutputStream(fos).use { gzos ->
+                            TarArchiveOutputStream(gzos).use { tos ->
+                                tos.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX)
+                                for (src in sourceFiles) {
+                                    count = addFileToTarRecursive(tos, src, parentPath = "", currentCount = count, onProgress = onProgress)
+                                }
+                                tos.finish()
+                            }
                         }
                     }
                 }
                 ArchiveCreationFormat.TAR_XZ -> {
-                    XZCompressorOutputStream(BufferedOutputStream(FileOutputStream(outputArchiveFile))).use { xzos ->
-                        TarArchiveOutputStream(xzos).use { tos ->
-                            tos.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX)
-                            for (src in sourceFiles) {
-                                count = addFileToTarRecursive(tos, src, parentPath = "", currentCount = count, onProgress = onProgress)
+                    FileOutputStream(outputArchiveFile).buffered().use { fos ->
+                        XZCompressorOutputStream(fos).use { xzos ->
+                            TarArchiveOutputStream(xzos).use { tos ->
+                                tos.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX)
+                                for (src in sourceFiles) {
+                                    count = addFileToTarRecursive(tos, src, parentPath = "", currentCount = count, onProgress = onProgress)
+                                }
+                                tos.finish()
                             }
-                            tos.finish()
                         }
                     }
                 }
@@ -625,12 +660,17 @@ object ArchiveEngine {
     private fun openArchiveInputStream(archiveFile: File): ArchiveInputStream<out ArchiveEntry> {
         val lower = archiveFile.name.lowercase()
         val fis = BufferedInputStream(FileInputStream(archiveFile))
-        return when {
-            lower.endsWith(".zip") || lower.endsWith(".jar") || lower.endsWith(".apk") -> ZipArchiveInputStream(fis)
-            lower.endsWith(".tar.gz") || lower.endsWith(".tgz") -> TarArchiveInputStream(GzipCompressorInputStream(fis))
-            lower.endsWith(".tar.xz") || lower.endsWith(".txz") -> TarArchiveInputStream(XZCompressorInputStream(fis))
-            lower.endsWith(".tar") -> TarArchiveInputStream(fis)
-            else -> ZipArchiveInputStream(fis)
+        return try {
+            when {
+                lower.endsWith(".zip") || lower.endsWith(".jar") || lower.endsWith(".apk") -> ZipArchiveInputStream(fis)
+                lower.endsWith(".tar.gz") || lower.endsWith(".tgz") -> TarArchiveInputStream(GzipCompressorInputStream(fis))
+                lower.endsWith(".tar.xz") || lower.endsWith(".txz") -> TarArchiveInputStream(XZCompressorInputStream(fis))
+                lower.endsWith(".tar") -> TarArchiveInputStream(fis)
+                else -> ZipArchiveInputStream(fis)
+            }
+        } catch (t: Throwable) {
+            runCatching { fis.close() }
+            throw t
         }
     }
 

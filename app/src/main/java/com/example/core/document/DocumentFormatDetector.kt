@@ -218,7 +218,14 @@ object DocumentFormatDetector {
      */
     fun isZipSlipAttempt(entryName: String): Boolean {
         val normalized = entryName.replace('\\', '/')
-        return normalized.startsWith("/") || normalized.contains("../") || normalized.contains("/..")
+        return normalized.isEmpty() ||
+            normalized.startsWith("/") ||
+            normalized.contains("../") ||
+            normalized.contains("/..") ||
+            normalized.endsWith("/..") ||
+            normalized == ".." ||
+            normalized == "." ||
+            (normalized.length >= 2 && normalized[1] == ':')
     }
 
     /**

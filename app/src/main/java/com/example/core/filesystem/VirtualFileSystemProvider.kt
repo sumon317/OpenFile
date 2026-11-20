@@ -561,6 +561,9 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
     suspend fun calculateDirectorySize(dir: File): Long = withContext(Dispatchers.IO) {
         var total = 0L
         val stack = ArrayDeque<File>()
+        val visited = HashSet<String>()
+        val canonicalRoot = runCatching { dir.canonicalPath }.getOrDefault(dir.absolutePath)
+        visited.add(canonicalRoot)
         stack.add(dir)
         while (stack.isNotEmpty()) {
             coroutineContext.ensureActive()
@@ -568,7 +571,10 @@ class LocalFileSystemProvider(private val context: Context) : VirtualFileSystemP
             val children = current.listFiles() ?: continue
             for (child in children) {
                 if (child.isDirectory) {
-                    stack.add(child)
+                    val canonicalChild = runCatching { child.canonicalPath }.getOrDefault(child.absolutePath)
+                    if (visited.add(canonicalChild)) {
+                        stack.add(child)
+                    }
                 } else {
                     total += child.length()
                 }

@@ -20,9 +20,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
 
 enum class ClipboardMode {
@@ -72,8 +75,9 @@ class TransferQueueEngine(
     private val _latestUndoAction = MutableStateFlow<UndoActionRecord?>(null)
     val latestUndoAction: StateFlow<UndoActionRecord?> = _latestUndoAction.asStateFlow()
 
-    private val activeJobs = mutableMapOf<String, Job>()
-    private val pausedJobIds = mutableSetOf<String>()
+    private val activeJobs = ConcurrentHashMap<String, Job>()
+    private val pausedJobIds = ConcurrentHashMap.newKeySet<String>()
+    private val conflictMutex = Mutex()
 
     internal fun getTrashDirectoryForPath(path: String?): File {
         return if (path != null && path.startsWith("/storage/emulated/0")) {
@@ -96,9 +100,7 @@ class TransferQueueEngine(
     }
 
     fun pauseJob(jobId: String) {
-        synchronized(pausedJobIds) {
-            pausedJobIds.add(jobId)
-        }
+        pausedJobIds.add(jobId)
         appScope.launch(Dispatchers.IO) {
             // Update Room status
             // Job checks pausedJobIds in transfer loop
@@ -106,15 +108,11 @@ class TransferQueueEngine(
     }
 
     fun resumeJob(jobId: String) {
-        synchronized(pausedJobIds) {
-            pausedJobIds.remove(jobId)
-        }
+        pausedJobIds.remove(jobId)
     }
 
     fun cancelJob(jobId: String) {
-        synchronized(pausedJobIds) {
-            pausedJobIds.remove(jobId)
-        }
+        pausedJobIds.remove(jobId)
         activeJobs.remove(jobId)?.cancel()
     }
 
@@ -146,7 +144,8 @@ class TransferQueueEngine(
         provider: VirtualFileSystemProvider,
         parent: FileReference,
         originalName: String,
-        isDirectory: Boolean
+        isDirectory: Boolean,
+        reservedNames: Set<String> = emptySet()
     ): String {
         val baseName = if (isDirectory || !originalName.contains('.')) {
             originalName
@@ -161,7 +160,7 @@ class TransferQueueEngine(
         var counter = 1
         while (counter < 10_000) {
             val candidate = "$baseName ($counter)$ext"
-            if (!provider.exists(parent, candidate)) {
+            if (candidate !in reservedNames && !provider.exists(parent, candidate)) {
                 return candidate
             }
             counter++
@@ -185,7 +184,10 @@ class TransferQueueEngine(
         }
         val isMove = clip.mode == ClipboardMode.CUT
         val jobId = UUID.randomUUID().toString()
-        clearClipboard()
+        if (isMove) {
+            clearClipboard()
+        }
+        val reservedTargetNames = ConcurrentHashMap.newKeySet<String>()
 
         val job = appScope.launch(Dispatchers.IO) {
             val (calculatedBytes, calculatedFiles) = calculateTotalBytesAndFiles(clip.items)
@@ -277,18 +279,26 @@ class TransferQueueEngine(
                             // Copying a file into the same directory must auto-rename so it never deletes its own source
                             ConflictResolution.KEEP_BOTH
                         } else {
-                            stickyResolution ?: run {
-                                val deferred = CompletableDeferred<Pair<ConflictResolution, Boolean>>()
-                                _conflictPrompt.value = ConflictPromptRequest(
-                                    sourceFile = sourceItem,
-                                    destinationDirectory = destinationDir,
-                                    conflictingName = targetName,
-                                    responseDeferred = deferred
-                                )
-                                val (choice, applyToAll) = deferred.await()
-                                _conflictPrompt.value = null
-                                if (applyToAll) stickyResolution = choice
-                                choice
+                            stickyResolution ?: conflictMutex.withLock {
+                                stickyResolution ?: run {
+                                    val deferred = CompletableDeferred<Pair<ConflictResolution, Boolean>>()
+                                    _conflictPrompt.value = ConflictPromptRequest(
+                                        sourceFile = sourceItem,
+                                        destinationDirectory = destinationDir,
+                                        conflictingName = targetName,
+                                        responseDeferred = deferred
+                                    )
+                                    try {
+                                        val (choice, applyToAll) = deferred.await()
+                                        if (applyToAll) stickyResolution = choice
+                                        choice
+                                    } finally {
+                                        _conflictPrompt.compareAndSet(
+                                            _conflictPrompt.value,
+                                            null
+                                        )
+                                    }
+                                }
                             }
                         }
 
@@ -302,7 +312,8 @@ class TransferQueueEngine(
                                     provider = destProvider,
                                     parent = destinationDir,
                                     originalName = targetName,
-                                    isDirectory = sourceItem.isDirectory
+                                    isDirectory = sourceItem.isDirectory,
+                                    reservedNames = reservedTargetNames
                                 )
                             }
                             ConflictResolution.OVERWRITE -> {
@@ -317,6 +328,7 @@ class TransferQueueEngine(
                             }
                         }
                     }
+                    reservedTargetNames.add(targetName)
 
                     val transferredRef = transferItemRecursive(
                         jobId = jobId,
@@ -335,7 +347,8 @@ class TransferQueueEngine(
                             } else {
                                 totalFiles + extraFiles
                             }
-                        }
+                        },
+                        checkPaused = { waitIfPaused(jobId, initialEntity, transferredBytes, processedFiles) }
                     )
                     createdDestinations.add(transferredRef)
                     val now = System.currentTimeMillis()
@@ -412,7 +425,12 @@ class TransferQueueEngine(
             } finally {
                 _conflictPrompt.value = null
                 activeJobs.remove(jobId)
+                pausedJobIds.remove(jobId)
             }
+        }
+        job.invokeOnCompletion {
+            activeJobs.remove(jobId)
+            pausedJobIds.remove(jobId)
         }
         activeJobs[jobId] = job
         return jobId
@@ -425,7 +443,7 @@ class TransferQueueEngine(
         processedFiles: Int
     ) {
         var markedPaused = false
-        while (synchronized(pausedJobIds) { jobId in pausedJobIds }) {
+        while (jobId in pausedJobIds) {
             coroutineContext.ensureActive()
             if (!markedPaused) {
                 markedPaused = true
@@ -494,7 +512,8 @@ class TransferQueueEngine(
         verifyChecksum: Boolean,
         onBytesDelta: suspend (Long) -> Unit,
         onFileCompleted: suspend () -> Unit = {},
-        onDirectoryChildrenDiscovered: (Long, Int) -> Unit = { _, _ -> }
+        onDirectoryChildrenDiscovered: (Long, Int) -> Unit = { _, _ -> },
+        checkPaused: suspend () -> Unit = {}
     ): FileReference {
         coroutineContext.ensureActive()
         val srcProvider = providerFor(source)
@@ -587,7 +606,8 @@ class TransferQueueEngine(
                         verifyChecksum = verifyChecksum,
                         onBytesDelta = onBytesDelta,
                         onFileCompleted = onFileCompleted,
-                        onDirectoryChildrenDiscovered = onDirectoryChildrenDiscovered
+                        onDirectoryChildrenDiscovered = onDirectoryChildrenDiscovered,
+                        checkPaused = checkPaused
                     )
                 }
             }
@@ -624,6 +644,7 @@ class TransferQueueEngine(
                             val chunkSize = 1024L * 1024L // 1MB zero-copy kernel chunks
                             while (position < fileSize) {
                                 coroutineContext.ensureActive()
+                                checkPaused()
                                 val toTransfer = minOf(chunkSize, fileSize - position)
                                 val transferred = srcChan.transferTo(position, toTransfer, dstChan)
                                 if (transferred <= 0) break
@@ -643,6 +664,7 @@ class TransferQueueEngine(
                             var read = input.read(buffer)
                             while (read > 0) {
                                 coroutineContext.ensureActive()
+                                checkPaused()
                                 out.write(buffer, 0, read)
                                 bytesCopiedForFile += read
                                 onBytesDelta(read.toLong())
