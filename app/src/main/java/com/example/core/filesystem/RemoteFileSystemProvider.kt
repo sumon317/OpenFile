@@ -121,16 +121,21 @@ class RemoteFileSystemProvider(
         }.recoverCatching {
             // Graceful fallback to temp-file download if streaming is unsupported by remote host
             val tempDir = newTempDir()
-            val temp = File(tempDir, target.displayName)
-            RemoteNetworkClients.downloadRemoteFile(profile, secret, target, temp).getOrThrow()
-            object : FileInputStream(temp) {
-                override fun close() {
-                    try {
-                        super.close()
-                    } finally {
-                        tempDir.deleteRecursively()
+            try {
+                val temp = File(tempDir, target.displayName)
+                RemoteNetworkClients.downloadRemoteFile(profile, secret, target, temp).getOrThrow()
+                object : FileInputStream(temp) {
+                    override fun close() {
+                        try {
+                            super.close()
+                        } finally {
+                            tempDir.deleteRecursively()
+                        }
                     }
                 }
+            } catch (t: Throwable) {
+                tempDir.deleteRecursively()
+                throw t
             }
         }
     }
@@ -148,23 +153,28 @@ class RemoteFileSystemProvider(
         }.recoverCatching {
             // Graceful fallback to temp-file upload if streaming is unsupported
             val tempDir = newTempDir()
-            val temp = File(tempDir, fileName)
-            val stream = object : FileOutputStream(temp) {
-                private var closed = false
-                override fun close() {
-                    if (closed) return
-                    closed = true
-                    try {
-                        super.close()
-                        runBlocking {
-                            RemoteNetworkClients.uploadLocalFile(profile, secret, temp, parent.uriOrPath).getOrThrow()
+            try {
+                val temp = File(tempDir, fileName)
+                val stream = object : FileOutputStream(temp) {
+                    private var closed = false
+                    override fun close() {
+                        if (closed) return
+                        closed = true
+                        try {
+                            super.close()
+                            runBlocking {
+                                RemoteNetworkClients.uploadLocalFile(profile, secret, temp, parent.uriOrPath).getOrThrow()
+                            }
+                        } finally {
+                            tempDir.deleteRecursively()
                         }
-                    } finally {
-                        tempDir.deleteRecursively()
                     }
                 }
+                ref to stream
+            } catch (t: Throwable) {
+                tempDir.deleteRecursively()
+                throw t
             }
-            ref to stream
         }
     }
 

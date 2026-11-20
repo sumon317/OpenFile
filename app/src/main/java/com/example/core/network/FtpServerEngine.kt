@@ -178,7 +178,7 @@ object FtpServerEngine {
         } else {
             File(canonicalRoot, relativePath).canonicalFile
         }
-        val rootPrefix = canonicalRoot.path + File.separator
+        val rootPrefix = canonicalRoot.path.trimEnd(File.separatorChar) + File.separator
         if (candidate != canonicalRoot && !candidate.path.startsWith(rootPrefix)) {
             throw SecurityException("FTP path access outside server root denied.")
         }
@@ -597,15 +597,16 @@ object FtpServerEngine {
                                         if (restartByteOffset > 0L) {
                                             fis.skip(restartByteOffset)
                                         }
-                                        val out = BufferedOutputStream(dataSocket.getOutputStream(), 256 * 1024)
-                                        val buf = ByteArray(256 * 1024)
-                                        var r = fis.read(buf)
-                                        while (r > 0) {
-                                            out.write(buf, 0, r)
-                                            sentBytes += r
-                                            r = fis.read(buf)
+                                        BufferedOutputStream(dataSocket.getOutputStream(), 256 * 1024).use { out ->
+                                            val buf = ByteArray(256 * 1024)
+                                            var r = fis.read(buf)
+                                            while (r > 0) {
+                                                out.write(buf, 0, r)
+                                                sentBytes += r
+                                                r = fis.read(buf)
+                                            }
+                                            out.flush()
                                         }
-                                        out.flush()
                                     }
                                 }
                                 restartByteOffset = 0L
@@ -642,15 +643,16 @@ object FtpServerEngine {
                                     dataSocket.setPerformancePreferences(0, 1, 2)
                                     val append = restartByteOffset > 0L
                                     BufferedOutputStream(FileOutputStream(target, append), 256 * 1024).use { fos ->
-                                        val input = BufferedInputStream(dataSocket.getInputStream(), 256 * 1024)
-                                        val buf = ByteArray(256 * 1024)
-                                        var r = input.read(buf)
-                                        while (r > 0) {
-                                            fos.write(buf, 0, r)
-                                            receivedBytes += r
-                                            r = input.read(buf)
+                                        BufferedInputStream(dataSocket.getInputStream(), 256 * 1024).use { input ->
+                                            val buf = ByteArray(256 * 1024)
+                                            var r = input.read(buf)
+                                            while (r > 0) {
+                                                fos.write(buf, 0, r)
+                                                receivedBytes += r
+                                                r = input.read(buf)
+                                            }
+                                            fos.flush()
                                         }
-                                        fos.flush()
                                     }
                                 }
                                 restartByteOffset = 0L

@@ -56,7 +56,9 @@ object Ole2DocumentReader {
                 val firstDirSector = bb.getInt(48)
                 val numDifatSectors = bb.getInt(80)
 
-                if (sectorSize !in 512..4096 || numFatSectors <= 0) return null
+                val maxPossibleSectors = (raf.length() / sectorSize + 1).toInt()
+                if (sectorSize !in 512..4096 || numFatSectors <= 0 || numFatSectors > maxPossibleSectors || numFatSectors > 65536) return null
+                if (numDifatSectors < 0 || numDifatSectors > maxPossibleSectors) return null
 
                 // 1. Read DIFAT entries (first 109 entries in header)
                 val fatSectors = mutableListOf<Int>()
@@ -169,7 +171,7 @@ object Ole2DocumentReader {
             System.arraycopy(tempBuf, 0, result, bytesRead, toRead)
             bytesRead += toRead
 
-            currentSector = if (currentSector < fat.size) fat[currentSector] else ENDOFCHAIN
+            currentSector = if (currentSector in fat.indices) fat[currentSector] else ENDOFCHAIN
         }
 
         return if (bytesRead > 0) result.copyOf(bytesRead) else null

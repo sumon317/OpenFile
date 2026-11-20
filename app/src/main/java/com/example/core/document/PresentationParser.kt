@@ -70,12 +70,14 @@ object PresentationParser {
 
             val presEntry = zip.getEntry("ppt/presentation.xml")
             if (presEntry != null) {
-                zip.getInputStream(presEntry).use { stream ->
-                    val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                    val (w, h, rIds) = parsePresentationXml(bounded)
-                    if (w > 0L) slideWidthEmu = w
-                    if (h > 0L) slideHeightEmu = h
-                    orderedSlideRIds.addAll(rIds)
+                runCatching {
+                    zip.getInputStream(presEntry).use { stream ->
+                        val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                        val (w, h, rIds) = parsePresentationXml(bounded)
+                        if (w > 0L) slideWidthEmu = w
+                        if (h > 0L) slideHeightEmu = h
+                        orderedSlideRIds.addAll(rIds)
+                    }
                 }
             }
 
@@ -83,9 +85,11 @@ object PresentationParser {
             val presRels = mutableMapOf<String, String>()
             val presRelsEntry = zip.getEntry("ppt/_rels/presentation.xml.rels")
             if (presRelsEntry != null) {
-                zip.getInputStream(presRelsEntry).use { stream ->
-                    val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                    presRels.putAll(parseRelationshipsXml(bounded, "ppt/"))
+                runCatching {
+                    zip.getInputStream(presRelsEntry).use { stream ->
+                        val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                        presRels.putAll(parseRelationshipsXml(bounded, "ppt/"))
+                    }
                 }
             }
 
@@ -93,9 +97,13 @@ object PresentationParser {
             val themeColors = mutableMapOf<String, Int>()
             val themeEntry = zip.getEntry("ppt/theme/theme1.xml")
             if (themeEntry != null) {
-                zip.getInputStream(themeEntry).use { stream ->
-                    val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                    themeColors.putAll(parseThemeXml(bounded))
+                runCatching {
+                    zip.getInputStream(themeEntry).use { stream ->
+                        val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                        themeColors.putAll(parseThemeXml(bounded))
+                    }
+                }.onFailure {
+                    themeColors.putAll(defaultThemeColors())
                 }
             } else {
                 themeColors.putAll(defaultThemeColors())
@@ -122,9 +130,11 @@ object PresentationParser {
                 val slideRels = mutableMapOf<String, String>()
                 val relsEntry = zip.getEntry(slideRelsPath)
                 if (relsEntry != null) {
-                    zip.getInputStream(relsEntry).use { stream ->
-                        val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                        slideRels.putAll(parseRelationshipsXml(bounded, "ppt/slides/"))
+                    runCatching {
+                        zip.getInputStream(relsEntry).use { stream ->
+                            val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                            slideRels.putAll(parseRelationshipsXml(bounded, "ppt/slides/"))
+                        }
                     }
                 }
 
@@ -134,24 +144,46 @@ object PresentationParser {
                 if (notesPath != null) {
                     val notesEntry = zip.getEntry(notesPath)
                     if (notesEntry != null) {
-                        zip.getInputStream(notesEntry).use { stream ->
-                            val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                            speakerNotes = parseNotesSlideXml(bounded)
+                        runCatching {
+                            zip.getInputStream(notesEntry).use { stream ->
+                                val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                                speakerNotes = parseNotesSlideXml(bounded)
+                            }
                         }
                     }
                 }
 
-                // Parse slide elements
-                zip.getInputStream(slideEntry).use { stream ->
-                    val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                    val slide = parseSlideXml(
-                        stream = bounded,
-                        slideNumber = index + 1,
-                        slideRels = slideRels,
-                        themeColors = themeColors,
-                        notes = speakerNotes
+                // Parse slide elements with per-slide fallback
+                runCatching {
+                    zip.getInputStream(slideEntry).use { stream ->
+                        val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                        val slide = parseSlideXml(
+                            stream = bounded,
+                            slideNumber = index + 1,
+                            slideRels = slideRels,
+                            themeColors = themeColors,
+                            notes = speakerNotes
+                        )
+                        slides.add(slide)
+                    }
+                }.onFailure { err ->
+                    slides.add(
+                        PresentationSlideModel(
+                            slideNumber = index + 1,
+                            title = "Slide ${index + 1}",
+                            elements = listOf(
+                                SlideElement.Shape(
+                                    bounds = ShapeBounds(914400L, 914400L, 7315200L, 2000000L),
+                                    paragraphs = listOf(
+                                        SlideParagraph(
+                                            runs = listOf(SlideTextRun("Slide could not be rendered: ${err.message ?: "Corrupt XML"}", fontSizePt = 18f))
+                                        )
+                                    )
+                                )
+                            ),
+                            speakerNotes = speakerNotes
+                        )
                     )
-                    slides.add(slide)
                 }
             }
 
@@ -774,9 +806,11 @@ object PresentationParser {
         ZipFile(file).use { zip ->
             val entry = zip.getEntry("content.xml")
             if (entry != null) {
-                zip.getInputStream(entry).use { stream ->
-                    val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
-                    slides.addAll(parseOdpContentXml(bounded))
+                runCatching {
+                    zip.getInputStream(entry).use { stream ->
+                        val bounded = DocumentFormatDetector.createSafeBoundedStream(stream)
+                        slides.addAll(parseOdpContentXml(bounded))
+                    }
                 }
             }
         }
@@ -934,9 +968,12 @@ object PresentationParser {
     // =============================================================================================
 
     fun parseLegacyPpt(file: File): PresentationDocumentModel {
+        if (file.length() < 512) {
+            throw UnsupportedOperationException("Legacy binary presentation (${file.name}) format is not supported or contains no readable slides.")
+        }
         val pptBytes = Ole2DocumentReader.extractStream(file, "PowerPoint Document")
-            ?: (if (file.length() < 30 * 1024 * 1024) file.readBytes() else null)
-            ?: throw IllegalArgumentException("No PowerPoint stream found in legacy presentation.")
+            ?: (if (file.length() <= 30L * 1024 * 1024) file.readBytes() else null)
+            ?: throw UnsupportedOperationException("No PowerPoint stream found in legacy presentation (${file.name}).")
 
         val slides = mutableListOf<PresentationSlideModel>()
         var currentSlideIndex = 0
@@ -1051,25 +1088,7 @@ object PresentationParser {
         }
 
         if (slides.isEmpty()) {
-            slides.add(
-                PresentationSlideModel(
-                    slideNumber = 1,
-                    title = file.nameWithoutExtension,
-                    elements = listOf(
-                        SlideElement.Shape(
-                            bounds = ShapeBounds(
-                                xEmu = 914400L,
-                                yEmu = 914400L,
-                                widthEmu = 7315200L,
-                                heightEmu = 2000000L
-                            ),
-                            paragraphs = listOf(
-                                SlideParagraph(runs = listOf(SlideTextRun("No slide content could be decoded from this legacy presentation.", fontSizePt = 20f)))
-                            )
-                        )
-                    )
-                )
-            )
+            throw UnsupportedOperationException("Legacy binary presentation (${file.name}) contains no readable slides.")
         }
 
         return PresentationDocumentModel(
