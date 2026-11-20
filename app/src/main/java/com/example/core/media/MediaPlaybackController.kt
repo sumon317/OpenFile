@@ -197,6 +197,7 @@ object MediaPlaybackStateHolder {
             val audioAttributes = AudioAttributes.Builder()
                 .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                 .setUsage(C.USAGE_MEDIA)
+                .setSpatializationBehavior(C.SPATIALIZATION_BEHAVIOR_AUTO)
                 .build()
             val player = ExoPlayer.Builder(appContext, renderersFactory)
                 .setLooper(Looper.getMainLooper())

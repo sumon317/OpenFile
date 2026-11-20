@@ -2675,6 +2675,7 @@ fun VideoPlayerPreview(
         val audioAttributes = AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .setSpatializationBehavior(C.SPATIALIZATION_BEHAVIOR_AUTO)
             .build()
 
         ExoPlayer.Builder(context, renderersFactory).build().apply {

@@ -2,10 +2,11 @@ package com.example.core.media
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.media.AudioManager
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
-import android.media.audiofx.Virtualizer
+import android.os.Build
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -57,7 +58,9 @@ data class EqualizerUiState(
     val bassBoostStrength: Int = 0,     // 0..1000
     val virtualizerStrength: Int = 0,   // 0..1000
     val loudnessGainMb: Int = 0,        // 0..1500
-    val isHardwareEffectBound: Boolean = false
+    val isHardwareEffectBound: Boolean = false,
+    val isSpatializerAvailable: Boolean = false,
+    val isSpatializerEnabled: Boolean = false
 ) {
     val estimatedPeakBoostDb: Float
         get() {
@@ -96,6 +99,43 @@ data class EqualizerUiState(
     }
 }
 
+/**
+ * Backward-compatible wrapper for [android.media.audiofx.Virtualizer].
+ *
+ * Android API level 35+ (Android 15) deprecated [android.media.audiofx.Virtualizer] in favor of platform-level
+ * [android.media.Spatializer] and [android.media.AudioAttributes.Builder.setSpatializationBehavior].
+ * For backward compatibility with older Android platforms (API 24-34) and session-level DSP processing,
+ * this wrapper encapsulates the legacy effect with appropriate deprecation suppression.
+ */
+@Suppress("DEPRECATION")
+private class VirtualizerCompat private constructor(
+    private val effect: android.media.audiofx.Virtualizer
+) {
+    var enabled: Boolean
+        get() = runCatching { effect.enabled }.getOrDefault(false)
+        set(value) { runCatching { effect.enabled = value } }
+
+    val strengthSupported: Boolean
+        get() = runCatching { effect.strengthSupported }.getOrDefault(false)
+
+    fun setStrength(strength: Short) {
+        runCatching { effect.setStrength(strength) }
+    }
+
+    fun release() {
+        runCatching { effect.release() }
+    }
+
+    companion object {
+        fun create(audioSessionId: Int): VirtualizerCompat? {
+            return runCatching {
+                val effect = android.media.audiofx.Virtualizer(0, audioSessionId)
+                VirtualizerCompat(effect)
+            }.getOrNull()
+        }
+    }
+}
+
 object EqualizerEngine {
     private val effectExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "openfile-equalizer-dsp").apply { isDaemon = true }
@@ -104,7 +144,7 @@ object EqualizerEngine {
 
     private var equalizer: Equalizer? = null
     private var bassBoost: BassBoost? = null
-    private var virtualizer: Virtualizer? = null
+    private var virtualizer: VirtualizerCompat? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
     @Volatile
     private var attachedAudioSessionId: Int = 0
@@ -116,9 +156,25 @@ object EqualizerEngine {
     private var prefs: SharedPreferences? = null
 
     fun initialize(context: Context) {
+        val appContext = context.applicationContext
         if (prefs == null) {
-            prefs = context.applicationContext.getSharedPreferences("openfile_eq_settings", Context.MODE_PRIVATE)
+            prefs = appContext.getSharedPreferences("openfile_eq_settings", Context.MODE_PRIVATE)
             loadSavedSettings()
+        }
+        querySpatializerSupport(appContext)
+    }
+
+    private fun querySpatializerSupport(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S_V2) {
+            runCatching {
+                val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                val spatializer = audioManager?.spatializer
+                if (spatializer != null) {
+                    val available = spatializer.isAvailable
+                    val enabled = spatializer.isEnabled
+                    _state.update { it.copy(isSpatializerAvailable = available, isSpatializerEnabled = enabled) }
+                }
+            }
         }
     }
 
@@ -192,7 +248,7 @@ object EqualizerEngine {
 
                 equalizer = eq
                 bassBoost = runCatching { BassBoost(0, audioSessionId) }.getOrNull()
-                virtualizer = runCatching { Virtualizer(0, audioSessionId) }.getOrNull()
+                virtualizer = VirtualizerCompat.create(audioSessionId)
                 loudnessEnhancer = runCatching { LoudnessEnhancer(audioSessionId) }.getOrNull()
 
                 _state.update {
