@@ -154,6 +154,8 @@ class MediaPlaybackController(
 
     fun stop() {
         MediaPlaybackStateHolder.updateIsPlaying(false)
+        MediaPlaybackStateHolder.updateCurrentPosition(0L)
+        MediaPlaybackStateHolder.updateCurrentFile(null)
         val intent = Intent(context, MediaPlaybackForegroundService::class.java).apply {
             action = MediaPlaybackForegroundService.ACTION_STOP
         }
