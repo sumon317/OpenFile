@@ -21,6 +21,7 @@ import com.example.core.database.SearchQueryEntity
 import com.example.core.database.TransferJobEntity
 import com.example.core.database.TrashItemEntity
 import com.example.core.datastore.AppSettingsState
+import com.example.core.datastore.CategoryFolderViewMode
 import com.example.core.datastore.FileOpenAction
 import com.example.core.datastore.MusicPlayerCustomSettings
 import com.example.core.datastore.SettingsDataStore
@@ -84,6 +85,8 @@ data class BrowserUiState(
     val errorMessage: String? = null,
     val searchQuery: String = "",
     val activeCategoryFilter: FileCategory? = null,
+    val categoryFolderViewMode: CategoryFolderViewMode = CategoryFolderViewMode.ALL_FILES,
+    val activeCategoryFolder: FileReference? = null,
     val inspectArchiveFile: FileReference? = null,
     val archiveEntries: List<ArchiveEntryItem> = emptyList(),
     val archiveSubPath: String = "",
@@ -866,6 +869,10 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             _browserState.value = state.copy(inspectArchiveFile = null, archiveEntries = emptyList(), archiveSubPath = "")
             return true
         }
+        if (state.activeCategoryFilter != null && state.activeCategoryFolder != null) {
+            closeCategoryFolder()
+            return true
+        }
         val current = state.currentDirectory ?: return false
         val parentPath = current.parentUriOrPath
 
@@ -1032,6 +1039,7 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         } else {
             defaultSortForCategory(category, currentSettings)
         }
+        val mode = currentSettings.categoryFolderViewMode
         val nowMs = System.currentTimeMillis()
         val cachedAt = categoryCacheAt[category] ?: 0L
         val cached = categoryCache[category]?.takeIf { nowMs - cachedAt < 30_000L }
@@ -1039,7 +1047,11 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 if (currentSettings.showHiddenFiles) list else list.filter { !it.isHidden && !isPathInsideHiddenFolder(it.uriOrPath) }
             }
         val initialItems = if (cached != null) {
-            runCatching { FileSortAndFilterEngine.sortFiles(cached, sortField, sortOrder) }.getOrDefault(cached)
+            if (mode == CategoryFolderViewMode.BY_FOLDER) {
+                groupCategoryItemsByFolder(cached, category, sortField, sortOrder)
+            } else {
+                runCatching { FileSortAndFilterEngine.sortFiles(cached, sortField, sortOrder) }.getOrDefault(cached)
+            }
         } else {
             emptyList()
         }
@@ -1051,6 +1063,8 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             selectedUris = emptySet(),
             searchQuery = "",
             activeCategoryFilter = category,
+            categoryFolderViewMode = mode,
+            activeCategoryFolder = null,
             inspectArchiveFile = null,
             activeRemoteProfile = null,
             errorMessage = null,
@@ -1079,22 +1093,28 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                     indexedItems
                 }
                 val visibleItems = if (currentSettings.showHiddenFiles) combinedItems else combinedItems.filter { !it.isHidden && !isPathInsideHiddenFolder(it.uriOrPath) }
-                val sorted = withContext(Dispatchers.Default) {
-                    runCatching {
-                        FileSortAndFilterEngine.sortFiles(
-                            visibleItems,
-                            sortField,
-                            sortOrder
-                        )
-                    }.getOrDefault(visibleItems)
+                val displayItems = if (mode == CategoryFolderViewMode.BY_FOLDER) {
+                    groupCategoryItemsByFolder(visibleItems, category, sortField, sortOrder)
+                } else {
+                    withContext(Dispatchers.Default) {
+                        runCatching {
+                            FileSortAndFilterEngine.sortFiles(
+                                visibleItems,
+                                sortField,
+                                sortOrder
+                            )
+                        }.getOrDefault(visibleItems)
+                    }
                 }
                 _browserState.value = _browserState.value.copy(
                     currentDirectory = null,
                     breadcrumbs = emptyList(),
-                    items = sorted,
+                    items = displayItems,
                     isLoading = false,
                     currentSortField = sortField,
-                    currentSortOrder = sortOrder
+                    currentSortOrder = sortOrder,
+                    categoryFolderViewMode = mode,
+                    activeCategoryFolder = null
                 )
             } catch (ce: kotlinx.coroutines.CancellationException) {
                 throw ce
@@ -1105,6 +1125,80 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
                 )
             }
         }
+    }
+
+    fun setCategoryFolderViewMode(mode: CategoryFolderViewMode) {
+        _settings.value = _settings.value.copy(categoryFolderViewMode = mode)
+        viewModelScope.launch {
+            runCatching { settingsStore.setCategoryFolderViewMode(mode) }
+        }
+        val state = _browserState.value
+        val category = state.activeCategoryFilter
+        if (category == null) {
+            _browserState.value = state.copy(categoryFolderViewMode = mode)
+            return
+        }
+        val currentSettings = _settings.value
+        val rawList = categoryCache[category] ?: emptyList()
+        val visibleItems = if (currentSettings.showHiddenFiles) rawList else rawList.filter { !it.isHidden && !isPathInsideHiddenFolder(it.uriOrPath) }
+
+        val newItems = if (mode == CategoryFolderViewMode.BY_FOLDER) {
+            groupCategoryItemsByFolder(visibleItems, category, state.currentSortField, state.currentSortOrder)
+        } else {
+            runCatching {
+                FileSortAndFilterEngine.sortFiles(visibleItems, state.currentSortField, state.currentSortOrder)
+            }.getOrDefault(visibleItems)
+        }
+
+        _browserState.value = state.copy(
+            categoryFolderViewMode = mode,
+            activeCategoryFolder = null,
+            items = newItems,
+            selectedUris = emptySet(),
+            searchQuery = ""
+        )
+    }
+
+    fun openCategoryFolder(folder: FileReference) {
+        val state = _browserState.value
+        val category = state.activeCategoryFilter ?: return
+        val currentSettings = _settings.value
+        val rawList = categoryCache[category] ?: emptyList()
+        val visibleItems = if (currentSettings.showHiddenFiles) rawList else rawList.filter { !it.isHidden && !isPathInsideHiddenFolder(it.uriOrPath) }
+
+        val folderFiles = visibleItems.filter { itemBelongsToFolder(it, folder) }
+        val sorted = runCatching {
+            FileSortAndFilterEngine.sortFiles(folderFiles, state.currentSortField, state.currentSortOrder)
+        }.getOrDefault(folderFiles)
+
+        _browserState.value = state.copy(
+            activeCategoryFolder = folder,
+            items = sorted,
+            selectedUris = emptySet(),
+            searchQuery = ""
+        )
+    }
+
+    fun closeCategoryFolder() {
+        val state = _browserState.value
+        val category = state.activeCategoryFilter ?: return
+        val currentSettings = _settings.value
+        val rawList = categoryCache[category] ?: emptyList()
+        val visibleItems = if (currentSettings.showHiddenFiles) rawList else rawList.filter { !it.isHidden && !isPathInsideHiddenFolder(it.uriOrPath) }
+
+        val folderItems = groupCategoryItemsByFolder(
+            visibleItems,
+            category,
+            state.currentSortField,
+            state.currentSortOrder
+        )
+
+        _browserState.value = state.copy(
+            activeCategoryFolder = null,
+            items = folderItems,
+            selectedUris = emptySet(),
+            searchQuery = ""
+        )
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1118,6 +1212,10 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
             return
         }
         if (item.isDirectory) {
+            if (state.activeCategoryFilter != null && state.categoryFolderViewMode == CategoryFolderViewMode.BY_FOLDER && state.activeCategoryFolder == null) {
+                openCategoryFolder(item)
+                return
+            }
             if (state.activeRemoteProfile != null) {
                 openRemoteNetworkDirectory(state.activeRemoteProfile, item.uriOrPath)
             } else {
@@ -3015,5 +3113,90 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
         categoryCacheAt.clear()
         _extractedArchiveImageCache.clear()
         scrollPositions.clear()
+    }
+
+    companion object {
+        fun groupCategoryItemsByFolder(
+            items: List<FileReference>,
+            category: FileCategory,
+            sortField: SortField = SortField.NAME,
+            sortOrder: SortOrder = SortOrder.ASCENDING
+        ): List<FileReference> {
+            if (items.isEmpty()) return emptyList()
+
+            val primaryRoot = "/storage/emulated/0"
+            val groups = LinkedHashMap<String, MutableList<FileReference>>()
+            for (item in items) {
+                val folderKey = item.parentUriOrPath?.trimEnd('/')?.ifEmpty { null }
+                    ?: item.metadata["bucketName"]
+                    ?: runCatching { File(item.uriOrPath).parent?.trimEnd('/') }.getOrNull()
+                    ?: primaryRoot
+                groups.getOrPut(folderKey) { mutableListOf() }.add(item)
+            }
+
+            val folderList = groups.map { (folderPath, filesInFolder) ->
+                val folderFile = File(folderPath)
+                val folderName = when {
+                    folderPath == primaryRoot || folderPath == "/sdcard" -> "Internal Storage"
+                    folderPath.startsWith("/") && folderFile.name.isNotBlank() -> folderFile.name
+                    !folderPath.startsWith("/") -> folderPath
+                    else -> folderPath
+                }
+
+                val relativePath = if (folderPath.startsWith(primaryRoot)) {
+                    folderPath.removePrefix(primaryRoot).trimStart('/')
+                } else if (folderPath.startsWith("/")) {
+                    folderPath.trimStart('/')
+                } else {
+                    folderPath
+                }
+
+                val totalSize = filesInFolder.sumOf { it.sizeBytes }
+                val latestModified = filesInFolder.maxOfOrNull { it.lastModifiedEpochMs } ?: 0L
+                val coverItem = filesInFolder.maxByOrNull { it.lastModifiedEpochMs } ?: filesInFolder.firstOrNull()
+
+                val unit = when (category) {
+                    FileCategory.IMAGES -> if (filesInFolder.size == 1) "photo" else "photos"
+                    FileCategory.AUDIO -> if (filesInFolder.size == 1) "song" else "songs"
+                    FileCategory.VIDEOS -> if (filesInFolder.size == 1) "video" else "videos"
+                    FileCategory.DOCUMENTS -> if (filesInFolder.size == 1) "doc" else "docs"
+                    else -> if (filesInFolder.size == 1) "item" else "items"
+                }
+
+                FileReference(
+                    providerType = ProviderType.LOCAL,
+                    uriOrPath = folderPath,
+                    displayName = folderName,
+                    parentUriOrPath = if (folderPath.startsWith("/")) folderFile.parent else null,
+                    isDirectory = true,
+                    sizeBytes = totalSize,
+                    lastModifiedEpochMs = latestModified,
+                    metadata = mapOf(
+                        "childCount" to "${filesInFolder.size} $unit",
+                        "folderItemCount" to "${filesInFolder.size}",
+                        "categoryFolder" to "true",
+                        "relativeDisplayPath" to relativePath,
+                        "coverUri" to (coverItem?.uriOrPath ?: "")
+                    )
+                )
+            }
+
+            return runCatching {
+                FileSortAndFilterEngine.sortFiles(folderList, sortField, sortOrder)
+            }.getOrDefault(folderList)
+        }
+
+        fun itemBelongsToFolder(item: FileReference, folder: FileReference): Boolean {
+            val folderPath = folder.uriOrPath.trimEnd('/')
+            val itemParent = item.parentUriOrPath?.trimEnd('/')
+                ?: item.metadata["bucketName"]
+                ?: runCatching { File(item.uriOrPath).parent?.trimEnd('/') }.getOrNull()
+            if (itemParent != null && itemParent == folderPath) return true
+            if (folder.metadata["categoryFolder"] == "true") {
+                if (item.metadata["bucketName"] != null && item.metadata["bucketName"].equals(folder.displayName, ignoreCase = true)) return true
+                if (item.uriOrPath.startsWith("$folderPath/") && !item.uriOrPath.removePrefix("$folderPath/").contains('/')) return true
+            }
+            return false
+        }
     }
 }

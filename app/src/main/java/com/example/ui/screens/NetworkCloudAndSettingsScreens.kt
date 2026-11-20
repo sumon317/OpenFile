@@ -34,10 +34,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -104,6 +106,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.example.core.database.NetworkProfileEntity
 import com.example.core.datastore.AppSettingsState
+import com.example.core.datastore.CategoryFolderViewMode
 import com.example.core.datastore.FileOpenAction
 import com.example.core.datastore.MusicPlayerCustomSettings
 import com.example.core.datastore.ProgressBarPreset
@@ -1410,6 +1413,7 @@ fun SettingsScreen(
     onDownloadAndInstallUpdate: () -> Unit = {},
     onOpenReleasesInBrowser: () -> Unit = {},
     onFileOpenActionChange: (FileOpenAction) -> Unit = {},
+    onCategoryFolderViewModeChange: (CategoryFolderViewMode) -> Unit = {},
     onMusicPlayerSettingsChange: ((MusicPlayerCustomSettings) -> MusicPlayerCustomSettings) -> Unit = {}
 ) {
     LazyColumn(
@@ -2002,6 +2006,31 @@ fun SettingsScreen(
                                     Text(text = action.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    HorizontalDivider()
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("Category Quick Tiles View Mode", style = MaterialTheme.typography.titleSmall)
+                    Text("Toggle default presentation for Songs, Photos, Videos, and Docs (list everything vs grouped by parent folders)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CategoryFolderViewMode.entries.forEach { mode ->
+                            FilterChip(
+                                selected = settings.categoryFolderViewMode == mode,
+                                onClick = { onCategoryFolderViewModeChange(mode) },
+                                label = { Text(mode.label) },
+                                leadingIcon = {
+                                    Icon(
+                                        if (mode == CategoryFolderViewMode.ALL_FILES) Icons.AutoMirrored.Filled.ViewList else Icons.Filled.Folder,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                },
+                                modifier = Modifier.testTag("category_mode_chip_${mode.name}")
+                            )
                         }
                     }
                     Spacer(modifier = Modifier.height(6.dp))

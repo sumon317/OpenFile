@@ -61,7 +61,9 @@ data class FileReference(
     val formattedSize: String by lazy(LazyThreadSafetyMode.NONE) {
         if (isDirectory) {
             val childCount = metadata["childCount"]
-            if (childCount != null) "$childCount items" else "Folder"
+            if (childCount != null) {
+                if (childCount.any { it.isLetter() }) childCount else "$childCount items"
+            } else "Folder"
         } else {
             formatByteSize(sizeBytes)
         }

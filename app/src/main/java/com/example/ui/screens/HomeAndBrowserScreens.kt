@@ -131,6 +131,7 @@ import com.example.core.database.BookmarkEntity
 import com.example.core.database.NetworkProfileEntity
 import com.example.core.database.RecentFileEntity
 import com.example.core.datastore.AppSettingsState
+import com.example.core.datastore.CategoryFolderViewMode
 import com.example.core.filesystem.ClipboardMode
 import com.example.core.filesystem.ClipboardState
 import com.example.core.filesystem.FileSortAndFilterEngine
@@ -1097,6 +1098,8 @@ fun FileBrowserScreen(
     onToggleShowHidden: (() -> Unit)? = null,
     onRequestSafForPath: ((String?) -> Unit)? = null,
     onClearRecentFiles: (() -> Unit)? = null,
+    onToggleCategoryFolderView: ((CategoryFolderViewMode) -> Unit)? = null,
+    onNavigateUpCategoryFolder: (() -> Unit)? = null,
     onSaveScrollPosition: ((key: String, index: Int, offset: Int) -> Unit)? = null,
     onGetScrollPosition: ((key: String) -> Pair<Int, Int>)? = null
 ) {
@@ -1149,11 +1152,13 @@ fun FileBrowserScreen(
     val locationKey = remember(
         browserState.currentDirectory?.uriOrPath,
         browserState.activeCategoryFilter,
+        browserState.categoryFolderViewMode,
+        browserState.activeCategoryFolder?.uriOrPath,
         browserState.activeRemoteProfile?.id
     ) {
         when {
             browserState.activeCategoryFilter != null ->
-                "CATEGORY:${browserState.activeCategoryFilter.name}"
+                "CATEGORY:${browserState.activeCategoryFilter.name}:${browserState.categoryFolderViewMode.name}:${browserState.activeCategoryFolder?.uriOrPath ?: "ROOT"}"
             browserState.currentDirectory != null ->
                 "DIR:${browserState.currentDirectory.uriOrPath}"
             browserState.activeRemoteProfile != null ->
@@ -1366,52 +1371,217 @@ fun FileBrowserScreen(
                     .fillMaxWidth()
                     .testTag("category_context_banner")
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Category: ${browserState.activeCategoryFilter.title}",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.weight(1f, fill = false).padding(end = 6.dp),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                if (browserState.activeCategoryFolder != null) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (browserState.activeCategoryFilter == FileCategory.RECENT_FILES && onClearRecentFiles != null && filteredItems.isNotEmpty()) {
-                            TextButton(
-                                onClick = onClearRecentFiles,
-                                modifier = Modifier.testTag("category_clear_recents_button"),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                        IconButton(
+                            onClick = { onNavigateUpCategoryFolder?.invoke() },
+                            modifier = Modifier.testTag("category_folder_back_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back to folder list",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f).padding(end = 8.dp)
+                        ) {
+                            Text(
+                                text = browserState.activeCategoryFolder.displayName,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            val relativePath = browserState.activeCategoryFolder.metadata["relativeDisplayPath"]
+                            val subtitle = if (!relativePath.isNullOrBlank()) {
+                                "$relativePath  •  ${filteredItems.size} ${if (filteredItems.size == 1) "item" else "items"}"
+                            } else {
+                                "${browserState.activeCategoryFilter.title}  •  ${filteredItems.size} ${if (filteredItems.size == 1) "item" else "items"}"
+                            }
+                            Text(
+                                text = subtitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            if (onOpenParentFolder != null && browserState.activeCategoryFolder.isDirectory) {
+                                IconButton(
+                                    onClick = { onOpenParentFolder(browserState.activeCategoryFolder) },
+                                    modifier = Modifier.size(34.dp).testTag("category_open_in_browser_button")
+                                ) {
+                                    Icon(
+                                        Icons.Filled.FolderOpen,
+                                        contentDescription = "Open in file browser",
+                                        modifier = Modifier.size(18.dp),
+                                        tint = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                modifier = Modifier
+                                    .clickable { onToggleCategoryFolderView?.invoke(CategoryFolderViewMode.ALL_FILES) }
+                                    .testTag("category_view_all_files_pill")
                             ) {
-                                Icon(
-                                    Icons.Filled.Delete,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.error
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    "Clear Recent",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.error
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.AutoMirrored.Filled.ViewList,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        "All Files",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
-                        val count = filteredItems.size
-                        Text(
-                            text = "$count ${if (count == 1) "item" else "items"}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp)
+                        ) {
+                            Text(
+                                text = "Category: ${browserState.activeCategoryFilter.title}",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            val count = filteredItems.size
+                            val countText = if (browserState.categoryFolderViewMode == CategoryFolderViewMode.BY_FOLDER) {
+                                "$count ${if (count == 1) "folder" else "folders"}"
+                            } else {
+                                "$count ${if (count == 1) "item" else "items"}"
+                            }
+                            Text(
+                                text = countText,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (browserState.activeCategoryFilter == FileCategory.RECENT_FILES && onClearRecentFiles != null && filteredItems.isNotEmpty()) {
+                                TextButton(
+                                    onClick = onClearRecentFiles,
+                                    modifier = Modifier.testTag("category_clear_recents_button"),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Delete,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        "Clear Recent",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+
+                            // Toggle capsule [ All | Folders ]
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                modifier = Modifier.testTag("category_view_mode_toggle")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    val isAll = browserState.categoryFolderViewMode == CategoryFolderViewMode.ALL_FILES
+                                    Surface(
+                                        shape = RoundedCornerShape(16.dp),
+                                        color = if (isAll) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                        modifier = Modifier
+                                            .clickable { onToggleCategoryFolderView?.invoke(CategoryFolderViewMode.ALL_FILES) }
+                                            .testTag("category_view_all_files")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                Icons.AutoMirrored.Filled.ViewList,
+                                                contentDescription = null,
+                                                tint = if (isAll) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Text(
+                                                "All",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = if (isAll) FontWeight.SemiBold else FontWeight.Normal,
+                                                color = if (isAll) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+
+                                    val isFolders = browserState.categoryFolderViewMode == CategoryFolderViewMode.BY_FOLDER
+                                    Surface(
+                                        shape = RoundedCornerShape(16.dp),
+                                        color = if (isFolders) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                        modifier = Modifier
+                                            .clickable { onToggleCategoryFolderView?.invoke(CategoryFolderViewMode.BY_FOLDER) }
+                                            .testTag("category_view_by_folder")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                Icons.Filled.Folder,
+                                                contentDescription = null,
+                                                tint = if (isFolders) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Text(
+                                                "Folders",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = if (isFolders) FontWeight.SemiBold else FontWeight.Normal,
+                                                color = if (isFolders) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

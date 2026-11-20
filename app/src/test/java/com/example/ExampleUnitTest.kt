@@ -907,6 +907,57 @@ class ExampleUnitTest {
         assertEquals(com.example.core.datastore.PlayerFontStyle.MONOSPACE, circleSettings.fontStyle)
         assertEquals(com.example.core.datastore.PlayerFontSize.LARGE, circleSettings.fontSize)
     }
+
+    @Test
+    fun `category folder view mode grouping and matching works correctly`() {
+        val photos = listOf(
+            FileReference(ProviderType.LOCAL, "/storage/emulated/0/DCIM/Camera/IMG_01.jpg", "IMG_01.jpg", "/storage/emulated/0/DCIM/Camera", false, sizeBytes = 1000L, lastModifiedEpochMs = 1000L, extension = "jpg"),
+            FileReference(ProviderType.LOCAL, "/storage/emulated/0/DCIM/Camera/IMG_02.jpg", "IMG_02.jpg", "/storage/emulated/0/DCIM/Camera", false, sizeBytes = 1000L, lastModifiedEpochMs = 2000L, extension = "jpg"),
+            FileReference(ProviderType.LOCAL, "/storage/emulated/0/DCIM/Camera/IMG_03.jpg", "IMG_03.jpg", "/storage/emulated/0/DCIM/Camera", false, sizeBytes = 1000L, lastModifiedEpochMs = 3000L, extension = "jpg"),
+            FileReference(ProviderType.LOCAL, "/storage/emulated/0/Pictures/Screenshots/SCR_01.png", "SCR_01.png", "/storage/emulated/0/Pictures/Screenshots", false, sizeBytes = 500L, lastModifiedEpochMs = 4000L, extension = "png"),
+            FileReference(ProviderType.LOCAL, "/storage/emulated/0/Pictures/Screenshots/SCR_02.png", "SCR_02.png", "/storage/emulated/0/Pictures/Screenshots", false, sizeBytes = 500L, lastModifiedEpochMs = 5000L, extension = "png"),
+            FileReference(ProviderType.LOCAL, "/storage/emulated/0/Download/wallpaper.jpg", "wallpaper.jpg", "/storage/emulated/0/Download", false, sizeBytes = 2500L, lastModifiedEpochMs = 6000L, extension = "jpg")
+        )
+
+        // Test grouping via companion object (pure business logic, no Android runtime dependency required)
+        val folders = com.example.ui.OpenFileViewModel.groupCategoryItemsByFolder(photos, FileCategory.IMAGES, SortField.NAME, SortOrder.ASCENDING)
+        assertEquals(3, folders.size)
+        // Check folder names in alphabetical order: Camera, Download, Screenshots
+        assertEquals("Camera", folders[0].displayName)
+        assertEquals("Download", folders[1].displayName)
+        assertEquals("Screenshots", folders[2].displayName)
+
+        // Check counts and metadata
+        assertEquals("3 photos", folders[0].metadata["childCount"])
+        assertEquals("1 photo", folders[1].metadata["childCount"])
+        assertEquals("2 photos", folders[2].metadata["childCount"])
+
+        // Check cover images (latest timestamp)
+        assertEquals("/storage/emulated/0/DCIM/Camera/IMG_03.jpg", folders[0].metadata["coverUri"])
+        assertEquals("/storage/emulated/0/Pictures/Screenshots/SCR_02.png", folders[2].metadata["coverUri"])
+
+        // Test itemBelongsToFolder
+        val cameraFolder = folders[0]
+        val screenshotsFolder = folders[2]
+        assertTrue(com.example.ui.OpenFileViewModel.itemBelongsToFolder(photos[0], cameraFolder))
+        assertTrue(com.example.ui.OpenFileViewModel.itemBelongsToFolder(photos[1], cameraFolder))
+        assertFalse(com.example.ui.OpenFileViewModel.itemBelongsToFolder(photos[3], cameraFolder))
+        assertTrue(com.example.ui.OpenFileViewModel.itemBelongsToFolder(photos[3], screenshotsFolder))
+
+        // Test songs grouping unit
+        val songs = listOf(
+            FileReference(ProviderType.LOCAL, "/storage/emulated/0/Music/track1.mp3", "track1.mp3", "/storage/emulated/0/Music", false, sizeBytes = 2000L, lastModifiedEpochMs = 1000L, extension = "mp3"),
+            FileReference(ProviderType.LOCAL, "/storage/emulated/0/Music/track2.mp3", "track2.mp3", "/storage/emulated/0/Music", false, sizeBytes = 3000L, lastModifiedEpochMs = 2000L, extension = "mp3")
+        )
+        val songFolders = com.example.ui.OpenFileViewModel.groupCategoryItemsByFolder(songs, FileCategory.AUDIO, SortField.NAME, SortOrder.ASCENDING)
+        assertEquals(1, songFolders.size)
+        assertEquals("Music", songFolders[0].displayName)
+        assertEquals("2 songs", songFolders[0].metadata["childCount"])
+
+        // Test CategoryFolderViewMode defaults
+        val defaultSettings = com.example.core.datastore.AppSettingsState()
+        assertEquals(com.example.core.datastore.CategoryFolderViewMode.ALL_FILES, defaultSettings.categoryFolderViewMode)
+    }
 }
 
 

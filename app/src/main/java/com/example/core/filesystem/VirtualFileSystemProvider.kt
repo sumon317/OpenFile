@@ -1390,7 +1390,8 @@ class MediaStoreProvider(
             MediaStore.MediaColumns.SIZE,
             MediaStore.MediaColumns.DATE_MODIFIED,
             MediaStore.MediaColumns.MIME_TYPE,
-            MediaStore.MediaColumns.DATA
+            MediaStore.MediaColumns.DATA,
+            MediaStore.MediaColumns.BUCKET_DISPLAY_NAME
         )
         val sortOrder = "${MediaStore.MediaColumns.DATE_MODIFIED} DESC"
         context.contentResolver.query(collectionUri, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
@@ -1400,6 +1401,7 @@ class MediaStoreProvider(
             val dateCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
             val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
             val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+            val bucketCol = cursor.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
 
             while (cursor.moveToNext()) {
                 try {
@@ -1409,6 +1411,7 @@ class MediaStoreProvider(
                     val dateSec = cursor.getLong(dateCol)
                     val mime = cursor.getString(mimeCol) ?: "application/octet-stream"
                     val rawPath = if (dataCol >= 0) cursor.getString(dataCol) else null
+                    val bucketName = if (bucketCol >= 0) cursor.getString(bucketCol) else null
                     val ext = name.substringAfterLast('.', "").lowercase()
 
                     if (!rawPath.isNullOrBlank() && rawPath.startsWith("/")) {
@@ -1423,7 +1426,8 @@ class MediaStoreProvider(
                             lastModifiedEpochMs = dateSec * 1000L,
                             mimeType = mime,
                             extension = ext,
-                            isHidden = name.startsWith(".") || isPathInsideHiddenDirectory(rawPath) || isPathInsideHiddenDirectory(parentPath)
+                            isHidden = name.startsWith(".") || isPathInsideHiddenDirectory(rawPath) || isPathInsideHiddenDirectory(parentPath),
+                            metadata = if (!bucketName.isNullOrBlank()) mapOf("bucketName" to bucketName) else emptyMap()
                         )
                     } else {
                         val contentUri = ContentUris.withAppendedId(collectionUri, id)
@@ -1431,13 +1435,14 @@ class MediaStoreProvider(
                             providerType = ProviderType.MEDIA_STORE,
                             uriOrPath = contentUri.toString(),
                             displayName = name,
-                            parentUriOrPath = null,
+                            parentUriOrPath = bucketName,
                             isDirectory = false,
                             sizeBytes = size,
                             lastModifiedEpochMs = dateSec * 1000L,
                             mimeType = mime,
                             extension = ext,
-                            isHidden = name.startsWith(".") || isPathInsideHiddenDirectory(contentUri.toString())
+                            isHidden = name.startsWith(".") || isPathInsideHiddenDirectory(contentUri.toString()),
+                            metadata = if (!bucketName.isNullOrBlank()) mapOf("bucketName" to bucketName) else emptyMap()
                         )
                     }
                 } catch (_: Throwable) {

@@ -234,6 +234,50 @@ fun FileIconBadge(
 
     val ext = file.extension
 
+    // 0. Category Album / Folder Cover Art (when grouped by parent folder)
+    val coverPath = if (showThumbnails && file.isDirectory && !file.metadata["coverUri"].isNullOrBlank()) {
+        file.metadata["coverUri"]
+    } else null
+
+    if (coverPath != null) {
+        val model: Any = if (coverPath.startsWith("content://")) Uri.parse(coverPath) else File(coverPath)
+        val imageRequest = remember(coverPath, context) {
+            ImageRequest.Builder(context)
+                .data(model)
+                .size(120, 120)
+                .bitmapConfig(Bitmap.Config.RGB_565)
+                .memoryCacheKey(coverPath)
+                .diskCacheKey(coverPath)
+                .crossfade(false)
+                .build()
+        }
+        Box(modifier = modifier.size(42.dp)) {
+            AsyncImage(
+                model = imageRequest,
+                contentDescription = file.displayName,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(FileIconBadgeShape)
+            )
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(2.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Folder,
+                    contentDescription = null,
+                    tint = FolderAmber,
+                    modifier = Modifier.size(12.dp).padding(1.dp)
+                )
+            }
+        }
+        return
+    }
+
     // 1. Image Thumbnail (Local path or Content URI)
     val thumbPath = if (showThumbnails && !file.isDirectory && ext in FileCategory.IMAGES.extensions) {
         resolveFastThumbnailPath(file)

@@ -1008,6 +1008,8 @@ private fun DestinationRouter(
                 onOpenArchiveSubFolder = { viewModel.openArchiveSubFolder(it) },
                 onViewArchive = { viewModel.inspectArchive(it) },
                 onClearRecentFiles = { viewModel.clearRecentFiles() },
+                onToggleCategoryFolderView = { viewModel.setCategoryFolderViewMode(it) },
+                onNavigateUpCategoryFolder = { viewModel.closeCategoryFolder() },
                 onSaveScrollPosition = { key, idx, offset -> viewModel.saveScrollPosition(key, idx, offset) },
                 onGetScrollPosition = { key -> viewModel.getScrollPosition(key) }
             )
@@ -1252,6 +1254,7 @@ private fun DestinationRouter(
                 onDownloadAndInstallUpdate = { viewModel.downloadAndInstallAppUpdate() },
                 onOpenReleasesInBrowser = { viewModel.appUpdateEngine.openReleasesPageInBrowser() },
                 onFileOpenActionChange = { viewModel.setFileOpenAction(it) },
+                onCategoryFolderViewModeChange = { viewModel.setCategoryFolderViewMode(it) },
                 onMusicPlayerSettingsChange = { transform -> viewModel.updateMusicPlayerSettings(transform) }
             )
         }

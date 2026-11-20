@@ -45,8 +45,14 @@ data class AppSettingsState(
     val ftpRootPath: String = "",
     val autoCheckUpdates: Boolean = true,
     val fileOpenAction: FileOpenAction = FileOpenAction.BUILT_IN_FIRST,
+    val categoryFolderViewMode: CategoryFolderViewMode = CategoryFolderViewMode.ALL_FILES,
     val musicPlayerSettings: MusicPlayerCustomSettings = MusicPlayerCustomSettings()
 )
+
+enum class CategoryFolderViewMode(val label: String) {
+    ALL_FILES("All Files"),
+    BY_FOLDER("Folders")
+}
 
 enum class ProgressBarPreset(val label: String, val description: String) {
     STANDARD("Classic Line", "Smooth standard line with rounded thumb"),
@@ -146,6 +152,7 @@ class SettingsDataStore(private val context: Context) {
         val FTP_ROOT_PATH = stringPreferencesKey("ftp_root_path")
         val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
         val FILE_OPEN_ACTION = stringPreferencesKey("file_open_action")
+        val CATEGORY_FOLDER_VIEW_MODE = stringPreferencesKey("category_folder_view_mode")
 
         // Custom Music Player & Audio Studio Preferences
         val MUSIC_ART_RADIUS = intPreferencesKey("music_art_radius")
@@ -226,8 +233,15 @@ class SettingsDataStore(private val context: Context) {
             fileOpenAction = runCatching {
                 FileOpenAction.valueOf(prefs[Keys.FILE_OPEN_ACTION] ?: FileOpenAction.BUILT_IN_FIRST.name)
             }.getOrDefault(FileOpenAction.BUILT_IN_FIRST),
+            categoryFolderViewMode = runCatching {
+                CategoryFolderViewMode.valueOf(prefs[Keys.CATEGORY_FOLDER_VIEW_MODE] ?: CategoryFolderViewMode.ALL_FILES.name)
+            }.getOrDefault(CategoryFolderViewMode.ALL_FILES),
             musicPlayerSettings = musicSettings
         )
+    }
+
+    suspend fun setCategoryFolderViewMode(mode: CategoryFolderViewMode) {
+        context.openFileDataStore.edit { it[Keys.CATEGORY_FOLDER_VIEW_MODE] = mode.name }
     }
 
     suspend fun setThemeMode(mode: ThemeMode) {
