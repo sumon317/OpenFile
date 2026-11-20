@@ -733,15 +733,12 @@ fun StorageAnalysisScreen(
                             }
                         }
                     )
-                    val shareableFiles = selectedItemsList.filter { !it.isDirectory }
-                    if (shareableFiles.isNotEmpty()) {
-                        AnalyzerBottomActionItem(
-                            icon = Icons.Filled.Share,
-                            label = "Share",
-                            testTag = "analyzer_multiselect_share",
-                            onClick = { onShareItems(shareableFiles) }
-                        )
-                    }
+                    AnalyzerBottomActionItem(
+                        icon = Icons.Filled.Share,
+                        label = "Share",
+                        testTag = "analyzer_multiselect_share",
+                        onClick = { onShareItems(selectedItemsList) }
+                    )
                     AnalyzerBottomActionItem(
                         icon = Icons.Filled.FolderZip,
                         label = "Compress",
