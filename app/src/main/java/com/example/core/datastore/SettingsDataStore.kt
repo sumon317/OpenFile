@@ -44,7 +44,61 @@ data class AppSettingsState(
     val ftpIdleTimeoutMinutes: Int = 15,
     val ftpRootPath: String = "",
     val autoCheckUpdates: Boolean = true,
-    val fileOpenAction: FileOpenAction = FileOpenAction.BUILT_IN_FIRST
+    val fileOpenAction: FileOpenAction = FileOpenAction.BUILT_IN_FIRST,
+    val musicPlayerSettings: MusicPlayerCustomSettings = MusicPlayerCustomSettings()
+)
+
+enum class ProgressBarPreset(val label: String, val description: String) {
+    STANDARD("Classic Line", "Smooth standard line with rounded thumb"),
+    WAVE_PILL("Pill Wave", "Modern rounded capsule track with elevated thumb"),
+    SEGMENTED("Segmented", "Segmented dash ticks with precision marker"),
+    MINIMAL_THIN("Minimal Thin", "Ultra-thin hairline line with micro indicator")
+}
+
+enum class PlayButtonShape(val label: String) {
+    CIRCLE("Circle"),
+    ROUNDED("Square / Rounded")
+}
+
+enum class PlayerThemePreset(
+    val label: String,
+    val backgroundStart: Long,
+    val backgroundEnd: Long,
+    val accentColor: Long,
+    val cardSurface: Long
+) {
+    STUDIO_PURPLE("Studio Purple", 0xFF140D2B, 0xFF0A0714, 0xFF8B5CF6, 0xFF1E1736),
+    OLED_BLACK("OLED Black", 0xFF000000, 0xFF050505, 0xFF6366F1, 0xFF111111),
+    CYBERPUNK_NEON("Cyberpunk Neon", 0xFF080F1E, 0xFF03070E, 0xFF00E5FF, 0xFF0F1B2E),
+    WARM_SUNSET("Warm Sunset", 0xFF1F0D15, 0xFF0E050A, 0xFFFF6B6B, 0xFF2D1520),
+    OCEAN_DEPTHS("Ocean Depths", 0xFF071824, 0xFF030B12, 0xFF00B4D8, 0xFF0E2536),
+    MINIMAL_MONOCHROME("Monochrome", 0xFF121214, 0xFF0A0A0B, 0xFFE0E0E0, 0xFF1E1E22)
+}
+
+enum class PlayerFontStyle(val label: String) {
+    DEFAULT("Sans Serif"),
+    MONOSPACE("Monospace (Retro)"),
+    SERIF("Serif (Classic)"),
+    CURSIVE("Cursive (Artistic)")
+}
+
+enum class PlayerFontSize(val label: String, val scaleFactor: Float) {
+    COMPACT("Compact", 0.85f),
+    STANDARD("Standard", 1.0f),
+    LARGE("Large", 1.18f)
+}
+
+data class MusicPlayerCustomSettings(
+    val albumArtCornerRadiusDp: Int = 24,
+    val isAlbumArtCircle: Boolean = false,
+    val rotateIfCircle: Boolean = false,
+    val songTitleMarquee: Boolean = true,
+    val progressBarStyle: ProgressBarPreset = ProgressBarPreset.STANDARD,
+    val playButtonShape: PlayButtonShape = PlayButtonShape.CIRCLE,
+    val playButtonCornerRadiusDp: Int = 36,
+    val playerTheme: PlayerThemePreset = PlayerThemePreset.STUDIO_PURPLE,
+    val fontStyle: PlayerFontStyle = PlayerFontStyle.DEFAULT,
+    val fontSize: PlayerFontSize = PlayerFontSize.STANDARD
 )
 
 enum class FileOpenAction(val label: String, val description: String) {
@@ -92,6 +146,18 @@ class SettingsDataStore(private val context: Context) {
         val FTP_ROOT_PATH = stringPreferencesKey("ftp_root_path")
         val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
         val FILE_OPEN_ACTION = stringPreferencesKey("file_open_action")
+
+        // Custom Music Player & Audio Studio Preferences
+        val MUSIC_ART_RADIUS = intPreferencesKey("music_art_radius")
+        val MUSIC_ART_IS_CIRCLE = booleanPreferencesKey("music_art_is_circle")
+        val MUSIC_ART_ROTATE_CIRCLE = booleanPreferencesKey("music_art_rotate_circle")
+        val MUSIC_TITLE_MARQUEE = booleanPreferencesKey("music_title_marquee")
+        val MUSIC_PROGRESS_STYLE = stringPreferencesKey("music_progress_style")
+        val MUSIC_PLAY_BUTTON_SHAPE = stringPreferencesKey("music_play_button_shape")
+        val MUSIC_PLAY_BUTTON_RADIUS = intPreferencesKey("music_play_button_radius")
+        val MUSIC_PLAYER_THEME = stringPreferencesKey("music_player_theme")
+        val MUSIC_FONT_STYLE = stringPreferencesKey("music_font_style")
+        val MUSIC_FONT_SIZE = stringPreferencesKey("music_font_size")
     }
 
     val settingsFlow: Flow<AppSettingsState> = context.openFileDataStore.data.map { prefs ->
@@ -103,6 +169,29 @@ class SettingsDataStore(private val context: Context) {
             .putString("theme_mode", resolvedThemeMode.name)
             .putBoolean("dynamic_color", resolvedDynamicColor)
             .apply()
+
+        val musicSettings = MusicPlayerCustomSettings(
+            albumArtCornerRadiusDp = prefs[Keys.MUSIC_ART_RADIUS] ?: 24,
+            isAlbumArtCircle = prefs[Keys.MUSIC_ART_IS_CIRCLE] ?: false,
+            rotateIfCircle = prefs[Keys.MUSIC_ART_ROTATE_CIRCLE] ?: false,
+            songTitleMarquee = prefs[Keys.MUSIC_TITLE_MARQUEE] ?: true,
+            progressBarStyle = runCatching {
+                ProgressBarPreset.valueOf(prefs[Keys.MUSIC_PROGRESS_STYLE] ?: ProgressBarPreset.STANDARD.name)
+            }.getOrDefault(ProgressBarPreset.STANDARD),
+            playButtonShape = runCatching {
+                PlayButtonShape.valueOf(prefs[Keys.MUSIC_PLAY_BUTTON_SHAPE] ?: PlayButtonShape.CIRCLE.name)
+            }.getOrDefault(PlayButtonShape.CIRCLE),
+            playButtonCornerRadiusDp = prefs[Keys.MUSIC_PLAY_BUTTON_RADIUS] ?: 36,
+            playerTheme = runCatching {
+                PlayerThemePreset.valueOf(prefs[Keys.MUSIC_PLAYER_THEME] ?: PlayerThemePreset.STUDIO_PURPLE.name)
+            }.getOrDefault(PlayerThemePreset.STUDIO_PURPLE),
+            fontStyle = runCatching {
+                PlayerFontStyle.valueOf(prefs[Keys.MUSIC_FONT_STYLE] ?: PlayerFontStyle.DEFAULT.name)
+            }.getOrDefault(PlayerFontStyle.DEFAULT),
+            fontSize = runCatching {
+                PlayerFontSize.valueOf(prefs[Keys.MUSIC_FONT_SIZE] ?: PlayerFontSize.STANDARD.name)
+            }.getOrDefault(PlayerFontSize.STANDARD)
+        )
 
         AppSettingsState(
             themeMode = resolvedThemeMode,
@@ -136,7 +225,8 @@ class SettingsDataStore(private val context: Context) {
             autoCheckUpdates = prefs[Keys.AUTO_CHECK_UPDATES] ?: true,
             fileOpenAction = runCatching {
                 FileOpenAction.valueOf(prefs[Keys.FILE_OPEN_ACTION] ?: FileOpenAction.BUILT_IN_FIRST.name)
-            }.getOrDefault(FileOpenAction.BUILT_IN_FIRST)
+            }.getOrDefault(FileOpenAction.BUILT_IN_FIRST),
+            musicPlayerSettings = musicSettings
         )
     }
 
@@ -221,5 +311,43 @@ class SettingsDataStore(private val context: Context) {
 
     suspend fun setFileOpenAction(action: FileOpenAction) {
         context.openFileDataStore.edit { it[Keys.FILE_OPEN_ACTION] = action.name }
+    }
+
+    suspend fun updateMusicPlayerSettings(transform: (MusicPlayerCustomSettings) -> MusicPlayerCustomSettings) {
+        context.openFileDataStore.edit { prefs ->
+            val current = MusicPlayerCustomSettings(
+                albumArtCornerRadiusDp = prefs[Keys.MUSIC_ART_RADIUS] ?: 24,
+                isAlbumArtCircle = prefs[Keys.MUSIC_ART_IS_CIRCLE] ?: false,
+                rotateIfCircle = prefs[Keys.MUSIC_ART_ROTATE_CIRCLE] ?: false,
+                songTitleMarquee = prefs[Keys.MUSIC_TITLE_MARQUEE] ?: true,
+                progressBarStyle = runCatching {
+                    ProgressBarPreset.valueOf(prefs[Keys.MUSIC_PROGRESS_STYLE] ?: ProgressBarPreset.STANDARD.name)
+                }.getOrDefault(ProgressBarPreset.STANDARD),
+                playButtonShape = runCatching {
+                    PlayButtonShape.valueOf(prefs[Keys.MUSIC_PLAY_BUTTON_SHAPE] ?: PlayButtonShape.CIRCLE.name)
+                }.getOrDefault(PlayButtonShape.CIRCLE),
+                playButtonCornerRadiusDp = prefs[Keys.MUSIC_PLAY_BUTTON_RADIUS] ?: 36,
+                playerTheme = runCatching {
+                    PlayerThemePreset.valueOf(prefs[Keys.MUSIC_PLAYER_THEME] ?: PlayerThemePreset.STUDIO_PURPLE.name)
+                }.getOrDefault(PlayerThemePreset.STUDIO_PURPLE),
+                fontStyle = runCatching {
+                    PlayerFontStyle.valueOf(prefs[Keys.MUSIC_FONT_STYLE] ?: PlayerFontStyle.DEFAULT.name)
+                }.getOrDefault(PlayerFontStyle.DEFAULT),
+                fontSize = runCatching {
+                    PlayerFontSize.valueOf(prefs[Keys.MUSIC_FONT_SIZE] ?: PlayerFontSize.STANDARD.name)
+                }.getOrDefault(PlayerFontSize.STANDARD)
+            )
+            val updated = transform(current)
+            prefs[Keys.MUSIC_ART_RADIUS] = updated.albumArtCornerRadiusDp.coerceIn(0, 48)
+            prefs[Keys.MUSIC_ART_IS_CIRCLE] = updated.isAlbumArtCircle
+            prefs[Keys.MUSIC_ART_ROTATE_CIRCLE] = if (updated.isAlbumArtCircle) updated.rotateIfCircle else false
+            prefs[Keys.MUSIC_TITLE_MARQUEE] = updated.songTitleMarquee
+            prefs[Keys.MUSIC_PROGRESS_STYLE] = updated.progressBarStyle.name
+            prefs[Keys.MUSIC_PLAY_BUTTON_SHAPE] = updated.playButtonShape.name
+            prefs[Keys.MUSIC_PLAY_BUTTON_RADIUS] = updated.playButtonCornerRadiusDp.coerceIn(0, 36)
+            prefs[Keys.MUSIC_PLAYER_THEME] = updated.playerTheme.name
+            prefs[Keys.MUSIC_FONT_STYLE] = updated.fontStyle.name
+            prefs[Keys.MUSIC_FONT_SIZE] = updated.fontSize.name
+        }
     }
 }

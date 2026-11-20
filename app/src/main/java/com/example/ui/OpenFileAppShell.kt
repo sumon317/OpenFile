@@ -493,6 +493,7 @@ fun OpenFileAppShell(viewModel: OpenFileViewModel) {
     if (previewState != null) {
         FilePreviewScreen(
             state = previewState!!,
+            musicSettings = settings.musicPlayerSettings,
             onDismiss = { viewModel.closePreviewDialog() },
             onOpenExternal = { viewModel.openWithExternalApp(it, forceChooser = true) },
             onSaveTextContent = { item, newText -> viewModel.saveEditedTextFile(item, newText) },
@@ -1250,7 +1251,8 @@ private fun DestinationRouter(
                 onCheckForUpdatesNow = { viewModel.checkForAppUpdates(manualUserTrigger = true) },
                 onDownloadAndInstallUpdate = { viewModel.downloadAndInstallAppUpdate() },
                 onOpenReleasesInBrowser = { viewModel.appUpdateEngine.openReleasesPageInBrowser() },
-                onFileOpenActionChange = { viewModel.setFileOpenAction(it) }
+                onFileOpenActionChange = { viewModel.setFileOpenAction(it) },
+                onMusicPlayerSettingsChange = { transform -> viewModel.updateMusicPlayerSettings(transform) }
             )
         }
     }

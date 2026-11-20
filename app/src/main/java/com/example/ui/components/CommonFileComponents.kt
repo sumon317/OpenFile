@@ -9,6 +9,7 @@ import android.graphics.pdf.PdfRenderer
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import com.example.core.datastore.MusicPlayerCustomSettings
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -1060,6 +1061,7 @@ private fun PropertyKeyValueRow(
 @Composable
 fun FilePreviewScreen(
     state: FilePreviewState,
+    musicSettings: MusicPlayerCustomSettings = MusicPlayerCustomSettings(),
     onDismiss: () -> Unit,
     onOpenExternal: (FileReference) -> Unit,
     onSaveTextContent: ((FileReference, String) -> Unit)? = null,
@@ -1216,6 +1218,7 @@ fun FilePreviewScreen(
                         AudioPlayerPreview(
                             file = file,
                             playlist = state.siblingMedia,
+                            musicSettings = musicSettings,
                             onSelectMedia = onSelectMedia,
                             onOpenExternal = { onOpenExternal(file) },
                             onPrevious = onPreviousMedia,

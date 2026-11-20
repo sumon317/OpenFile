@@ -870,6 +870,43 @@ class ExampleUnitTest {
             tempDir.deleteRecursively()
         }
     }
+
+    @Test
+    fun `music player custom settings default values and constraints`() {
+        val defaultSettings = com.example.core.datastore.MusicPlayerCustomSettings()
+        assertEquals(24, defaultSettings.albumArtCornerRadiusDp)
+        assertFalse(defaultSettings.isAlbumArtCircle)
+        assertFalse(defaultSettings.rotateIfCircle)
+        assertTrue(defaultSettings.songTitleMarquee)
+        assertEquals(com.example.core.datastore.ProgressBarPreset.STANDARD, defaultSettings.progressBarStyle)
+        assertEquals(com.example.core.datastore.PlayButtonShape.CIRCLE, defaultSettings.playButtonShape)
+        assertEquals(36, defaultSettings.playButtonCornerRadiusDp)
+        assertEquals(com.example.core.datastore.PlayerThemePreset.STUDIO_PURPLE, defaultSettings.playerTheme)
+        assertEquals(com.example.core.datastore.PlayerFontStyle.DEFAULT, defaultSettings.fontStyle)
+        assertEquals(com.example.core.datastore.PlayerFontSize.STANDARD, defaultSettings.fontSize)
+
+        // Test circle unlocks rotation condition
+        val circleSettings = defaultSettings.copy(
+            isAlbumArtCircle = true,
+            rotateIfCircle = true,
+            songTitleMarquee = false,
+            progressBarStyle = com.example.core.datastore.ProgressBarPreset.WAVE_PILL,
+            playButtonShape = com.example.core.datastore.PlayButtonShape.ROUNDED,
+            playButtonCornerRadiusDp = 12,
+            playerTheme = com.example.core.datastore.PlayerThemePreset.CYBERPUNK_NEON,
+            fontStyle = com.example.core.datastore.PlayerFontStyle.MONOSPACE,
+            fontSize = com.example.core.datastore.PlayerFontSize.LARGE
+        )
+        assertTrue(circleSettings.isAlbumArtCircle)
+        assertTrue(circleSettings.rotateIfCircle)
+        assertFalse(circleSettings.songTitleMarquee)
+        assertEquals(com.example.core.datastore.ProgressBarPreset.WAVE_PILL, circleSettings.progressBarStyle)
+        assertEquals(com.example.core.datastore.PlayButtonShape.ROUNDED, circleSettings.playButtonShape)
+        assertEquals(12, circleSettings.playButtonCornerRadiusDp)
+        assertEquals(com.example.core.datastore.PlayerThemePreset.CYBERPUNK_NEON, circleSettings.playerTheme)
+        assertEquals(com.example.core.datastore.PlayerFontStyle.MONOSPACE, circleSettings.fontStyle)
+        assertEquals(com.example.core.datastore.PlayerFontSize.LARGE, circleSettings.fontSize)
+    }
 }
 
 

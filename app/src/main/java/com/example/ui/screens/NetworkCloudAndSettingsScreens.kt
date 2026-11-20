@@ -20,12 +20,23 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.border
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Delete
@@ -35,6 +46,8 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Refresh
@@ -43,9 +56,16 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.sp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -85,6 +105,12 @@ import kotlinx.coroutines.withContext
 import com.example.core.database.NetworkProfileEntity
 import com.example.core.datastore.AppSettingsState
 import com.example.core.datastore.FileOpenAction
+import com.example.core.datastore.MusicPlayerCustomSettings
+import com.example.core.datastore.ProgressBarPreset
+import com.example.core.datastore.PlayButtonShape
+import com.example.core.datastore.PlayerThemePreset
+import com.example.core.datastore.PlayerFontStyle
+import com.example.core.datastore.PlayerFontSize
 import com.example.core.model.FileReference
 import com.example.core.model.ViewMode
 import com.example.core.model.formatByteSize
@@ -1383,7 +1409,8 @@ fun SettingsScreen(
     onCheckForUpdatesNow: () -> Unit = {},
     onDownloadAndInstallUpdate: () -> Unit = {},
     onOpenReleasesInBrowser: () -> Unit = {},
-    onFileOpenActionChange: (FileOpenAction) -> Unit = {}
+    onFileOpenActionChange: (FileOpenAction) -> Unit = {},
+    onMusicPlayerSettingsChange: ((MusicPlayerCustomSettings) -> MusicPlayerCustomSettings) -> Unit = {}
 ) {
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -1429,6 +1456,518 @@ fun SettingsScreen(
                         checked = settings.showThumbnails,
                         onCheckedChange = onShowThumbnailsChange
                     )
+                }
+            }
+        }
+
+        item {
+            Text(
+                "Music Player & Studio Customization",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_music_player_card")
+            ) {
+                val music = settings.musicPlayerSettings
+                val activeTheme = music.playerTheme
+                val accentColor = Color(activeTheme.accentColor)
+                val themeBgStart = Color(activeTheme.backgroundStart)
+                val themeBgEnd = Color(activeTheme.backgroundEnd)
+                val themeSurface = Color(activeTheme.cardSurface)
+
+                val previewFontFamily = when (music.fontStyle) {
+                    PlayerFontStyle.DEFAULT -> FontFamily.Default
+                    PlayerFontStyle.MONOSPACE -> FontFamily.Monospace
+                    PlayerFontStyle.SERIF -> FontFamily.Serif
+                    PlayerFontStyle.CURSIVE -> FontFamily.Cursive
+                }
+                val previewFontScale = music.fontSize.scaleFactor
+
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    // 1. Live Interactive Player Preview Card
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = Color.Transparent,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, accentColor.copy(alpha = 0.4f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(Brush.verticalGradient(listOf(themeBgStart, themeBgEnd)))
+                            .padding(16.dp)
+                    ) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "LIVE IN-PLAYER PREVIEW",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = 1.2.sp
+                                    ),
+                                    color = accentColor
+                                )
+                                Text(
+                                    text = activeTheme.label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.LightGray
+                                )
+                            }
+
+                            // Album Art Preview with dynamic shape, border radius, and rotation if unlocked
+                            val infiniteTransition = rememberInfiniteTransition(label = "preview_vinyl_rot")
+                            val previewAngle by infiniteTransition.animateFloat(
+                                initialValue = 0f,
+                                targetValue = 360f,
+                                animationSpec = infiniteRepeatable(
+                                    animation = tween(durationMillis = 6000, easing = LinearEasing),
+                                    repeatMode = RepeatMode.Restart
+                                ),
+                                label = "preview_art_angle"
+                            )
+                            val artRotationModifier = if (music.isAlbumArtCircle && music.rotateIfCircle) {
+                                Modifier.graphicsLayer(rotationZ = previewAngle)
+                            } else Modifier
+
+                            val previewShape = if (music.isAlbumArtCircle) CircleShape else RoundedCornerShape(music.albumArtCornerRadiusDp.dp)
+
+                            Box(
+                                modifier = Modifier
+                                    .size(110.dp)
+                                    .then(artRotationModifier)
+                                    .clip(previewShape)
+                                    .background(themeSurface)
+                                    .border(2.dp, accentColor.copy(alpha = 0.5f), previewShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (music.isAlbumArtCircle) {
+                                    // Circular Vinyl Disc Stylings
+                                    Box(modifier = Modifier.fillMaxSize(0.85f).border(1.dp, Color(0xFF282A36), CircleShape))
+                                    Box(modifier = Modifier.fillMaxSize(0.65f).border(1.dp, Color(0xFF282A36), CircleShape))
+                                    Surface(shape = CircleShape, color = accentColor, modifier = Modifier.size(36.dp)) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Filled.Album, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                                        }
+                                    }
+                                    Surface(shape = CircleShape, color = Color.Black, modifier = Modifier.size(8.dp)) {}
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Filled.Audiotrack,
+                                        contentDescription = null,
+                                        tint = accentColor.copy(alpha = 0.85f),
+                                        modifier = Modifier.size(48.dp)
+                                    )
+                                }
+                            }
+
+                            // Moving / Static Title Preview
+                            val titleModifier = if (music.songTitleMarquee) {
+                                Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE)
+                            } else {
+                                Modifier.fillMaxWidth()
+                            }
+
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = "Midnight City Dreams (Lossless Remaster)",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontFamily = previewFontFamily,
+                                        fontSize = (16 * previewFontScale).sp,
+                                        fontWeight = FontWeight.Bold,
+                                        textAlign = TextAlign.Center
+                                    ),
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = titleModifier
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Aether Soundworks • Studio FLAC 96kHz/24bit",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontFamily = previewFontFamily,
+                                        fontSize = (12 * previewFontScale).sp,
+                                        textAlign = TextAlign.Center
+                                    ),
+                                    color = Color(0xFFA0A5B5),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            // Progress Bar Preview (matching ProgressBarPreset)
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                when (music.progressBarStyle) {
+                                    ProgressBarPreset.STANDARD -> {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(18.dp),
+                                            contentAlignment = Alignment.CenterStart
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(4.dp)
+                                                    .clip(RoundedCornerShape(2.dp))
+                                                    .background(Color.White.copy(alpha = 0.2f))
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth(0.45f)
+                                                    .height(4.dp)
+                                                    .clip(RoundedCornerShape(2.dp))
+                                                    .background(accentColor)
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .padding(start = 120.dp)
+                                                    .size(14.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color.White)
+                                                    .border(2.dp, accentColor, CircleShape)
+                                            )
+                                        }
+                                    }
+                                    ProgressBarPreset.WAVE_PILL -> {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(20.dp),
+                                            contentAlignment = Alignment.CenterStart
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(10.dp)
+                                                    .clip(RoundedCornerShape(5.dp))
+                                                    .background(Color.White.copy(alpha = 0.15f))
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth(0.45f)
+                                                    .height(10.dp)
+                                                    .clip(RoundedCornerShape(5.dp))
+                                                    .background(
+                                                        Brush.horizontalGradient(
+                                                            listOf(accentColor.copy(alpha = 0.7f), accentColor)
+                                                        )
+                                                    )
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .padding(start = 118.dp)
+                                                    .size(18.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color.White)
+                                                    .border(2.dp, accentColor, CircleShape)
+                                            )
+                                        }
+                                    }
+                                    ProgressBarPreset.SEGMENTED -> {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(14.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            val totalSegments = 24
+                                            val activeCount = 11
+                                            for (seg in 0 until totalSegments) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .height(if (seg == activeCount - 1) 12.dp else 6.dp)
+                                                        .clip(RoundedCornerShape(1.dp))
+                                                        .background(if (seg < activeCount) accentColor else Color.White.copy(alpha = 0.2f))
+                                                )
+                                            }
+                                        }
+                                    }
+                                    ProgressBarPreset.MINIMAL_THIN -> {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(12.dp),
+                                            contentAlignment = Alignment.CenterStart
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(2.dp)
+                                                    .background(Color.White.copy(alpha = 0.15f))
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth(0.45f)
+                                                    .height(2.dp)
+                                                    .background(accentColor)
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .padding(start = 124.dp)
+                                                    .size(8.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color.White)
+                                            )
+                                        }
+                                    }
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("01:24", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                    Text("03:45", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                }
+                            }
+
+                            // Play Button Shape Preview
+                            val previewPlayShape = if (music.playButtonShape == PlayButtonShape.CIRCLE) {
+                                CircleShape
+                            } else {
+                                RoundedCornerShape(music.playButtonCornerRadiusDp.dp)
+                            }
+                            Surface(
+                                shape = previewPlayShape,
+                                color = Color.White,
+                                shadowElevation = 4.dp,
+                                modifier = Modifier.size(52.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Filled.PlayArrow,
+                                        contentDescription = null,
+                                        tint = Color(0xFF0F172A),
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // --- 2. Album Art Shape & Border Radius Controls ---
+                    Text("Album Art Shape & Radius", style = MaterialTheme.typography.titleSmall)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = !music.isAlbumArtCircle,
+                            onClick = {
+                                onMusicPlayerSettingsChange { it.copy(isAlbumArtCircle = false) }
+                            },
+                            label = { Text("Rounded Card") },
+                            modifier = Modifier.testTag("art_shape_rounded_chip")
+                        )
+                        FilterChip(
+                            selected = music.isAlbumArtCircle,
+                            onClick = {
+                                onMusicPlayerSettingsChange { it.copy(isAlbumArtCircle = true) }
+                            },
+                            label = { Text("Circle (Disc)") },
+                            modifier = Modifier.testTag("art_shape_circle_chip")
+                        )
+                    }
+
+                    if (!music.isAlbumArtCircle) {
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Corner Radius", style = MaterialTheme.typography.bodySmall)
+                                Text("${music.albumArtCornerRadiusDp} dp", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Slider(
+                                value = music.albumArtCornerRadiusDp.toFloat(),
+                                onValueChange = { radius ->
+                                    onMusicPlayerSettingsChange { it.copy(albumArtCornerRadiusDp = radius.toInt()) }
+                                },
+                                valueRange = 0f..48f,
+                                steps = 47,
+                                modifier = Modifier.fillMaxWidth().testTag("art_radius_slider")
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = "Artwork is clipped into a full disc circle. Spinning vinyl mode is now unlocked below!",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ApkGreen
+                        )
+                    }
+
+                    // --- 3. Rotate if Circle Toggle (Unlocked ONLY if Circle) ---
+                    SettingsToggleRow(
+                        title = "Spinning Disc on Play",
+                        subtitle = if (music.isAlbumArtCircle) {
+                            "Disc smoothly rotates like a vinyl turntable while song is playing"
+                        } else {
+                            "🔒 Locked: Select 'Circle (Disc)' above to unlock vinyl rotation"
+                        },
+                        checked = if (music.isAlbumArtCircle) music.rotateIfCircle else false,
+                        enabled = music.isAlbumArtCircle,
+                        onCheckedChange = { rotate ->
+                            onMusicPlayerSettingsChange { it.copy(rotateIfCircle = rotate) }
+                        },
+                        testTag = "toggle_rotate_circle"
+                    )
+
+                    // --- 4. Moving Song Title Toggle ---
+                    SettingsToggleRow(
+                        title = "Marquee Scrolling Song Title",
+                        subtitle = "Smoothly auto-scrolls long song and track titles across the screen",
+                        checked = music.songTitleMarquee,
+                        onCheckedChange = { marquee ->
+                            onMusicPlayerSettingsChange { it.copy(songTitleMarquee = marquee) }
+                        },
+                        testTag = "toggle_marquee_title"
+                    )
+
+                    HorizontalDivider()
+
+                    // --- 5. Progress Bar Style Presets ---
+                    Text("Progress Bar Style", style = MaterialTheme.typography.titleSmall)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ProgressBarPreset.entries.forEach { preset ->
+                            FilterChip(
+                                selected = music.progressBarStyle == preset,
+                                onClick = {
+                                    onMusicPlayerSettingsChange { it.copy(progressBarStyle = preset) }
+                                },
+                                label = { Text(preset.label) },
+                                modifier = Modifier.testTag("progress_style_${preset.name}")
+                            )
+                        }
+                    }
+                    Text(
+                        text = music.progressBarStyle.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    HorizontalDivider()
+
+                    // --- 6. Play Button Shape & Radius ---
+                    Text("Play Button Shape & Radius", style = MaterialTheme.typography.titleSmall)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        PlayButtonShape.entries.forEach { shape ->
+                            FilterChip(
+                                selected = music.playButtonShape == shape,
+                                onClick = {
+                                    onMusicPlayerSettingsChange { it.copy(playButtonShape = shape) }
+                                },
+                                label = { Text(shape.label) },
+                                modifier = Modifier.testTag("play_button_shape_${shape.name}")
+                            )
+                        }
+                    }
+
+                    if (music.playButtonShape == PlayButtonShape.ROUNDED) {
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Button Corner Radius", style = MaterialTheme.typography.bodySmall)
+                                Text("${music.playButtonCornerRadiusDp} dp (0 = Sharp Square, 12 = Squircle, 36 = Pill)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Slider(
+                                value = music.playButtonCornerRadiusDp.toFloat(),
+                                onValueChange = { radius ->
+                                    onMusicPlayerSettingsChange { it.copy(playButtonCornerRadiusDp = radius.toInt()) }
+                                },
+                                valueRange = 0f..36f,
+                                steps = 35,
+                                modifier = Modifier.fillMaxWidth().testTag("play_button_radius_slider")
+                            )
+                        }
+                    }
+
+                    HorizontalDivider()
+
+                    // --- 7. In-Player Theme & Style Presets ---
+                    Text("In-Player Theme Presets", style = MaterialTheme.typography.titleSmall)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        PlayerThemePreset.entries.forEach { themePreset ->
+                            FilterChip(
+                                selected = music.playerTheme == themePreset,
+                                onClick = {
+                                    onMusicPlayerSettingsChange { it.copy(playerTheme = themePreset) }
+                                },
+                                leadingIcon = {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(14.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(themePreset.accentColor))
+                                    )
+                                },
+                                label = { Text(themePreset.label) },
+                                modifier = Modifier.testTag("theme_preset_${themePreset.name}")
+                            )
+                        }
+                    }
+
+                    HorizontalDivider()
+
+                    // --- 8. Font Style & Font Size ---
+                    Text("In-Player Font Style", style = MaterialTheme.typography.titleSmall)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        PlayerFontStyle.entries.forEach { fontStyle ->
+                            FilterChip(
+                                selected = music.fontStyle == fontStyle,
+                                onClick = {
+                                    onMusicPlayerSettingsChange { it.copy(fontStyle = fontStyle) }
+                                },
+                                label = { Text(fontStyle.label) },
+                                modifier = Modifier.testTag("font_style_${fontStyle.name}")
+                            )
+                        }
+                    }
+
+                    Text("In-Player Font Size", style = MaterialTheme.typography.titleSmall)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        PlayerFontSize.entries.forEach { fontSize ->
+                            FilterChip(
+                                selected = music.fontSize == fontSize,
+                                onClick = {
+                                    onMusicPlayerSettingsChange { it.copy(fontSize = fontSize) }
+                                },
+                                label = { Text("${fontSize.label} (${(fontSize.scaleFactor * 100).toInt()}%)") },
+                                modifier = Modifier.testTag("font_size_${fontSize.name}")
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1707,6 +2246,7 @@ private fun SettingsToggleRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     subtitle: String? = null,
+    enabled: Boolean = true,
     testTag: String? = null
 ) {
     Row(
@@ -1721,19 +2261,21 @@ private fun SettingsToggleRow(
         ) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
             )
             if (subtitle != null) {
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
                 )
             }
         }
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
+            enabled = enabled,
             modifier = if (testTag != null) Modifier.testTag(testTag) else Modifier
         )
     }

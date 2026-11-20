@@ -22,6 +22,7 @@ import com.example.core.database.TransferJobEntity
 import com.example.core.database.TrashItemEntity
 import com.example.core.datastore.AppSettingsState
 import com.example.core.datastore.FileOpenAction
+import com.example.core.datastore.MusicPlayerCustomSettings
 import com.example.core.datastore.SettingsDataStore
 import com.example.core.filesystem.ChecksumAndDuplicateEngine
 import com.example.core.filesystem.ClipboardMode
@@ -2826,6 +2827,13 @@ class OpenFileViewModel(application: Application) : AndroidViewModel(application
     fun setAutoCheckUpdates(enabled: Boolean) {
         _settings.value = _settings.value.copy(autoCheckUpdates = enabled)
         viewModelScope.launch { settingsStore.setAutoCheckUpdates(enabled) }
+    }
+
+    fun updateMusicPlayerSettings(transform: (MusicPlayerCustomSettings) -> MusicPlayerCustomSettings) {
+        val current = _settings.value.musicPlayerSettings
+        val updated = transform(current)
+        _settings.value = _settings.value.copy(musicPlayerSettings = updated)
+        viewModelScope.launch { settingsStore.updateMusicPlayerSettings(transform) }
     }
 
     fun openAppUpdateDialog() {

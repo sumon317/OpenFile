@@ -214,6 +214,13 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.rememberAsyncImagePainter
+import androidx.compose.ui.text.font.FontFamily
+import com.example.core.datastore.MusicPlayerCustomSettings
+import com.example.core.datastore.ProgressBarPreset
+import com.example.core.datastore.PlayButtonShape
+import com.example.core.datastore.PlayerThemePreset
+import com.example.core.datastore.PlayerFontStyle
+import com.example.core.datastore.PlayerFontSize
 import com.example.core.media.EqualizerEngine
 import com.example.core.media.LrcLine
 import com.example.core.media.LrcParser
@@ -450,6 +457,7 @@ private fun formatAudioTechSpecs(
 fun AudioPlayerPreview(
     file: FileReference,
     playlist: List<FileReference> = emptyList(),
+    musicSettings: MusicPlayerCustomSettings = MusicPlayerCustomSettings(),
     onSelectMedia: ((FileReference) -> Unit)? = null,
     onOpenExternal: (() -> Unit)? = null,
     onPrevious: (() -> Unit)? = null,
@@ -462,6 +470,41 @@ fun AudioPlayerPreview(
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+
+    val themePreset = musicSettings.playerTheme
+    val themeAccent = Color(themePreset.accentColor)
+    val themeBgStart = Color(themePreset.backgroundStart)
+    val themeBgEnd = Color(themePreset.backgroundEnd)
+    val themeSurface = Color(themePreset.cardSurface)
+
+    val playerFontFamily = when (musicSettings.fontStyle) {
+        PlayerFontStyle.DEFAULT -> FontFamily.Default
+        PlayerFontStyle.MONOSPACE -> FontFamily.Monospace
+        PlayerFontStyle.SERIF -> FontFamily.Serif
+        PlayerFontStyle.CURSIVE -> FontFamily.Cursive
+    }
+    val fontScale = musicSettings.fontSize.scaleFactor
+
+    val isCircleShape = musicSettings.isAlbumArtCircle
+    val artCornerRadius = musicSettings.albumArtCornerRadiusDp.dp
+    val effectiveArtShape = if (isCircleShape) CircleShape else RoundedCornerShape(artCornerRadius)
+
+    val heroPlayButtonShape = if (musicSettings.playButtonShape == PlayButtonShape.CIRCLE) {
+        CircleShape
+    } else {
+        RoundedCornerShape(musicSettings.playButtonCornerRadiusDp.dp)
+    }
+
+    val vinylTransition = rememberInfiniteTransition(label = "vinyl_rot")
+    val vinylAngle by vinylTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 6000, easing = androidx.compose.animation.core.LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "vinyl_angle"
+    )
 
     // Filter audio files for playlist queue
     val effectivePlaylist = remember(playlist, file) {
@@ -516,6 +559,7 @@ fun AudioPlayerPreview(
 
     var isPrepared by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
+    val shouldRotateDisc = isCircleShape && musicSettings.rotateIfCircle && isPlaying
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isUserSeeking by remember { mutableStateOf(false) }
     var seekFraction by remember { mutableFloatStateOf(0f) }
@@ -855,13 +899,13 @@ fun AudioPlayerPreview(
                 if (sleepTimerMinutes != 0) {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = AudioPurple.copy(alpha = 0.25f),
+                        color = themeAccent.copy(alpha = 0.25f),
                         modifier = Modifier.padding(end = 4.dp)
                     ) {
                         Text(
                             text = if (sleepTimerMinutes == -1) "⏱ Track" else "⏱ ${sleepTimerRemainingSeconds / 60}m",
                             style = MaterialTheme.typography.labelSmall,
-                            color = AudioPurple,
+                            color = themeAccent,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
@@ -891,11 +935,11 @@ fun AudioPlayerPreview(
                     DropdownMenu(
                         expanded = showMoreMenu,
                         onDismissRequest = { showMoreMenu = false },
-                        containerColor = Color(0xFF22242D)
+                        containerColor = themeSurface
                     ) {
                         DropdownMenuItem(
                             text = { Text("Volume", color = Color.White) },
-                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = null, tint = AudioPurple) },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = null, tint = themeAccent) },
                             onClick = {
                                 showMoreMenu = false
                                 showVolumeDialog = true
@@ -903,7 +947,7 @@ fun AudioPlayerPreview(
                         )
                         DropdownMenuItem(
                             text = { Text("Playback Speed (${playbackSpeed}x)", color = Color.White) },
-                            leadingIcon = { Icon(Icons.Filled.Speed, contentDescription = null, tint = AudioPurple) },
+                            leadingIcon = { Icon(Icons.Filled.Speed, contentDescription = null, tint = themeAccent) },
                             onClick = {
                                 showMoreMenu = false
                                 showSpeedDialog = true
@@ -911,7 +955,7 @@ fun AudioPlayerPreview(
                         )
                         DropdownMenuItem(
                             text = { Text("Studio Equalizer & DSP", color = Color.White) },
-                            leadingIcon = { Icon(Icons.Filled.GraphicEq, contentDescription = null, tint = AudioPurple) },
+                            leadingIcon = { Icon(Icons.Filled.GraphicEq, contentDescription = null, tint = themeAccent) },
                             onClick = {
                                 showMoreMenu = false
                                 showEqualizerSheet = true
@@ -919,7 +963,7 @@ fun AudioPlayerPreview(
                         )
                         DropdownMenuItem(
                             text = { Text("Synchronized Lyrics (.lrc)", color = Color.White) },
-                            leadingIcon = { Icon(Icons.Filled.Lyrics, contentDescription = null, tint = AudioPurple) },
+                            leadingIcon = { Icon(Icons.Filled.Lyrics, contentDescription = null, tint = themeAccent) },
                             onClick = {
                                 showMoreMenu = false
                                 showLyricsSheet = true
@@ -927,7 +971,7 @@ fun AudioPlayerPreview(
                         )
                         DropdownMenuItem(
                             text = { Text("Playlist Queue", color = Color.White) },
-                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null, tint = AudioPurple) },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null, tint = themeAccent) },
                             onClick = {
                                 showMoreMenu = false
                                 showQueueSheet = true
@@ -1004,19 +1048,23 @@ fun AudioPlayerPreview(
                 modifier = Modifier.weight(1f),
                 horizontalAlignment = Alignment.Start
             ) {
+                val titleModifier = if (musicSettings.songTitleMarquee) {
+                    Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE).testTag("audio_track_title")
+                } else {
+                    Modifier.fillMaxWidth().testTag("audio_track_title")
+                }
+
                 Text(
                     text = trackInfo?.title ?: file.displayName.substringBeforeLast('.'),
                     style = MaterialTheme.typography.titleLarge.copy(
                         fontWeight = FontWeight.Bold,
-                        fontSize = 22.sp
+                        fontFamily = playerFontFamily,
+                        fontSize = (22 * fontScale).sp
                     ),
                     color = Color.White,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .basicMarquee(iterations = Int.MAX_VALUE)
-                        .testTag("audio_track_title")
+                    modifier = titleModifier
                 )
                 Spacer(modifier = Modifier.height(3.dp))
                 val artistAlbum = listOfNotNull(
@@ -1027,7 +1075,10 @@ fun AudioPlayerPreview(
                 }
                 Text(
                     text = artistAlbum,
-                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp),
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontFamily = playerFontFamily,
+                        fontSize = (15 * fontScale).sp
+                    ),
                     color = Color(0xFFA0A5B5),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -1081,36 +1132,174 @@ fun AudioPlayerPreview(
                     .fillMaxWidth()
                     .testTag("audio_seek_slider")
             ) {
-                Slider(
-                    value = progress,
-                    onValueChange = { frac ->
-                        isUserSeeking = true
-                        seekFraction = frac
-                        currentPositionMs = (frac * durationMs).toLong()
-                    },
-                    onValueChangeFinished = {
-                        val targetMs = (seekFraction * durationMs).toLong()
-                        exoPlayer.seekTo(targetMs)
-                        currentPositionMs = targetMs
-                        isUserSeeking = false
-                    },
-                    enabled = isPrepared && durationMs > 0L,
-                    thumb = {
-                        Box(
-                            modifier = Modifier
-                                .size(14.dp)
-                                .clip(CircleShape)
-                                .background(Color.White)
-                                .border(2.dp, AudioPurple, CircleShape)
+                when (musicSettings.progressBarStyle) {
+                    ProgressBarPreset.STANDARD -> {
+                        Slider(
+                            value = progress,
+                            onValueChange = { frac ->
+                                isUserSeeking = true
+                                seekFraction = frac
+                                currentPositionMs = (frac * durationMs).toLong()
+                            },
+                            onValueChangeFinished = {
+                                val targetMs = (seekFraction * durationMs).toLong()
+                                exoPlayer.seekTo(targetMs)
+                                currentPositionMs = targetMs
+                                isUserSeeking = false
+                            },
+                            enabled = isPrepared && durationMs > 0L,
+                            thumb = {
+                                Box(
+                                    modifier = Modifier
+                                        .size(14.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.White)
+                                        .border(2.dp, themeAccent, CircleShape)
+                                )
+                            },
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color.White,
+                                activeTrackColor = themeAccent,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.15f)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
                         )
-                    },
-                    colors = SliderDefaults.colors(
-                        thumbColor = Color.White,
-                        activeTrackColor = AudioPurple,
-                        inactiveTrackColor = Color.White.copy(alpha = 0.15f)
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
+                    }
+                    ProgressBarPreset.WAVE_PILL -> {
+                        Slider(
+                            value = progress,
+                            onValueChange = { frac ->
+                                isUserSeeking = true
+                                seekFraction = frac
+                                currentPositionMs = (frac * durationMs).toLong()
+                            },
+                            onValueChangeFinished = {
+                                val targetMs = (seekFraction * durationMs).toLong()
+                                exoPlayer.seekTo(targetMs)
+                                currentPositionMs = targetMs
+                                isUserSeeking = false
+                            },
+                            enabled = isPrepared && durationMs > 0L,
+                            thumb = {
+                                Box(
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.White)
+                                        .border(3.dp, themeAccent, CircleShape)
+                                )
+                            },
+                            track = { _ ->
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(10.dp)
+                                        .clip(RoundedCornerShape(5.dp))
+                                        .background(Color.White.copy(alpha = 0.15f))
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth(progress.coerceIn(0f, 1f))
+                                            .fillMaxHeight()
+                                            .clip(RoundedCornerShape(5.dp))
+                                            .background(
+                                                Brush.horizontalGradient(
+                                                    listOf(themeAccent.copy(alpha = 0.75f), themeAccent)
+                                                )
+                                            )
+                                    )
+                                }
+                            },
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color.White,
+                                activeTrackColor = themeAccent,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.15f)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    ProgressBarPreset.SEGMENTED -> {
+                        Slider(
+                            value = progress,
+                            onValueChange = { frac ->
+                                isUserSeeking = true
+                                seekFraction = frac
+                                currentPositionMs = (frac * durationMs).toLong()
+                            },
+                            onValueChangeFinished = {
+                                val targetMs = (seekFraction * durationMs).toLong()
+                                exoPlayer.seekTo(targetMs)
+                                currentPositionMs = targetMs
+                                isUserSeeking = false
+                            },
+                            enabled = isPrepared && durationMs > 0L,
+                            steps = 19,
+                            thumb = {
+                                Box(
+                                    modifier = Modifier
+                                        .size(12.dp, 18.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(Color.White)
+                                        .border(1.5.dp, themeAccent, RoundedCornerShape(2.dp))
+                                )
+                            },
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color.White,
+                                activeTrackColor = themeAccent,
+                                activeTickColor = Color.White.copy(alpha = 0.6f),
+                                inactiveTickColor = Color.White.copy(alpha = 0.2f),
+                                inactiveTrackColor = Color.White.copy(alpha = 0.15f)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    ProgressBarPreset.MINIMAL_THIN -> {
+                        Slider(
+                            value = progress,
+                            onValueChange = { frac ->
+                                isUserSeeking = true
+                                seekFraction = frac
+                                currentPositionMs = (frac * durationMs).toLong()
+                            },
+                            onValueChangeFinished = {
+                                val targetMs = (seekFraction * durationMs).toLong()
+                                exoPlayer.seekTo(targetMs)
+                                currentPositionMs = targetMs
+                                isUserSeeking = false
+                            },
+                            enabled = isPrepared && durationMs > 0L,
+                            thumb = {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.White)
+                                )
+                            },
+                            track = { _ ->
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(2.dp)
+                                        .background(Color.White.copy(alpha = 0.15f))
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth(progress.coerceIn(0f, 1f))
+                                            .fillMaxHeight()
+                                            .background(themeAccent)
+                                    )
+                                }
+                            },
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color.White,
+                                activeTrackColor = themeAccent,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.15f)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
             }
 
             Row(
@@ -1122,12 +1311,18 @@ fun AudioPlayerPreview(
             ) {
                 Text(
                     text = formatMediaDuration(currentPositionMs),
-                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = FontWeight.Medium,
+                        fontFamily = playerFontFamily
+                    ),
                     color = Color(0xFF9E9E9E)
                 )
                 Text(
                     text = formatMediaDuration(durationMs),
-                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = FontWeight.Medium,
+                        fontFamily = playerFontFamily
+                    ),
                     color = Color(0xFF9E9E9E)
                 )
             }
@@ -1153,7 +1348,7 @@ fun AudioPlayerPreview(
                 Icon(
                     imageVector = if (isShuffleEnabled) Icons.Filled.ShuffleOn else Icons.Filled.Shuffle,
                     contentDescription = "Shuffle",
-                    tint = if (isShuffleEnabled) AudioPurple else Color(0xFF7A7D8A),
+                    tint = if (isShuffleEnabled) themeAccent else Color(0xFF7A7D8A),
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -1178,7 +1373,7 @@ fun AudioPlayerPreview(
 
             // Center Hero Play / Pause Button (72.dp)
             Surface(
-                shape = CircleShape,
+                shape = heroPlayButtonShape,
                 color = Color.White,
                 shadowElevation = 8.dp,
                 modifier = Modifier
@@ -1260,7 +1455,7 @@ fun AudioPlayerPreview(
                         AudioRepeatMode.OFF -> Icons.Filled.Repeat
                     },
                     contentDescription = "Repeat Mode",
-                    tint = if (audioRepeatMode != AudioRepeatMode.OFF) AudioPurple else Color(0xFF7A7D8A),
+                    tint = if (audioRepeatMode != AudioRepeatMode.OFF) themeAccent else Color(0xFF7A7D8A),
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -1324,9 +1519,9 @@ fun AudioPlayerPreview(
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
-                        Color(0xFF13151D),
-                        Color(0xFF0E0F14),
-                        Color(0xFF07080A)
+                        themeBgStart,
+                        themeBgStart.copy(alpha = 0.85f),
+                        themeBgEnd
                     )
                 )
             )
@@ -1360,28 +1555,22 @@ fun AudioPlayerPreview(
                                 )
                             }
                             .testTag("audio_album_card"),
-                        shape = if (isVinylMode) CircleShape else RoundedCornerShape(24.dp),
+                        shape = effectiveArtShape,
                         elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
-                        colors = CardDefaults.cardColors(containerColor = if (isVinylMode) Color(0xFF101116) else Color(0xFF16171B))
+                        border = androidx.compose.foundation.BorderStroke(
+                            if (isCircleShape) 2.dp else 1.dp,
+                            if (isCircleShape) themeAccent.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.08f)
+                        ),
+                        colors = CardDefaults.cardColors(containerColor = themeSurface)
                     ) {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            if (isVinylMode) {
-                                val vinylTransition = rememberInfiniteTransition(label = "vinyl_rot_land")
-                                val vinylAngle by vinylTransition.animateFloat(
-                                    initialValue = 0f,
-                                    targetValue = 360f,
-                                    animationSpec = infiniteRepeatable(
-                                        animation = tween(durationMillis = 6000, easing = androidx.compose.animation.core.LinearEasing),
-                                        repeatMode = RepeatMode.Restart
-                                    ),
-                                    label = "vinyl_angle_land"
-                                )
-                                val rotationModifier = if (isPlaying) Modifier.graphicsLayer(rotationZ = vinylAngle) else Modifier
+                        val rotationModifier = if (shouldRotateDisc) Modifier.graphicsLayer(rotationZ = vinylAngle) else Modifier
+                        Box(modifier = Modifier.fillMaxSize().then(rotationModifier), contentAlignment = Alignment.Center) {
+                            if (isCircleShape) {
                                 Surface(
                                     shape = CircleShape,
                                     color = Color(0xFF15161C),
                                     border = androidx.compose.foundation.BorderStroke(3.dp, Color(0xFF282A36)),
-                                    modifier = Modifier.fillMaxSize().padding(8.dp).then(rotationModifier)
+                                    modifier = Modifier.fillMaxSize().padding(8.dp)
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
                                         Box(modifier = Modifier.size(175.dp).border(1.dp, Color(0xFF22242E), CircleShape))
@@ -1389,7 +1578,7 @@ fun AudioPlayerPreview(
                                         Box(modifier = Modifier.size(95.dp).border(1.dp, Color(0xFF22242E), CircleShape))
                                         Surface(
                                             shape = CircleShape,
-                                            color = AudioPurple,
+                                            color = themeAccent,
                                             modifier = Modifier.size(68.dp)
                                         ) {
                                             val art = trackInfo?.artwork
@@ -1424,7 +1613,7 @@ fun AudioPlayerPreview(
                                             .fillMaxSize()
                                             .background(
                                                 Brush.verticalGradient(
-                                                    listOf(AudioPurple.copy(alpha = 0.5f), Color(0xFF16171B))
+                                                    listOf(themeAccent.copy(alpha = 0.5f), themeSurface)
                                                 )
                                             ),
                                         contentAlignment = Alignment.Center
@@ -1506,7 +1695,7 @@ fun AudioPlayerPreview(
                             Icon(
                                 imageVector = Icons.Filled.KeyboardArrowUp,
                                 contentDescription = "Queue",
-                                tint = AudioPurple,
+                                tint = themeAccent,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
@@ -1578,34 +1767,27 @@ fun AudioPlayerPreview(
                                     )
                                 }
                                 .testTag(if (isCurrent) "audio_album_card" else "audio_album_card_$page"),
-                            shape = if (isVinylMode) CircleShape else RoundedCornerShape(26.dp),
+                            shape = effectiveArtShape,
                             elevation = CardDefaults.cardElevation(defaultElevation = if (isCurrent) 10.dp else 2.dp),
                             border = androidx.compose.foundation.BorderStroke(
-                                1.dp,
-                                if (isVinylMode) Color(0xFF282A36) else Color.White.copy(alpha = 0.08f)
+                                if (isCircleShape) 2.dp else 1.dp,
+                                if (isCircleShape) themeAccent.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.08f)
                             ),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isVinylMode) Color(0xFF101116) else Color(0xFF16171F)
+                                containerColor = themeSurface
                             )
                         ) {
-                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                if (isVinylMode) {
-                                    val vinylTransition = rememberInfiniteTransition(label = "vinyl_rot_port")
-                                    val vinylAngle by vinylTransition.animateFloat(
-                                        initialValue = 0f,
-                                        targetValue = 360f,
-                                        animationSpec = infiniteRepeatable(
-                                            animation = tween(durationMillis = 6000, easing = androidx.compose.animation.core.LinearEasing),
-                                            repeatMode = RepeatMode.Restart
-                                        ),
-                                        label = "vinyl_angle_port"
-                                    )
-                                    val rotationModifier = if (isCurrent && isPlaying) Modifier.graphicsLayer(rotationZ = vinylAngle) else Modifier
+                            val rotationModifier = if (isCurrent && shouldRotateDisc) {
+                                Modifier.graphicsLayer(rotationZ = vinylAngle)
+                            } else Modifier
+
+                            Box(modifier = Modifier.fillMaxSize().then(rotationModifier), contentAlignment = Alignment.Center) {
+                                if (isCircleShape) {
                                     Surface(
                                         shape = CircleShape,
                                         color = Color(0xFF15161C),
                                         border = androidx.compose.foundation.BorderStroke(3.dp, Color(0xFF282A36)),
-                                        modifier = Modifier.fillMaxSize().padding(10.dp).then(rotationModifier)
+                                        modifier = Modifier.fillMaxSize().padding(10.dp)
                                     ) {
                                         Box(contentAlignment = Alignment.Center) {
                                             Box(modifier = Modifier.fillMaxSize(0.85f).border(1.dp, Color(0xFF22242E), CircleShape))
@@ -1613,7 +1795,7 @@ fun AudioPlayerPreview(
                                             Box(modifier = Modifier.fillMaxSize(0.45f).border(1.dp, Color(0xFF22242E), CircleShape))
                                             Surface(
                                                 shape = CircleShape,
-                                                color = AudioPurple,
+                                                color = themeAccent,
                                                 modifier = Modifier.fillMaxSize(0.35f)
                                             ) {
                                                 if (pageArtwork != null) {
@@ -1646,7 +1828,7 @@ fun AudioPlayerPreview(
                                                 .fillMaxSize()
                                                 .background(
                                                     Brush.verticalGradient(
-                                                        listOf(AudioPurple.copy(alpha = 0.5f), Color(0xFF16171B))
+                                                        listOf(themeAccent.copy(alpha = 0.5f), themeSurface)
                                                     )
                                                 ),
                                             contentAlignment = Alignment.Center
@@ -1754,7 +1936,7 @@ fun AudioPlayerPreview(
                             Icon(
                                 imageVector = Icons.Filled.KeyboardArrowUp,
                                 contentDescription = "Swipe up for Queue",
-                                tint = AudioPurple,
+                                tint = themeAccent,
                                 modifier = Modifier.size(20.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
