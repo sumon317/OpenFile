@@ -44,6 +44,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -102,6 +103,7 @@ import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Lyrics
@@ -185,6 +187,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -891,6 +894,22 @@ fun AudioPlayerPreview(
                         containerColor = Color(0xFF22242D)
                     ) {
                         DropdownMenuItem(
+                            text = { Text("Volume", color = Color.White) },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = null, tint = AudioPurple) },
+                            onClick = {
+                                showMoreMenu = false
+                                showVolumeDialog = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Playback Speed (${playbackSpeed}x)", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Filled.Speed, contentDescription = null, tint = AudioPurple) },
+                            onClick = {
+                                showMoreMenu = false
+                                showSpeedDialog = true
+                            }
+                        )
+                        DropdownMenuItem(
                             text = { Text("Studio Equalizer & DSP", color = Color.White) },
                             leadingIcon = { Icon(Icons.Filled.GraphicEq, contentDescription = null, tint = AudioPurple) },
                             onClick = {
@@ -907,31 +926,14 @@ fun AudioPlayerPreview(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text(if (isAbLoopActive) "Disable A-B Loop" else "Enable A-B Repeat Loop", color = Color.White) },
-                            leadingIcon = { Icon(Icons.Filled.Replay, contentDescription = null, tint = Color(0xFFB0B0B0)) },
+                            text = { Text("Playlist Queue", color = Color.White) },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null, tint = AudioPurple) },
                             onClick = {
                                 showMoreMenu = false
-                                isAbLoopActive = !isAbLoopActive
-                                toastMessage = if (isAbLoopActive) "A-B Loop Enabled" else "A-B Loop Disabled"
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text(if (isVinylMode) "Artwork Card View" else "Spinning Vinyl Mode", color = Color.White) },
-                            leadingIcon = { Icon(Icons.Filled.Album, contentDescription = null, tint = Color(0xFFB0B0B0)) },
-                            onClick = {
-                                showMoreMenu = false
-                                isVinylMode = !isVinylMode
+                                showQueueSheet = true
                             }
                         )
                         HorizontalDivider(color = Color(0xFF333645))
-                        DropdownMenuItem(
-                            text = { Text("Playback Speed (${playbackSpeed}x)", color = Color.White) },
-                            leadingIcon = { Icon(Icons.Filled.Speed, contentDescription = null, tint = Color(0xFFB0B0B0)) },
-                            onClick = {
-                                showMoreMenu = false
-                                showSpeedDialog = true
-                            }
-                        )
                         DropdownMenuItem(
                             text = {
                                 Text(
@@ -953,6 +955,23 @@ fun AudioPlayerPreview(
                             onClick = {
                                 showMoreMenu = false
                                 showAudioDetailsDialog = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (isAbLoopActive) "Disable A-B Loop" else "Enable A-B Repeat Loop", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Filled.Replay, contentDescription = null, tint = Color(0xFFB0B0B0)) },
+                            onClick = {
+                                showMoreMenu = false
+                                isAbLoopActive = !isAbLoopActive
+                                toastMessage = if (isAbLoopActive) "A-B Loop Enabled" else "A-B Loop Disabled"
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (isVinylMode) "Artwork Card View" else "Spinning Vinyl Mode", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Filled.Album, contentDescription = null, tint = Color(0xFFB0B0B0)) },
+                            onClick = {
+                                showMoreMenu = false
+                                isVinylMode = !isVinylMode
                             }
                         )
                         if (onOpenExternal != null) {
@@ -1248,82 +1267,7 @@ fun AudioPlayerPreview(
         }
     }
 
-    // Bottom Action Bar: Balanced 5-utility layout (Volume, Playback Speed, Equalizer DSP, Lyrics, Queue)
-    val bottomActionBar = @Composable {
-        val eqActive by EqualizerEngine.state.collectAsState()
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = { showVolumeDialog = true }) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.VolumeUp,
-                    contentDescription = "Volume",
-                    tint = Color(0xFF9E9E9E),
-                    modifier = Modifier.size(24.dp)
-                )
-            }
 
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = if (playbackSpeed != 1.0f) AudioPurple.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.08f),
-                border = androidx.compose.foundation.BorderStroke(
-                    1.dp,
-                    if (playbackSpeed != 1.0f) AudioPurple else Color.White.copy(alpha = 0.15f)
-                ),
-                modifier = Modifier.clickable { showSpeedDialog = true }
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Speed,
-                        contentDescription = "Playback Speed",
-                        tint = if (playbackSpeed != 1.0f) AudioPurple else Color.White,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "${playbackSpeed}x",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (playbackSpeed != 1.0f) AudioPurple else Color.White,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            IconButton(onClick = { showEqualizerSheet = true }) {
-                Icon(
-                    imageVector = Icons.Filled.GraphicEq,
-                    contentDescription = "Studio Equalizer & DSP",
-                    tint = if (eqActive.enabled) AudioPurple else Color(0xFF9E9E9E),
-                    modifier = Modifier.size(25.dp)
-                )
-            }
-
-            IconButton(onClick = { showLyricsSheet = true }) {
-                Icon(
-                    imageVector = Icons.Filled.Lyrics,
-                    contentDescription = "Synchronized Lyrics",
-                    tint = if (parsedLyrics.isNotEmpty()) AudioPurple else Color(0xFF9E9E9E),
-                    modifier = Modifier.size(25.dp)
-                )
-            }
-
-            IconButton(onClick = { showQueueSheet = true }) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                    contentDescription = "Queue",
-                    tint = Color(0xFF9E9E9E),
-                    modifier = Modifier.size(25.dp)
-                )
-            }
-        }
-    }
 
     if (errorMessage != null) {
         Column(
@@ -1406,7 +1350,15 @@ fun AudioPlayerPreview(
                     Card(
                         modifier = Modifier
                             .size(240.dp)
-                            .clickable { isVinylMode = !isVinylMode }
+                            .pointerInput(Unit) {
+                                detectTapGestures(
+                                    onTap = { showLyricsSheet = true },
+                                    onDoubleTap = {
+                                        isFavorite = !isFavorite
+                                        toastMessage = if (isFavorite) "Added to Favorites" else "Removed from Favorites"
+                                    }
+                                )
+                            }
                             .testTag("audio_album_card"),
                         shape = if (isVinylMode) CircleShape else RoundedCornerShape(24.dp),
                         elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
@@ -1535,7 +1487,41 @@ fun AudioPlayerPreview(
                     }
                     scrubberRow()
                     controlsRow()
-                    bottomActionBar()
+                    // Sleek Queue cue handle
+                    val queueCueText = if (nextTrackTitle != null) "Next: $nextTrackTitle" else "Queue"
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = Color.White.copy(alpha = 0.06f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                        modifier = Modifier
+                            .testTag("audio_queue_swipe_handle_land")
+                            .clickable { showQueueSheet = true }
+                            .padding(horizontal = 16.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.KeyboardArrowUp,
+                                contentDescription = "Queue",
+                                tint = AudioPurple,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = queueCueText,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 12.sp
+                                ),
+                                color = Color(0xFFC0C4D6),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
                 }
             }
         } else {
@@ -1584,21 +1570,10 @@ fun AudioPlayerPreview(
                                 .sizeIn(maxWidth = 240.dp, maxHeight = 240.dp)
                                 .pointerInput(Unit) {
                                     detectTapGestures(
-                                        onTap = { isVinylMode = !isVinylMode },
-                                        onDoubleTap = { offset ->
-                                            if (offset.x < size.width * 0.4f) {
-                                                val target = (exoPlayer.currentPosition - 5000L).coerceAtLeast(0L)
-                                                exoPlayer.seekTo(target)
-                                                currentPositionMs = target
-                                                toastMessage = "-5s"
-                                            } else if (offset.x > size.width * 0.6f) {
-                                                val target = (exoPlayer.currentPosition + 5000L).coerceAtMost(if (durationMs > 0L) durationMs else Long.MAX_VALUE)
-                                                exoPlayer.seekTo(target)
-                                                currentPositionMs = target
-                                                toastMessage = "+5s"
-                                            } else {
-                                                isVinylMode = !isVinylMode
-                                            }
+                                        onTap = { showLyricsSheet = true },
+                                        onDoubleTap = {
+                                            isFavorite = !isFavorite
+                                            toastMessage = if (isFavorite) "Added to Favorites" else "Removed from Favorites"
                                         }
                                     )
                                 }
@@ -1698,10 +1673,26 @@ fun AudioPlayerPreview(
                 }
 
                 // Controls & Details Column (generous vertical pacing)
+                val density = LocalDensity.current
+                val swipeThresholdPx = with(density) { 20.dp.toPx() }
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 12.dp),
+                        .padding(bottom = 12.dp)
+                        .pointerInput(Unit) {
+                            var totalDragY = 0f
+                            detectVerticalDragGestures(
+                                onDragStart = { totalDragY = 0f },
+                                onDragEnd = { totalDragY = 0f },
+                                onDragCancel = { totalDragY = 0f },
+                                onVerticalDrag = { _, dragAmount ->
+                                    totalDragY += dragAmount
+                                    if (totalDragY < -swipeThresholdPx || dragAmount < -swipeThresholdPx) {
+                                        showQueueSheet = true
+                                    }
+                                }
+                            )
+                        },
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     metadataSection()
@@ -1742,27 +1733,43 @@ fun AudioPlayerPreview(
 
                     controlsRow()
 
-                    Spacer(modifier = Modifier.height(20.dp))
+                    Spacer(modifier = Modifier.height(24.dp))
 
-                    // Next Song Preview Indicator
-                    if (nextTrackTitle != null) {
-                        Text(
-                            text = nextTrackTitle,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF8E8E93),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier
-                                .clickable { handleSkipNext() }
-                                .padding(horizontal = 24.dp, vertical = 2.dp)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                    } else {
-                        Spacer(modifier = Modifier.height(16.dp))
+                    // Sleek Swipe-Up Cue Handle with upward chevron and next track title / "Queue"
+                    val queueCueText = if (nextTrackTitle != null) "Next: $nextTrackTitle" else "Queue"
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = Color.White.copy(alpha = 0.06f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                        modifier = Modifier
+                            .testTag("audio_queue_swipe_handle")
+                            .clickable { showQueueSheet = true }
+                            .padding(horizontal = 24.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.KeyboardArrowUp,
+                                contentDescription = "Swipe up for Queue",
+                                tint = AudioPurple,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = queueCueText,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 12.sp
+                                ),
+                                color = Color(0xFFC0C4D6),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
-
-                    bottomActionBar()
                 }
             }
         }
